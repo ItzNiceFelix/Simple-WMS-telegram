@@ -39,3 +39,8 @@ playwright/.cache/
 
 # Artifact tooling browser (MCP/dev lokal)
 .playwright-mcp/
+
+# Cloudflare (Workers + OpenNext + D1 lokal)
+.open-next/
+.dev.vars
+.wrangler/

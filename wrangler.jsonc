@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "simple-wms-telegram",
+  "main": "./worker/index.ts",
+  "compatibility_date": "2025-05-05",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "keep_names": false,
+  "assets": {
+    "directory": "./cf-assets",
+    "binding": "ASSETS"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "simple-wms",
+      "database_id": "bead212e-5c8c-43f6-b654-75b1a7c84fd4"
+    }
+  ]
+}
