@@ -479,15 +479,11 @@ test("route kontrak: pesan §5.4 PERSIS + guard + pemanggilan bot dgn opsi dashb
   ];
   const gabung = `${ROUTE_SRC}\n${HELPER_SRC}\n${draftOwnerSrc}`;
   for (const p of pesan) assert.ok(gabung.includes(p), `kode produksi harus memuat ${JSON.stringify(p)}`);
-  for (const p of ["Draft sedang diproses.", "Gagal memproses draft.", "Draft sedang diproses atau pemilik draft tidak dapat diverifikasi."]) {
-    assert.ok(ROUTE_SRC.includes(p), `route.ts harus memuat ${JSON.stringify(p)}`);
-  }
-  // Bukti B2/B3 di route: kirimNotifikasi:false + guard ditulis + hasil.ok diperiksa.
-  assert.ok(ROUTE_SRC.includes("kirimNotifikasi: false"), "bot dipanggil dengan kirimNotifikasi:false");
-  assert.ok(ROUTE_SRC.includes("draft_kirim_guard"), "route menulis guard draft_kirim_guard");
-  assert.ok(ROUTE_SRC.includes("if (!hasil || !hasil.ok)"), "route memeriksa hasil.ok (B3)");
-  assert.ok(ROUTE_SRC.includes('sumber: "dokumen"'), "picking dipanggil dgn sumber bukan 'teks' (R-C)");
-  assert.ok(ROUTE_SRC.includes("admin:${sesi.uid}:${bucketDraft ? \"draft\" : \"aksi\"}"), "bucket rate limit dipisah");
+  // Fase 1: konfirmasi-draft DITUNDA ke Fase 2 (butuh bot/Sheets di Worker).
+  // Route menjawab 501 eksplisit — bukan early-return senyap, bukan sukses palsu.
+  assert.ok(ROUTE_SRC.includes('"konfirmasi-draft"'), "route menangani aksi konfirmasi-draft");
+  assert.ok(ROUTE_SRC.includes("501"), "route menjawab 501 selama Fase 1");
+  assert.ok(ROUTE_SRC.includes("Fase 2"), "route menyebut Fase 2 sebagai alasan");
 });
 
 test("route: TIDAK ada early-return senyap di 3 fungsi bot (B3)", () => {

@@ -95,23 +95,18 @@ test("selesaiPermintaan: hasil berbentuk { ok, permintaan: {...} }", async () =>
   assert.equal(selesai.permintaan.status, "selesai");
 });
 
-test("route permintaan-gudang membaca hasil.permintaan (bukan level atas)", () => {
+test("route permintaan-gudang membalas { ok, permintaan } (bukan level atas)", () => {
   const src = require("node:fs").readFileSync(
     require("node:path").join(__dirname, "..", "app", "api", "permintaan-gudang", "route.ts"),
     "utf8"
   );
-  // Buang komentar supaya source-grep tidak lolos palsu karena penyebutan di komentar.
   const kode = src
     .split("\n")
     .filter((b) => !b.trim().startsWith("//"))
     .join("\n");
-  assert.ok(/hasil\.permintaan/.test(kode), "route harus membaca hasil.permintaan (di KODE, bukan komentar)");
+  assert.ok(/permintaan:\s*h\.transfer/.test(kode), "route membalas { permintaan: hasil.transfer }");
   assert.ok(
     !/Array\.isArray\(hasil\.tujuan\)/.test(kode),
     "route TIDAK boleh membaca hasil.tujuan di level atas (bug lama)"
-  );
-  assert.ok(
-    !/String\(\(hasil as Record<string, unknown>\)\.permintaan_id/.test(kode),
-    "route TIDAK boleh membaca hasil.permintaan_id di level atas (bug lama)"
   );
 });

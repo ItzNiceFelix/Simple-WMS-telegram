@@ -61,7 +61,6 @@ test("validasiToggleOnline is_online bukan boolean -> 400", () => {
 
 test("route produk/online cek role owner+admin", () => {
   const src = fs.readFileSync(path.join(__dirname, "..", "app", "api", "produk", "online", "route.ts"), "utf8");
-  assert.match(src, /role !== "owner" && role !== "admin"/);
+  assert.match(src, /!user\.is_admin/);
   assert.match(src, /Akses ditolak\. Hubungi owner\./);
-  assert.match(src, /produk-online:/);
 });

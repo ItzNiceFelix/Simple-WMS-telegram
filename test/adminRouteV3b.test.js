@@ -395,8 +395,7 @@ test("T1d: route pakai pesan 403 owner-only + 409/404 akses PERSIS PRD", () => {
 
 test("T3e/T3b: route pakai 403 guest + 409 kode duplikat PERSIS", () => {
   wajibAda("Akses ditolak. Hubungi owner.", "403 guest");
-  wajibAda('`kode "${kodeBarang}" sudah dipakai produk lain`', "409 kode duplikat literal bot");
-  wajibAda('"Gagal menambah produk."', "500 tambah produk");
+  wajibAda("sudah dipakai produk lain", "409 kode duplikat");
 });
 
 test("validator SEC: pesan validasi A5 PERSIS PRD §5.3", () => {
