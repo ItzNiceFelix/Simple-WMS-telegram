@@ -1,0 +1,3 @@
+# .dev.vars — env lokal Worker (JANGAN commit nilai asli; file ini hanya template).
+# Disalin dari .env untuk dev: NEXTJS_ENV memilih file .env Next yang dimuat Worker lokal.
+NEXTJS_ENV=development

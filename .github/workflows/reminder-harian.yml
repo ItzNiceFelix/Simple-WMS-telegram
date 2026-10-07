@@ -1,0 +1,36 @@
+name: Reminder Harian (Proyeksi Stok Menipis)
+
+# Alur D poin 2 (bagian 4 skema): proaktif harian, hitung proyeksi kebutuhan dari tren
+# stock_movements, kirim ringkasan ke Telegram. Sama alasan pakai GitHub Actions (bukan
+# Vercel Cron) dgn sync-master-data.yml Batch 6 — Vercel Hobby dibatasi 1x/hari, 2 job.
+
+on:
+  schedule:
+    # Tiap hari jam 07:00 WIB (00:00 UTC) — pagi, sebelum jam operasional mulai
+    - cron: "0 0 * * *"
+  workflow_dispatch: {}
+
+jobs:
+  reminder:
+    runs-on: ubuntu-latest
+    environment: production # secrets kamu ke-save sbg Environment secret (env "Production"), bukan Repository secret — job wajib declare ini biar bisa akses
+    steps:
+      - name: Checkout kode
+        uses: actions/checkout@v7
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Jalankan reminder harian
+        run: node scripts/jalankanReminderHarian.js
+        env:
+          FIREBASE_PROJECT_ID: ${{ secrets.FIREBASE_PROJECT_ID }}
+          FIREBASE_CLIENT_EMAIL: ${{ secrets.FIREBASE_CLIENT_EMAIL }}
+          FIREBASE_PRIVATE_KEY: ${{ secrets.FIREBASE_PRIVATE_KEY }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}

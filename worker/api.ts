@@ -207,5 +207,7 @@ export async function tanganiApi(request: Request, env: Env): Promise<Response |
     }
   }
 
-  return json({ ok: false, error: "Tidak ditemukan." }, 404);
+  // Path /api/* lain (milik Next: /api/stok, /api/produk, ...) → null agar
+  // diteruskan ke handler OpenNext, BUKAN 404.
+  return null;
 }

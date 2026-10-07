@@ -1,0 +1,6 @@
+# public/_headers — header statis Cloudflare (pola migrate OpenNext).
+# Diterapkan ke aset di public/ saat deploy; bukan pengganti next.config headers().
+/favicon.png
+  Cache-Control: public, max-age=86400
+/icon-180.png
+  Cache-Control: public, max-age=86400

@@ -1,7 +1,7 @@
 {
-  "name": "bot-admin-toko",
-  "version": "1.0.0",
-  "description": "Bot Telegram admin toko - cek stok, HPP, ekstraksi picking list, opname (Firestore + Vercel + Gemini)",
+  "name": "simple-wms-telegram",
+  "version": "0.1.0",
+  "description": "Simple WMS + Telegram - advanced warehouse management (Cloudflare Workers + D1)",
   "private": true,
   "type": "commonjs",
   "engines": {
@@ -9,7 +9,7 @@
   },
   "scripts": {
     "dev": "next dev",
-    "test": "node --test \"test/**/*.test.js\"",
+    "test": "node --test \"test/**/*.test.js\" && node --test worker/auth.test.ts",
     "dev:vercel": "vercel dev",
     "build": "next build",
     "start": "next start",
@@ -18,11 +18,16 @@
     "e2e:fast": "playwright test --project=desktop --project=desktop-viewport",
     "e2e:full": "node scripts/e2e-build.mjs && playwright test",
     "e2e:dev": "playwright test",
-    "e2e:build": "node scripts/e2e-build.mjs"
+    "e2e:build": "node scripts/e2e-build.mjs",
+    "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
+    "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
+    "upload": "opennextjs-cloudflare build && opennextjs-cloudflare upload",
+    "cf-typegen": "wrangler types --env-interface CloudflareEnv cloudflare-env.d.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.8.0",
     "@google/generative-ai": "^0.21.0",
+    "@opennextjs/cloudflare": "^1.20.9",
     "@vercel/functions": "^2.0.0",
     "class-variance-authority": "^0.7.1",
     "cn": "^0.3.0",
@@ -40,6 +45,7 @@
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
+    "@cloudflare/workers-types": "^5.20261007.1",
     "@playwright/test": "^1.63.0",
     "@tailwindcss/postcss": "^4.3.3",
     "@types/node": "^22.20.2",
@@ -47,6 +53,7 @@
     "@types/react-dom": "^19.3.0",
     "postcss": "^8.5.28",
     "tailwindcss": "^4.3.3",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "wrangler": "^4.148.0"
   }
 }

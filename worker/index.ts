@@ -1,27 +1,29 @@
-// worker/index.ts — custom worker Simple-WMS-telegram (Fase 0).
-// /api/* → worker/api.ts (health + auth F1). Non-API → ASSETS statis
-// (cf-assets/). Fase 1 mengganti fallback ini dengan static import handler
-// OpenNext yang digenerate saat build (.open-next/worker.js) + re-export
-// pola custom-worker (skill cloudflare-nextjs → references/advanced.md).
+// worker/index.ts — custom worker Simple-WMS-telegram (Fase 1).
+// Re-export handler OpenNext (.open-next/worker.js, digenerate saat build) +
+// handler scheduled() untuk cron + router /api/* kustom (auth Fase 0).
+// Pola: skill cloudflare-nextjs → references/advanced.md (Custom Worker).
+// Static import: modul diketahui saat author time (pola adapter), hanya
+// path-nya generated — build OpenNext SELALU menghasilkan file ini sebelum
+// wrangler deploy, jadi static import aman dan gagal saat build bila hilang.
 import { tanganiApi } from "./api";
 import type { Env } from "./api";
+// @ts-ignore — `.open-next/worker.js` digenerate oleh `opennextjs-cloudflare build`
+import { default as handler } from "../.open-next/worker.js";
 
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
-    const api = await tanganiApi(request, env);
+  async fetch(request: Request, env: CloudflareEnv, ctx: ExecutionContext): Promise<Response> {
+    // /api/auth/* + /api/health + /api/setup/* ditangani langsung (auth Fase 0,
+    // tidak lewat Next). Route /api/stok|produk|gudang|... tetap milik Next
+    // (app/api/*) sampai cutover Worker penuh di Fase 2.
+    const api = await tanganiApi(request, env as Env);
     if (api) return api;
-    const url = new URL(request.url);
-    if (url.pathname === "/" || !url.pathname.includes(".")) {
-      url.pathname = "/index.html";
-      return env.ASSETS.fetch(new Request(url.toString(), request));
-    }
-    return env.ASSETS.fetch(request);
+    return handler.fetch(request, env, ctx);
   },
 
-  async scheduled(event: ScheduledEvent, _env: Env, ctx: ExecutionContext) {
-    // Fase 0: placeholder cron. Fase 1+: drain notify_queue + kirim laporan.
+  async scheduled(controller: ScheduledController, env: CloudflareEnv, ctx: ExecutionContext) {
+    // Fase 1: placeholder cron. Fase 2+: drain notify_queue + kirim laporan.
     console.log(
-      `[scheduled] cron fired at ${new Date(event.scheduledTime).toISOString()} (cron: ${event.cron})`
+      `[scheduled] cron fired at ${new Date(controller.scheduledTime).toISOString()} (cron: ${controller.cron})`
     );
     ctx.waitUntil(Promise.resolve());
   },

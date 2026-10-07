@@ -17,7 +17,7 @@ import {
   verifikasiPassword,
   verifikasiSesi,
   NAMA_COOKIE_SESI,
-} from "./auth.ts";
+} from "./auth";
 
 type Row = Record<string, unknown>;
 
