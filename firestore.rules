@@ -1,0 +1,56 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function authed() {
+      return request.auth != null
+        && request.auth.token.role is string
+        && (request.auth.token.role == "owner" || request.auth.token.role == "admin"
+            || request.auth.token.role == "guest");
+    }
+    // staff = owner atau admin
+    function staff() {
+      return authed()
+        && (request.auth.token.role == "owner" || request.auth.token.role == "admin");
+    }
+
+    // Baca untuk SEMUA role admin (termasuk guest)
+    match /stock/{kode}        { allow read: if authed(); allow write: if false; }
+    match /products/{kode}     { allow read: if authed(); allow write: if false; }
+    match /stock_movements/{id}{ allow read: if authed(); allow write: if false; }
+
+    // HANYA owner/admin
+    match /daily_requests/{id}     { allow read: if staff(); allow write: if false; }
+    match /opname_drafts/{id}      { allow read: if staff(); allow write: if false; }
+    match /sync_stok_drafts/{id}   { allow read: if staff(); allow write: if false; }
+    match /admins/{uid}            { allow read: if staff(); allow write: if false; }
+    match /admin_role_changes/{id} { allow read: if staff(); allow write: if false; }
+    match /access_requests/{uid}   { allow read: if staff(); allow write: if false; }
+    match /system_settings/{id}    { allow read: if staff(); allow write: if false; }
+    match /keyword_notes/{id}      { allow read: if staff(); allow write: if false; }
+    match /product_changes/{id}    { allow read: if staff(); allow write: if false; }
+
+    // ---- v5: multi-gudang ----
+    // Master gudang: semua role boleh baca (dipakai filter & label); nonaktif pun perlu terbaca.
+    match /gudang/{gudang_id}         { allow read: if authed(); allow write: if false; }
+
+    // Permintaan & opname: semua staff boleh baca termasuk lintas gudang (KEPUTUSAN USER R5).
+    // Scope gudang TIDAK membatasi read; scope hanya untuk default filter + operasi tulis (BR7).
+    match /permintaan_gudang/{id}     { allow read: if staff(); allow write: if false; }
+    match /opname_gudang/{id}         { allow read: if staff(); allow write: if false; }
+
+    // Server-only (client dilarang total)
+    match /stock_write_guard/{id}  { allow read, write: if false; }
+    match /permintaan_form_guard/{id} { allow read, write: if false; }
+    match /draft_kirim_guard/{id}  { allow read, write: if false; }
+
+    // v5 guard baru: server-only.
+    match /permintaan_gudang_guard/{id} { allow read, write: if false; }
+    match /opname_gudang_guard/{id}     { allow read, write: if false; }
+    match /gudang_guard/{id}            { allow read, write: if false; }
+    match /stok_gudang_guard/{id}       { allow read, write: if false; }
+    match /produk_online_guard/{id}     { allow read, write: if false; }
+
+    match /{document=**} { allow read, write: if false; }
+  }
+}

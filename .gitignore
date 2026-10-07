@@ -1,0 +1,41 @@
+# Environment variables (JANGAN pernah push .env asli)
+.env
+.env.local
+.env*.local
+
+# Dependencies
+node_modules/
+
+# Vercel
+.vercel
+
+# Logs
+*.log
+npm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Next.js
+.next/
+out/
+next-env.d.ts
+
+# Playwright
+playwright-report/
+test-results/
+playwright/.cache/
+
+# Vercel build output
+.vercel/
+
+# TS incremental
+*.tsbuildinfo
+
+# Artifact tooling browser (MCP/dev lokal)
+.playwright-mcp/
