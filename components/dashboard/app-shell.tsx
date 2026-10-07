@@ -21,13 +21,12 @@ export function AppShell({ children }: { children: ReactNode }) {
     return <SplashAwal onCoba={coba} />;
   }
 
-  // PRD N1/FR-AUTH-05: tanpa Telegram -> layar khusus, tanpa data.
-  if (statusAuth === "tanpa_telegram") {
-    return (
-      <div className="flex min-h-dvh items-center justify-center bg-background p-6 text-foreground">
-        <BukaDariTelegram />
-      </div>
-    );
+  // PRD F1: tanpa sesi web -> arahkan ke halaman login (bukan Telegram).
+  if (statusAuth === "perlu_masuk") {
+    if (typeof window !== "undefined" && window.location.pathname !== "/masuk") {
+      window.location.replace("/masuk");
+    }
+    return <SplashAwal onCoba={coba} />;
   }
   if (statusAuth === "gagal") {
     return (

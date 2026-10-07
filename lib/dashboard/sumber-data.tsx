@@ -26,7 +26,7 @@ import type { Role } from "./types";
 // Catatan bundling: implementasi REAL (Firebase SDK) dimuat dinamis agar build mode mock
 // TIDAK memuat Firebase sama sekali (isolasi e2e + bundle kecil).
 
-export type StatusAuth = "siap" | "memuat" | "tanpa_telegram" | "gagal";
+export type StatusAuth = "siap" | "memuat" | "perlu_masuk" | "gagal";
 
 /** Batas waktu inisialisasi sesi sebelum menyerah (ms). */
 const BATAS_INISIALISASI_MS = 10_000;
@@ -120,12 +120,9 @@ export function SumberDataProvider({ children }: { children: ReactNode }) {
       } catch (e) {
         if (batal) return;
         const pesan = e instanceof Error ? e.message : String(e);
-        if (pesan === "TANPA_TELEGRAM") {
-          setStatusAuth("tanpa_telegram");
-        } else {
-          setPesanAuth(pesan);
-          setStatusAuth("gagal");
-        }
+        // Tanpa cookie sesi valid → halaman login web (PRD F1), bukan Telegram.
+        setPesanAuth(pesan);
+        setStatusAuth("perlu_masuk");
       }
     })();
 
@@ -168,7 +165,7 @@ export function SumberDataProvider({ children }: { children: ReactNode }) {
   }
 
   // Mode real sebelum sesi siap: JANGAN sediakan data source.
-  // Shell menahan render konten (statusAuth "memuat"/"tanpa_telegram"/"gagal"),
+  // Shell menahan render konten (statusAuth "memuat"/"perlu_masuk"/"gagal"),
   // jadi nilai ini tidak pernah dipakai untuk query.
   if (mode === "real" && !dataReal) {
     return (
