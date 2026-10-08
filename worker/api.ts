@@ -23,6 +23,7 @@ export type Env = {
   DB: D1Database;
   ASSETS: Fetcher;
   TELEGRAM_BOT_TOKEN?: string;
+  TELEGRAM_WEBHOOK_SECRET?: string;
   SUPER_ADMIN_ID?: string;
 };
 

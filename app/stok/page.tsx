@@ -6,7 +6,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
-import { PackagePlus, PackageSearch, Search, TriangleAlert } from "lucide-react";
+import { FileDown, FileUp, PackagePlus, PackageSearch, Search, TriangleAlert } from "lucide-react";
 
 import { PageHeader } from "@/components/dashboard/page-header";
 import { ButuhAkses } from "@/components/dashboard/butuh-akses";
@@ -14,6 +14,7 @@ import { DialogKoreksiStok } from "@/components/dashboard/dialog-koreksi-stok";
 import { DialogStokGudang } from "@/components/dashboard/dialog-stok-gudang";
 import { tampilkanGagalTulis } from "@/components/dashboard/umpan-tulis";
 import { DialogTambahProduk } from "@/components/dashboard/dialog-tambah-produk";
+import { DialogImportExcel } from "@/components/dashboard/dialog-import-excel";
 import { StatusBadge } from "@/components/dashboard/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -91,6 +92,7 @@ function DaftarStok() {
   const [target, setTarget] = useState<Target | null>(null);
   const [targetGudang, setTargetGudang] = useState<TargetGudang | null>(null);
   const [tambahOpen, setTambahOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const [onlineSedang, setOnlineSedang] = useState<string | null>(null);
 
   // Daftar gudang untuk kontrol filter (F9). Gagal memuat -> filter tetap "Semua gudang".
@@ -187,15 +189,40 @@ function DaftarStok() {
         deskripsi="Daftar stok produk online."
         aksi={
           bolehKoreksi ? (
-            <Button
-              size="lg"
-              className="h-11 md:h-8"
-              data-testid="buka-tambah-produk"
-              onClick={() => setTambahOpen(true)}
-            >
-              <PackagePlus data-icon="inline-start" />
-              Tambah Produk
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                size="lg"
+                variant="outline"
+                className="h-11 md:h-8"
+                data-testid="buka-import-excel"
+                onClick={() => setImportOpen(true)}
+              >
+                <FileUp data-icon="inline-start" />
+                Import
+              </Button>
+              <Button
+                size="lg"
+                variant="outline"
+                className="h-11 md:h-8"
+                data-testid="unduh-export-excel"
+                onClick={() => {
+                  const g = gudangId === "SEMUA" ? "ONLINE" : gudangId;
+                  window.open(`/api/excel?format=export&tipe=produk&gudang_id=${encodeURIComponent(g)}`, "_blank");
+                }}
+              >
+                <FileDown data-icon="inline-start" />
+                Export
+              </Button>
+              <Button
+                size="lg"
+                className="h-11 md:h-8"
+                data-testid="buka-tambah-produk"
+                onClick={() => setTambahOpen(true)}
+              >
+                <PackagePlus data-icon="inline-start" />
+                Tambah Produk
+              </Button>
+            </div>
           ) : null
         }
       />
@@ -564,6 +591,13 @@ function DaftarStok() {
       <DialogTambahProduk
         open={tambahOpen}
         onOpenChange={setTambahOpen}
+        onSukses={() => void muat()}
+      />
+
+      <DialogImportExcel
+        open={importOpen}
+        onOpenChange={setImportOpen}
+        gudangId={gudangId === "SEMUA" ? "ONLINE" : gudangId}
         onSukses={() => void muat()}
       />
 

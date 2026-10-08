@@ -1,30 +1,32 @@
-// worker/index.ts — custom worker Simple-WMS-telegram (Fase 1).
-// Re-export handler OpenNext (.open-next/worker.js, digenerate saat build) +
-// handler scheduled() untuk cron + router /api/* kustom (auth Fase 0).
+// worker/index.ts — custom worker Simple-WMS-telegram (Fase 2).
+// /api/telegram/webhook → worker/bot.ts (webhook + command D1).
+// /api/* lain → worker/api.ts (auth Fase 0). Sisanya → OpenNext.
+// scheduled() → cron notify (worker/notify.ts).
 // Pola: skill cloudflare-nextjs → references/advanced.md (Custom Worker).
-// Static import: modul diketahui saat author time (pola adapter), hanya
-// path-nya generated — build OpenNext SELALU menghasilkan file ini sebelum
-// wrangler deploy, jadi static import aman dan gagal saat build bila hilang.
 import { tanganiApi } from "./api";
+import { tanganiWebhook } from "./bot";
+import { drainTick } from "./notify";
 import type { Env } from "./api";
 // @ts-ignore — `.open-next/worker.js` digenerate oleh `opennextjs-cloudflare build`
 import { default as handler } from "../.open-next/worker.js";
 
 export default {
   async fetch(request: Request, env: CloudflareEnv, ctx: ExecutionContext): Promise<Response> {
-    // /api/auth/* + /api/health + /api/setup/* ditangani langsung (auth Fase 0,
-    // tidak lewat Next). Route /api/stok|produk|gudang|... tetap milik Next
-    // (app/api/*) sampai cutover Worker penuh di Fase 2.
-    const api = await tanganiApi(request, env as Env);
+    const e = env as Env;
+    const url = new URL(request.url);
+    if (url.pathname === "/api/telegram/webhook") {
+      return tanganiWebhook(request, e, ctx);
+    }
+    const api = await tanganiApi(request, e);
     if (api) return api;
-    return handler.fetch(request, env, ctx);
+    return (handler as { fetch: (req: Request, env: unknown, ctx: unknown) => Promise<Response> }).fetch(request, env, ctx);
   },
 
   async scheduled(controller: ScheduledController, env: CloudflareEnv, ctx: ExecutionContext) {
-    // Fase 1: placeholder cron. Fase 2+: drain notify_queue + kirim laporan.
-    console.log(
-      `[scheduled] cron fired at ${new Date(controller.scheduledTime).toISOString()} (cron: ${controller.cron})`
+    // Cron notify queue (Fase 2): drain antrean Telegram tiap tick.
+    ctx.waitUntil(
+      drainTick(env as Env).catch((err) => console.error("[cron]", err instanceof Error ? err.message : err))
     );
-    ctx.waitUntil(Promise.resolve());
+    console.log(`[scheduled] ${new Date(controller.scheduledTime).toISOString()} (${controller.cron})`);
   },
 } satisfies ExportedHandler<CloudflareEnv>;
