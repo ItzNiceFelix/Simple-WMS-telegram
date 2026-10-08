@@ -68,13 +68,32 @@
   benar → export 3 baris cocok. Data uji DIBERSIHKAN (D1 kosong kembali).
 - Commit: `04fb722`, ter-push ke repo publik.
 
-## Update — Fase 3a Order + Laba TERDEPLOY ✅ (2026-10-08 malam)
+## Update — Fase 3a Order + Laba SELESAI ✅ (2026-10-08 malam)
 
-- Order Keluar + Laba: migrasi `0006` (orders/order_items/order_fees/mp_fee_presets + `jual_mp`/`retur_mp`), `lib/d1/order.ts` (hitungLaba + alokasi + imporPesanan + transisi pack/kirim/batal), route `/api/order` (import 2-fase + rekap), halaman `/order` + `/laba`, template sheet Pesanan, bot `/laba [7h|30h]` agregat per MP.
-- PRD §F5: halaman + rekap + bot live; export PDF (`pdf-lib`) + JPG client = Task 8 / Fase 4 (BELUM live).
-- Test: tsc 0 error; worker suite hijau (auth 5 + notify 3 + d1lib 6 + order 11); e2e `order-laba` 3/3 hijau mock-mode (`?role=owner`, intercept `/api/order`, tanpa D1 remote). `tma.spec` 0/2 merah PRE-EXISTING di head 669b4c5 (ekspektasi 400/401 vs route 403/400 — di luar kontrak task, tak diubah).
-- Produksi: versi `820915aa` 100% traffic, triggers `*/5` aktif; preview health `db:up`, `/api/order` 401 tanpa sesi (preview + prod).
-- Fix samping: `app/api/order/route.ts` `HEADER_PESANAN` tak lagi export (pecah `next build` — export non-route dilarang); `test:worker` kini bundle `auth.test` via esbuild (jalan langsung pecah di runner ini) + sertakan `order.test`.
+- **Order Keluar**: import pesanan MP (template sheet `Pesanan`, 12 kolom),
+  filter status/MP, tombol Pack/Kirim/Selesai/Batal; stok ONLINE kurang saat
+  Pack (movement `jual_mp`), kembali saat Batal (`retur_mp`), hard-block stok
+  negatif.
+- **Laba**: omzet/HPP/biaya/PPh 0,5%×omzet per pesanan/PPN → laba + margin;
+  filter periode/MP/SKU; filter SKU menampilkan **porsi** SKU (bukan total
+  order); export CSV + **PDF** (`pdf-lib`).
+- Skema: migrasi `0006` (orders/order_items/order_fees/mp_fee_presets + jenis
+  movement MP) + `0007` (index fee). Fresh — tanpa migrasi Firebase.
+- Bot: `/laba [7h|30h]` agregat per MP.
+- Test: tsc `0 error`; worker `32/32` (auth 5 + notify 3 + d1lib 6 + order 14
+  + rekapPdf 3 + route TMA 4); e2e `36/36` (order-laba + histori).
+- Review: tiap tugas lewat reviewer independen; final review ketemu 2 regresi
+  nyata (Histori rusak oleh jenis movement baru; filter SKU menampilkan angka
+  salah) → diperbaiki + diverifikasi ulang.
+- Commit Fase 3a: `7fa7ecf`..`8f2f99b` (12 commit), ter-push.
+- Belum: Fase 3b (lots/FEFO, cycle count/freeze, valuasi MA); JPG export.
+
+### Catatan teknis (histori implementasi)
+
+- `app/api/order/route.ts`: `HEADER_PESANAN` tak lagi di-export (export
+  non-route memecah `next build`); `test:worker` bundle `auth.test` via esbuild.
+- `filter-branch` dipakai untuk mengeluarkan `.github/workflows` dari riwayat
+  Fase 3a (belum ter-push saat itu) — isi kode tak berubah, hanya hash commit.
 
 ## Cara pakai sekarang
 
