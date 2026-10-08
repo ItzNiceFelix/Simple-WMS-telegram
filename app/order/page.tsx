@@ -4,8 +4,9 @@
 // Fetch LANGSUNG /api/order (kontrak DataSource beku Wave 3a).
 import { useCallback, useDeferredValue, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { PackageSearch, RotateCcw } from "lucide-react";
+import { FileUp, PackageSearch, RotateCcw } from "lucide-react";
 
+import { DialogImportExcel } from "@/components/dashboard/dialog-import-excel";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { ButuhAkses } from "@/components/dashboard/butuh-akses";
 import { tampilkanGagalTulis } from "@/components/dashboard/umpan-tulis";
@@ -85,6 +86,7 @@ export default function HalamanOrder() {
 
 function DaftarOrder() {
   const [orders, setOrders] = useState<RincianOrder[] | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState("semua");
   const [mp, setMp] = useState("");
@@ -155,10 +157,16 @@ function DaftarOrder() {
         judul="Order Keluar"
         deskripsi="Pesanan marketplace + transisi fulfill."
         aksi={
-          <Button size="lg" variant="outline" className="h-11 md:h-8" data-testid="muat-ulang-order" onClick={() => void muat()}>
-            <RotateCcw data-icon="inline-start" />
-            Muat ulang
-          </Button>
+          <div className="flex gap-2">
+            <Button size="lg" variant="outline" className="h-11 md:h-8" data-testid="impor-pesanan" onClick={() => setImportOpen(true)}>
+              <FileUp data-icon="inline-start" />
+              Impor Pesanan
+            </Button>
+            <Button size="lg" variant="outline" className="h-11 md:h-8" data-testid="muat-ulang-order" onClick={() => void muat()}>
+              <RotateCcw data-icon="inline-start" />
+              Muat ulang
+            </Button>
+          </div>
         }
       />
 
@@ -306,6 +314,7 @@ function DaftarOrder() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      <DialogImportExcel open={importOpen} onOpenChange={setImportOpen} tipe="pesanan" onSukses={() => void muat()} />
     </>
   );
 }
