@@ -125,8 +125,12 @@ function buatDbOrder() {
           }
           if (sql.includes("FROM orders") && sql.includes("ORDER BY tanggal DESC")) {
             let r = Object.values(orders).sort((x, y) => Number(y["tanggal"]) - Number(x["tanggal"]));
-            if (sql.includes("marketplace = ?")) r = r.filter((x) => x["marketplace"] === a[0]);
-            // ponytail: mock abaikan filter status/periode; cukup untuk kontrak Task 4. Perluas bila route butuh.
+            let i = 0;
+            if (sql.includes("marketplace = ?")) { const v = a[i++]; r = r.filter((x) => x["marketplace"] === v); }
+            // ponytail: ceiling = e2e mock-mode cuma UI; perluas agregat bila route rekap butuh.
+            if (sql.includes("status_fulfill = ?")) { const v = a[i++]; r = r.filter((x) => x["status_fulfill"] === v); }
+            if (sql.includes("tanggal >= ?")) { const v = Number(a[i++]); r = r.filter((x) => Number(x["tanggal"]) >= v); }
+            if (sql.includes("tanggal <= ?")) { const v = Number(a[i++]); r = r.filter((x) => Number(x["tanggal"]) <= v); }
             return { results: r.slice(0, 100) };
           }
           return { results: [] };
@@ -231,5 +235,18 @@ describe("ambilOrder + listOrder", () => {
     await imporPesanan(db, [barisA("L-1", 1), { ...barisA("L-2", 1), marketplace: "tiktok" }], null);
     assert.equal((await listOrder(db, {})).length, 2);
     assert.equal((await listOrder(db, { mp: "shopee" })).length, 1);
+  });
+});
+describe("listOrder filter status + periode", () => {
+  it("status pack; dari/sampai epoch", async () => {
+    const db = buatDbOrder();
+    await imporPesanan(db, [
+      { ...barisA("F-1", 1), tanggal: 1728288000 },
+      { ...barisA("F-2", 1), tanggal: 1730419200 },
+    ], null);
+    await transisiFulfill(db, "shopee", "F-1", "pack", null);
+    assert.equal((await listOrder(db, { status: "pack" })).length, 1);
+    assert.equal((await listOrder(db, { dari: 1730000000 })).length, 1);
+    assert.equal((await listOrder(db, { sampai: 1729000000 })).length, 1);
   });
 });

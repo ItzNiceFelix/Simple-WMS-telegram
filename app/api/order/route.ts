@@ -13,7 +13,7 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 // Header template 12 kolom — string equality dengan Task 5 (sheet Pesanan).
-export const HEADER_PESANAN = ["NoPesanan*", "Marketplace*", "Tanggal*", "SKU*", "Qty*", "HargaSatuan*", "Buyer", "FeeJenis", "FeeBasis", "FeeNilai", "PPh", "PPN%"];
+const HEADER_PESANAN = ["NoPesanan*", "Marketplace*", "Tanggal*", "SKU*", "Qty*", "HargaSatuan*", "Buyer", "FeeJenis", "FeeBasis", "FeeNilai", "PPh", "PPN%"];
 
 const FEE_VALID = ["admin", "service", "komisi", "ongkir", "voucher", "affiliate", "iklan", "lain"];
 const KE_VALID = ["pack", "kirim", "selesai", "batal"];

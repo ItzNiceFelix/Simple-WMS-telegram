@@ -67,6 +67,15 @@
   200; Excel template 3 baris preview 3/3 → konfirmasi 3 → stok terbaca
   benar → export 3 baris cocok. Data uji DIBERSIHKAN (D1 kosong kembali).
 - Commit: `04fb722`, ter-push ke repo publik.
+
+## Update — Fase 3a Order + Laba TERDEPLOY ✅ (2026-10-08 malam)
+
+- Order Keluar + Laba: migrasi `0006` (orders/order_items/order_fees/mp_fee_presets + `jual_mp`/`retur_mp`), `lib/d1/order.ts` (hitungLaba + alokasi + imporPesanan + transisi pack/kirim/batal), route `/api/order` (import 2-fase + rekap), halaman `/order` + `/laba`, template sheet Pesanan, bot `/laba [7h|30h]` agregat per MP.
+- PRD §F5: halaman + rekap + bot live; export PDF (`pdf-lib`) + JPG client = Task 8 / Fase 4 (BELUM live).
+- Test: tsc 0 error; worker suite hijau (auth 5 + notify 3 + d1lib 6 + order 11); e2e `order-laba` 3/3 hijau mock-mode (`?role=owner`, intercept `/api/order`, tanpa D1 remote). `tma.spec` 0/2 merah PRE-EXISTING di head 669b4c5 (ekspektasi 400/401 vs route 403/400 — di luar kontrak task, tak diubah).
+- Produksi: versi `820915aa` 100% traffic, triggers `*/5` aktif; preview health `db:up`, `/api/order` 401 tanpa sesi (preview + prod).
+- Fix samping: `app/api/order/route.ts` `HEADER_PESANAN` tak lagi export (pecah `next build` — export non-route dilarang); `test:worker` kini bundle `auth.test` via esbuild (jalan langsung pecah di runner ini) + sertakan `order.test`.
+
 ## Cara pakai sekarang
 
 1. Buka `https://simple-wms-telegram.bagus-deva-nov-p.workers.dev/api/setup/owner`

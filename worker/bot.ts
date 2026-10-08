@@ -14,6 +14,7 @@ import { listOpname } from "../lib/d1/opname";
 import { listTransfer } from "../lib/d1/transfer";
 import { listAkses, mintaAkses } from "../lib/d1/akses";
 import { ambilAdmin } from "../lib/d1/admin";
+import { ambilOrder, hitungLaba, listOrder } from "../lib/d1/order";
 
 export type Update = {
   update_id: number;
@@ -120,7 +121,7 @@ async function tanganiCommand(env: Env, tgId: string, chatId: number, msgId: num
   const { cmd, args } = parseCommand(teks);
 
   if (cmd === "start") {
-    await kirimPesanBot(env, chatId, `<b>Simple-WMS</b> 🤖\n\nPerintah:\n/stok [kode] — cek stok\n/menipis — stok di bawah reorder\n/gudang — daftar gudang\n/tambah &lt;kode&gt; &lt;qty&gt; — tambah stok ONLINE\n/kurangi &lt;kode&gt; &lt;qty&gt; — kurangi stok ONLINE\n/transfer — transfer pending\n/opname — opname menunggu approval\n/daftar — minta akses admin\n/batal — batalkan sesi kenalan`, msgId);
+    await kirimPesanBot(env, chatId, `<b>Simple-WMS</b> 🤖\n\nPerintah:\n/stok [kode] — cek stok\n/menipis — stok di bawah reorder\n/laba [7h|30h] — ringkasan laba per MP\n/gudang — daftar gudang\n/tambah &lt;kode&gt; &lt;qty&gt; — tambah stok ONLINE\n/kurangi &lt;kode&gt; &lt;qty&gt; — kurangi stok ONLINE\n/transfer — transfer pending\n/opname — opname menunggu approval\n/daftar — minta akses admin\n/batal — batalkan sesi kenalan`, msgId);
     return;
   }
   if (cmd === "daftar") {
@@ -182,6 +183,39 @@ async function tanganiCommand(env: Env, tgId: string, chatId: number, msgId: num
       return;
     }
     await kirimPesanBot(env, chatId, `<b>Stok menipis</b>\n` + results.map((r) => `<code>${esc(r.sku)}</code> ${esc(r.nama_accurate)}: <b>${r.qty}</b> (min ${r.stok_min})`).join("\n"), msgId);
+    return;
+  }
+  if (cmd === "laba") {
+    const arg = (args[0] || "7h").toLowerCase();
+    const hari = arg === "30h" ? 30 : 7;
+    const sampai = Math.floor(Date.now() / 1000);
+    const dari = sampai - hari * 86400;
+    const daftar = await listOrder(env.DB, { dari, sampai, limit: 500 });
+    if (daftar.length === 0) {
+      await kirimPesanBot(env, chatId, `Belum ada order ${hari} hari terakhir.`, msgId);
+      return;
+    }
+    const perMp: Record<string, { order: number; omzet: number; laba: number }> = {};
+    let totalOmzet = 0;
+    let totalLaba = 0;
+    for (const h of daftar) {
+      const d = await ambilOrder(env.DB, h.marketplace, h.no_pesanan);
+      if (!d) continue;
+      const r = hitungLaba(d.items, d.fees, d.pajak_pph, d.pajak_ppn_persen);
+      const agg = perMp[h.marketplace] ?? { order: 0, omzet: 0, laba: 0 };
+      agg.order += 1;
+      agg.omzet += r.omzet;
+      agg.laba += r.laba;
+      perMp[h.marketplace] = agg;
+      totalOmzet += r.omzet;
+      totalLaba += r.laba;
+    }
+    const baris = [`<b>Laba ${hari}h</b> — ${daftar.length} order`];
+    for (const [mp, a] of Object.entries(perMp).sort((x, y) => y[1].laba - x[1].laba)) {
+      baris.push(`${esc(mp)}: ${a.order} order, omzet <b>${a.omzet}</b>, laba <b>${a.laba}</b>`);
+    }
+    baris.push(`Total omzet <b>${totalOmzet}</b>, laba <b>${totalLaba}</b>`);
+    await kirimPesanBot(env, chatId, baris.join("\n"), msgId);
     return;
   }
 
