@@ -109,11 +109,35 @@ export function SumberDataProvider({ children }: { children: ReactNode }) {
           (async () => {
             const mod = await import("./data/real");
             const ds = mod.makeRealDataSource(() => roleRef.current);
-            const s = await ds.getSession();
-            if (batal) return;
-            setRole(s.role);
-            setDataReal(ds);
-            setStatusAuth("siap");
+            try {
+              const s = await ds.getSession();
+              if (batal) return;
+              setRole(s.role);
+              setDataReal(ds);
+              setStatusAuth("siap");
+              return;
+            } catch {
+              // Tanpa sesi web: coba auto-login TMA bila dibuka dari Telegram.
+              const w: unknown = window;
+              const initData = typeof w === "object" && w !== null && "Telegram" in w &&
+                typeof w.Telegram === "object" && w.Telegram !== null && "WebApp" in w.Telegram &&
+                typeof w.Telegram.WebApp === "object" && w.Telegram.WebApp !== null && "initData" in w.Telegram.WebApp &&
+                typeof w.Telegram.WebApp.initData === "string" ? w.Telegram.WebApp.initData : "";
+              if (!initData) throw new Error("Belum login. Masuk lewat halaman login.");
+              const r = await fetch("/api/auth/tma", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ initData }),
+                credentials: "include",
+              });
+              const j = (await r.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
+              if (!r.ok || !j?.ok) throw new Error(j?.error ?? "Auto-login Telegram gagal. Masuk lewat halaman login.");
+              const s = await ds.getSession();
+              if (batal) return;
+              setRole(s.role);
+              setDataReal(ds);
+              setStatusAuth("siap");
+            }
           })(),
           jeda,
         ]);

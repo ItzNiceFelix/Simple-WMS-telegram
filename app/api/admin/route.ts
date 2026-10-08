@@ -9,6 +9,31 @@ import { konfirmasiKeyword } from "@/lib/d1/kamus";
 import { normalisasiNama, tambahProduk } from "@/lib/d1/produk";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
 
+// Teks identik jalur bot (dashboard-prd-v3b §5.2 S6.1; handleApprovalCallback.js:125, handleAksesBaru.js:21).
+const PESAN_SETUJU = "Sudah disetujui! Boleh kenalan dulu, namanya siapa?";
+const PESAN_TOLAK = "Maaf, saat ini belum bisa saya bantu ya.";
+
+/** Best-effort via Bot API (pola minta-kode). Gagal → false, tanpa rollback status. */
+async function beritahuTarget(chatId: number, teks: string): Promise<boolean> {
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) {
+    console.error("[admin_approve_notif_gagal] TELEGRAM_BOT_TOKEN belum diset.");
+    return false;
+  }
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, text: teks }),
+    });
+    if (!res.ok) throw new Error(`sendMessage gagal: ${res.status}`);
+    return true;
+  } catch (e) {
+    console.error("[admin_approve_notif_gagal]", e instanceof Error ? e.message : e);
+    return false;
+  }
+}
+
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
@@ -46,7 +71,9 @@ export async function POST(request: Request) {
       if (h.error.includes("tidak ada")) return json({ ok: false, error: "Permintaan akses tidak ditemukan." }, 404);
       return json({ ok: false, error: h.error }, h.status);
     }
-    return json({ ok: true, target_user_id: String(target), status: h.status, notifikasi_terkirim: false });
+    const setuju = aksi === "approve-akses";
+    const terkirim = await beritahuTarget(target, setuju ? PESAN_SETUJU : PESAN_TOLAK);
+    return json({ ok: true, target_user_id: String(target), status: h.status, notifikasi_terkirim: terkirim });
   }
   if (aksi === "tambah-produk") {
     if (!user.is_admin) return json({ ok: false, error: "Akses ditolak. Hubungi owner." }, 403);
