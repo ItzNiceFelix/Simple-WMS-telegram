@@ -30,13 +30,16 @@
    siap (dry-run default). Butuh `GOOGLE_APPLICATION_CREDENTIALS`
    (service account Firestore) — tidak ada di mesin ini. Jalankan dari
    mesin yang punya akses Firebase, atau kirim service account.
-2. **`TELEGRAM_BOT_TOKEN` worker**: `wrangler secret put TELEGRAM_BOT_TOKEN`
-   agar `minta-kode` bisa kirim via bot (sekarang 503 yang benar).
+2. **Secrets bot (WAJIB sebelum uji Telegram)**: `wrangler secret put
+   TELEGRAM_BOT_TOKEN` + `wrangler secret put TELEGRAM_WEBHOOK_SECRET`,
+   lalu daftarkan webhook (`setWebhook` + `secret_token` sama). Tanpa ini:
+   `minta-kode` 503, webhook tanpa secret lolos 200, balasan `/start /stok`
+   tak terkirim. Uji `/start /stok /tambah` + cron drain (`wrangler tail`)
+   MENUNGGU secrets ini.
 3. **Token `ghp_…` di chat**: REVOKE di github.com/settings/tokens (bocor).
 4. **CI workflow**: `.github/workflows/` belum ter-push (token tanpa scope
    `workflow`) — tambah manual via web atau token baru.
-5. **Bot Telegram → Worker** (Fase 2), **Excel import/export** (Fase 2),
-   **modul e-commerce** (Fase 3) — sesuai PRD.
+5. **Modul e-commerce** (Fase 3) — sesuai PRD.
 
 
 ## Update — Fase 1 SELESAI PENUH ✅ (2026-10-08 pagi)
@@ -52,6 +55,18 @@
   (empty state benar untuk DB kosong).
 - Produksi: versi `4b0ea8ce` live, D1 bersih kembali.
 - Commit: `8605e67`, ter-push ke repo publik.
+
+## Update — Fase 2 TERDEPLOY ✅ (2026-10-08 siang)
+
+- Bot webhook+command, notify queue+cron `*/5`, Excel import/export live
+  (versi `b177de30`, 100% traffic, triggers aktif).
+- Fix migrasi supergroup (pola scaFlow v13): webhook tangani
+  `migrate_to/from_chat_id`; drain update `chat_id` + retry sekali ke chat
+  baru. Notify test `3/3` hijau; typecheck `0 error`.
+- Verifikasi produksi: health `db:up`; webhook POST → 200; `/masuk`+`/stok`
+  200; Excel template 3 baris preview 3/3 → konfirmasi 3 → stok terbaca
+  benar → export 3 baris cocok. Data uji DIBERSIHKAN (D1 kosong kembali).
+- Commit: `04fb722`, ter-push ke repo publik.
 ## Cara pakai sekarang
 
 1. Buka `https://simple-wms-telegram.bagus-deva-nov-p.workers.dev/api/setup/owner`
