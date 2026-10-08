@@ -1,18 +1,24 @@
 "use client";
 
 import type { ReactNode } from "react";
+import { usePathname } from "next/navigation";
 import { ShieldCheck } from "lucide-react";
 
 import { ThemeToggle } from "@/components/dashboard/theme-toggle";
 import { RoleSwitcher } from "@/components/dashboard/role-switcher";
 import { AppSidebar } from "@/components/dashboard/app-sidebar";
 import { BottomNav } from "@/components/dashboard/bottom-nav";
-import { BukaDariTelegram } from "@/components/dashboard/buka-dari-telegram";
 import { LayarAuthError } from "@/components/dashboard/layar-auth-error";
 import { SplashAwal } from "@/components/dashboard/splash-awal";
 import { useSumberData } from "@/lib/dashboard/sumber-data";
 
 export function AppShell({ children }: { children: ReactNode }) {
+  const pathname = usePathname();
+  // Halaman publik (login) bebas dari gerbang sesi — render langsung.
+  if (pathname === "/masuk") {
+    return <>{children}</>;
+  }
+
   const { statusAuth, pesanAuth, coba } = useSumberData();
 
   // Inisialisasi sesi: tahan render konten agar halaman tidak menembak data source
