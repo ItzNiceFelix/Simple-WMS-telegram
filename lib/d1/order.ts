@@ -3,6 +3,14 @@ import { gagal, sekarang, type Hasil } from "./db";
 import { ambilProduk } from "./produk";
 import { bacaQty, GUDANG_ONLINE } from "./stok";
 
+/**
+ * Porsi satu SKU dari laba order (untuk filter `sku`): omzet/HPP dihitung dari item SKU itu;
+ * biaya+pajak dialokasikan proporsional subtotal/omzet. `biaya` di sini = porsi biaya+pph+ppn
+ * supaya `omzet - hpp - biaya = laba` tetap konsisten dengan bentuk baris rekap.
+ * ponytail: pembagian fee basis-persen per SKU diabaikan (fee dihitung level-order lalu
+ * dialokasikan); cukup untuk rekap per-SKU, ganti bila perlu rincian fee per item.
+ */
+
 export type OrderItem = { sku: string; qty: number; harga_satuan: number; hpp_snapshot: number };
 export type OrderFee = { jenis: string; basis: "flat" | "persen"; nilai: number };
 export type RingkasanLaba = { omzet: number; hpp: number; biaya: number; pph: number; ppn: number; laba: number; margin: number };
@@ -26,6 +34,28 @@ export function alokasiLabaSku(items: OrderItem[], r: RingkasanLaba): Record<str
     keluar[i.sku] = sub - i.qty * i.hpp_snapshot - ((r.biaya + r.pph + r.ppn) * sub) / r.omzet;
   }
   return keluar;
+}
+
+/** Porsi satu SKU dari laba order — bentuk field sama dengan baris rekap (omzet/hpp/biaya/pph/ppn/laba/margin). */
+export type PorsiSku = { omzet: number; hpp: number; biaya: number; pph: number; ppn: number; laba: number; margin: number; porsi_sku: true };
+
+export function porsiSku(items: OrderItem[], r: RingkasanLaba, sku: string): PorsiSku {
+  const alokasi = alokasiLabaSku(items, r)[sku] ?? 0;
+  let omzet = 0;
+  let hpp = 0;
+  for (const i of items) {
+    if (i.sku !== sku) continue;
+    omzet += i.qty * i.harga_satuan;
+    hpp += i.qty * i.hpp_snapshot;
+  }
+  return {
+    omzet, hpp,
+    biaya: omzet - hpp - alokasi,
+    pph: 0, ppn: 0,
+    laba: alokasi,
+    margin: omzet > 0 ? (alokasi / omzet) * 100 : 0,
+    porsi_sku: true,
+  };
 }
 
 export type BarisPesanan = {

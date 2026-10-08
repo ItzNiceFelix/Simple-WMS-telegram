@@ -3,11 +3,14 @@
 // POST { aksi:'konfirmasi', batch_id } → imporPesanan → { ok, order, item }.
 // POST { aksi:'transisi', marketplace, no_pesanan, ke } → transisiFulfill.
 // GET ?aksi=rekap&dari=&sampai=&mp=&status=&sku=&limit= → { ok, orders:[...rincian], agregat }.
+//   sku diisi → tiap baris berisi PORSI SKU itu (porsiSku) + `porsi_sku: true`,
+//   bukan total order; agregat = jumlah porsi. Lihat hitungRekap.
 // GET ?aksi=pdf&<filter sama> → application/pdf (tabel rekap; baris+agregat dari hitungRekap yang sama).
+//   Saat `sku` diisi, tabel PDF menganotasi " (porsi SKU X)" pada judul.
 // Semua owner/admin (tulis + rekap laba sensitif).
 import { getDb } from "@/lib/d1/db";
 import { ambilProduk } from "@/lib/d1/produk";
-import { ambilOrder, hitungLaba, imporPesanan, listOrder, transisiFulfill, type BarisPesanan, type OrderDetail } from "@/lib/d1/order";
+import { ambilOrder, hitungLaba, imporPesanan, listOrder, porsiSku, transisiFulfill, type BarisPesanan, type OrderDetail } from "@/lib/d1/order";
 import { bangunPdfRekap } from "@/lib/d1/rekapPdf";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
 
@@ -22,7 +25,7 @@ const KE_VALID = ["pack", "kirim", "selesai", "batal"];
 const MAKS_BARIS = 5000;
 
 type BarisGagal = { baris: number; pesan: string };
-type RincianOrder = OrderDetail & { laba: number; margin: number; omzet: number; hpp: number; biaya: number; pph: number; ppn: number };
+type RincianOrder = OrderDetail & { laba: number; margin: number; omzet: number; hpp: number; biaya: number; pph: number; ppn: number; porsi_sku?: true };
 type AgregatRekap = { order: number; omzet: number; hpp: number; biaya: number; pph: number; ppn: number; laba: number; margin: number };
 function teks(v: unknown): string {
   return typeof v === "string" ? v.trim() : v == null ? "" : String(v).trim();
@@ -127,10 +130,13 @@ async function hitungRekap(db: D1Database, f: FilterRekap): Promise<{ orders: Ri
     if (!d) continue;
     if (f.sku && !d.items.some((i) => i.sku === f.sku)) continue;
     const r = hitungLaba(d.items, d.fees, d.pajak_pph, d.pajak_ppn_persen);
-    orders.push({ ...d, omzet: r.omzet, hpp: r.hpp, biaya: r.biaya, pph: r.pph, ppn: r.ppn, laba: r.laba, margin: r.margin });
+    // Filter sku = rekap per SKU: angka baris HARUS porsi SKU itu, bukan total order
+    // (order multi-SKU akan menyesatkan bila total). Tanpa filter sku: total order.
+    const angka = f.sku ? porsiSku(d.items, r, f.sku) : { omzet: r.omzet, hpp: r.hpp, biaya: r.biaya, pph: r.pph, ppn: r.ppn, laba: r.laba, margin: r.margin };
+    orders.push({ ...d, ...angka });
     agregat.order += 1;
-    agregat.omzet += r.omzet; agregat.hpp += r.hpp; agregat.biaya += r.biaya;
-    agregat.pph += r.pph; agregat.ppn += r.ppn; agregat.laba += r.laba;
+    agregat.omzet += angka.omzet; agregat.hpp += angka.hpp; agregat.biaya += angka.biaya;
+    agregat.pph += angka.pph; agregat.ppn += angka.ppn; agregat.laba += angka.laba;
   }
   agregat.margin = agregat.omzet > 0 ? (agregat.laba / agregat.omzet) * 100 : 0;
   return { orders, agregat };
@@ -153,7 +159,8 @@ export async function GET(request: Request) {
       no_pesanan: o.no_pesanan, marketplace: o.marketplace,
       omzet: o.omzet, hpp: o.hpp, biaya: o.biaya, pph: o.pph, ppn: o.ppn, laba: o.laba,
     })),
-    agregat
+    agregat,
+    f.filter.sku ? `porsi SKU ${f.filter.sku}` : undefined
   );
   return new Response(new Uint8Array(bytes), {
     status: 200,

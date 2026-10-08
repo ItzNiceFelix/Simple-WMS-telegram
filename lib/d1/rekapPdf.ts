@@ -26,8 +26,8 @@ function rp(n: number): string {
   return Math.round(n).toLocaleString("id-ID");
 }
 
-/** Tabel rekap satu/lebih halaman + baris total. */
-export async function bangunPdfRekap(baris: BarisRekapPdf[], agregat: AgregatRekapPdf): Promise<Uint8Array> {
+/** Tabel rekap satu/lebih halaman + baris total. `catatan` = anotasi judul (mis. "porsi SKU X"). */
+export async function bangunPdfRekap(baris: BarisRekapPdf[], agregat: AgregatRekapPdf, catatan?: string): Promise<Uint8Array> {
   const doc = await PDFDocument.create();
   const biasa = await doc.embedFont(StandardFonts.Helvetica);
   const tebal = await doc.embedFont(StandardFonts.HelveticaBold);
@@ -39,7 +39,7 @@ export async function bangunPdfRekap(baris: BarisRekapPdf[], agregat: AgregatRek
 
   let hal = doc.addPage([LEBAR, TINGGI]);
   let y = TINGGI - MARGIN;
-  hal.drawText("Rekap Laba Pesanan", { x: x0, y, size: JUDUL_FS, font: tebal });
+  hal.drawText(catatan ? `Rekap Laba Pesanan (${catatan})` : "Rekap Laba Pesanan", { x: x0, y, size: JUDUL_FS, font: tebal });
   y -= 18;
   hal.drawText(`Dicetak ${new Date().toISOString().slice(0, 10)} — ${agregat.order} order`, { x: x0, y, size: ISI_FS, font: biasa });
   y -= 20;

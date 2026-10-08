@@ -33,7 +33,7 @@ import { Field, FieldLabel } from "@/components/ui/field";
 import { formatAngka, formatRupiah } from "@/lib/dashboard/format";
 import type { OrderDetail } from "@/lib/d1/order";
 
-type RincianOrder = OrderDetail & { laba: number; margin: number; omzet: number };
+type RincianOrder = OrderDetail & { laba: number; margin: number; omzet: number; hpp: number; biaya: number; pph: number; ppn: number; porsi_sku?: true };
 type Agregat = {
   order: number;
   omzet: number;
@@ -47,8 +47,12 @@ type Agregat = {
 
 /** Unduh rekap sebagai CSV di klien (sumber data = GET rekap). */
 function unduhCsv(orders: RincianOrder[]): void {
+  // Saat filter SKU aktif, angka baris = porsi SKU → header harus bilang begitu.
+  const porsi = orders.some((o) => o.porsi_sku);
   const baris = [
-    "NoPesanan,Marketplace,Tanggal,Buyer,Status,Omzet,Laba,Margin%",
+    porsi
+      ? "NoPesanan,Marketplace,Tanggal,Buyer,Status,Omzet(porsiSKU),Laba(porsiSKU),Margin%"
+      : "NoPesanan,Marketplace,Tanggal,Buyer,Status,Omzet,Laba,Margin%",
     ...orders.map((o) =>
       [
         o.no_pesanan,
@@ -233,6 +237,13 @@ function RekapLaba() {
           </div>
         ) : (
           <>
+            {skuTertunda ? (
+              <p className="text-xs text-muted-foreground" data-testid="catatan-porsi-sku">
+                Filter SKU <span className="font-medium">{skuTertunda}</span> aktif — angka omzet/hpp/laba adalah{" "}
+                <span className="font-medium">porsi SKU itu</span> (biaya &amp; pajak dialokasikan proporsional),
+                bukan total order.
+              </p>
+            ) : null}
             <div className="grid grid-cols-2 gap-3 md:grid-cols-4" data-testid="kartu-agregat-laba">
               <Kartu label="Omzet" nilai={formatRupiah(agregat.omzet)} />
               <Kartu label="HPP" nilai={formatRupiah(agregat.hpp)} />
@@ -262,8 +273,8 @@ function RekapLaba() {
                       <TableHead>MP</TableHead>
                       <TableHead>Tanggal</TableHead>
                       <TableHead>Status</TableHead>
-                      <TableHead className="text-right">Omzet</TableHead>
-                      <TableHead className="text-right">Laba</TableHead>
+                      <TableHead className="text-right">{skuTertunda ? "Omzet (porsi SKU)" : "Omzet"}</TableHead>
+                      <TableHead className="text-right">{skuTertunda ? "Laba (porsi SKU)" : "Laba"}</TableHead>
                       <TableHead className="text-right">Margin</TableHead>
                     </TableRow>
                   </TableHeader>

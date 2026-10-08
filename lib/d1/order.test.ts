@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { alokasiLabaSku, ambilOrder, hitungLaba, imporPesanan, listOrder, transisiFulfill, type BarisPesanan } from "./order";
+import { alokasiLabaSku, ambilOrder, hitungLaba, imporPesanan, listOrder, porsiSku, transisiFulfill, type BarisPesanan, type OrderItem } from "./order";
 import type { Hasil } from "./db";
 
 describe("hitungLaba", () => {
@@ -153,6 +153,49 @@ function statusGagal(r: Hasil<unknown>): number {
 }
 
 const barisA = (no: string, qty: number): BarisPesanan => ({ marketplace: "shopee", no_pesanan: no, tanggal: 1728288000, buyer: "Budi", sku: "A", qty, harga_satuan: 100000 });
+
+describe("porsiSku (filter rekap per SKU)", () => {
+  it("order 2 SKU: porsi = omzet/HPP/laba SKU itu, bukan total order", () => {
+    const items: OrderItem[] = [
+      { sku: "A", qty: 1, harga_satuan: 100000, hpp_snapshot: 60000 },
+      { sku: "B", qty: 1, harga_satuan: 100000, hpp_snapshot: 50000 },
+    ];
+    const r = hitungLaba(items, [{ jenis: "admin", basis: "persen", nilai: 10 }], true, 0);
+    const a = porsiSku(items, r, "A");
+    assert.equal(a.omzet, 100000, "omzet = porsi SKU A, bukan 200000");
+    assert.equal(a.hpp, 60000);
+    assert.notEqual(a.laba, r.laba, "laba porsi bukan laba total order");
+    assert.equal(a.porsi_sku, true);
+    assert.equal(a.pph, 0);
+    assert.equal(a.ppn, 0);
+    // omzet - hpp - biaya = laba tetap konsisten dengan bentuk RincianOrder.
+    assert.equal(a.omzet - a.hpp - a.biaya, a.laba);
+    const b = porsiSku(items, r, "B");
+    assert.equal(a.laba + b.laba, r.laba, "jumlah porsi = laba order");
+    assert.equal(a.omzet + b.omzet, r.omzet);
+    assert.equal(a.hpp + b.hpp, r.hpp);
+  });
+
+  it("tanpa filter sku: angka baris tetap total order", () => {
+    const items: OrderItem[] = [
+      { sku: "A", qty: 1, harga_satuan: 100000, hpp_snapshot: 60000 },
+      { sku: "B", qty: 1, harga_satuan: 100000, hpp_snapshot: 50000 },
+    ];
+    const r = hitungLaba(items, [], false, 0);
+    assert.equal(r.omzet, 200000);
+    assert.equal(r.laba, 90000);
+  });
+
+  it("SKU tak ada di order → porsi nol (bukan total order)", () => {
+    const items: OrderItem[] = [{ sku: "A", qty: 2, harga_satuan: 50000, hpp_snapshot: 30000 }];
+    const r = hitungLaba(items, [], false, 0);
+    const c = porsiSku(items, r, "C");
+    assert.equal(c.omzet, 0);
+    assert.equal(c.hpp, 0);
+    assert.equal(c.laba, 0);
+    assert.equal(c.margin, 0);
+  });
+});
 
 describe("transisiFulfill", () => {
   it("pack kurangi stok + movement jual_mp", async () => {
