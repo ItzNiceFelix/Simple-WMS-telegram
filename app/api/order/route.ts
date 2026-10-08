@@ -3,10 +3,12 @@
 // POST { aksi:'konfirmasi', batch_id } → imporPesanan → { ok, order, item }.
 // POST { aksi:'transisi', marketplace, no_pesanan, ke } → transisiFulfill.
 // GET ?aksi=rekap&dari=&sampai=&mp=&status=&sku=&limit= → { ok, orders:[...rincian], agregat }.
+// GET ?aksi=pdf&<filter sama> → application/pdf (tabel rekap; baris+agregat dari hitungRekap yang sama).
 // Semua owner/admin (tulis + rekap laba sensitif).
 import { getDb } from "@/lib/d1/db";
 import { ambilProduk } from "@/lib/d1/produk";
 import { ambilOrder, hitungLaba, imporPesanan, listOrder, transisiFulfill, type BarisPesanan, type OrderDetail } from "@/lib/d1/order";
+import { bangunPdfRekap } from "@/lib/d1/rekapPdf";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
 
 export const runtime = "nodejs";
@@ -20,7 +22,8 @@ const KE_VALID = ["pack", "kirim", "selesai", "batal"];
 const MAKS_BARIS = 5000;
 
 type BarisGagal = { baris: number; pesan: string };
-type RincianOrder = OrderDetail & { laba: number; margin: number; omzet: number };
+type RincianOrder = OrderDetail & { laba: number; margin: number; omzet: number; hpp: number; biaya: number; pph: number; ppn: number };
+type AgregatRekap = { order: number; omzet: number; hpp: number; biaya: number; pph: number; ppn: number; laba: number; margin: number };
 function teks(v: unknown): string {
   return typeof v === "string" ? v.trim() : v == null ? "" : String(v).trim();
 }
@@ -86,46 +89,80 @@ async function validasiBarisPesanan(db: D1Database, row: Record<string, unknown>
   };
 }
 
-export async function GET(request: Request) {
-  const sesi = await sesiRoute(request, 60);
-  if (!sesi.ok) return json({ ok: false, error: sesi.error }, sesi.status);
-  if (!sesi.user.is_admin) return json({ ok: false, error: "Akses ditolak." }, 403);
-  const url = new URL(request.url);
-  if (url.searchParams.get("aksi") !== "rekap") return json({ ok: true, header: HEADER_PESANAN });
+type FilterRekap = { mp?: string; status?: string; sku?: string; dari?: number; sampai?: number; limit: number };
+
+/** Filter query string untuk rekap JSON & PDF (satu sumber agar tak drift). */
+function filterDariQuery(url: URL): { ok: true; filter: FilterRekap } | { ok: false; error: string } {
   const dariTeks = url.searchParams.get("dari") || "";
   const sampaiTeks = url.searchParams.get("sampai") || "";
-  let dari: number | undefined;
-  let sampai: number | undefined;
+  const filter: FilterRekap = {
+    mp: url.searchParams.get("mp")?.trim().toLowerCase() || undefined,
+    status: url.searchParams.get("status")?.trim() || undefined,
+    sku: url.searchParams.get("sku")?.trim().toUpperCase() || undefined,
+    limit: ((): number => {
+      const n = Number(url.searchParams.get("limit"));
+      return Number.isInteger(n) && n > 0 ? Math.min(n, 500) : 100;
+    })(),
+  };
   if (dariTeks) {
-    dari = tanggalKeEpoch(dariTeks) ?? undefined;
-    if (dari === undefined) return json({ ok: false, error: "Param dari harus YYYY-MM-DD." }, 400);
+    const d = tanggalKeEpoch(dariTeks);
+    if (d === null) return { ok: false, error: "Param dari harus YYYY-MM-DD." };
+    filter.dari = d;
   }
   if (sampaiTeks) {
     const s = tanggalKeEpoch(sampaiTeks);
-    if (s === null) return json({ ok: false, error: "Param sampai harus YYYY-MM-DD." }, 400);
-    sampai = s + 86399;
+    if (s === null) return { ok: false, error: "Param sampai harus YYYY-MM-DD." };
+    filter.sampai = s + 86399;
   }
-  const db = getDb();
-  const mp = url.searchParams.get("mp")?.trim().toLowerCase() || undefined;
-  const status = url.searchParams.get("status")?.trim() || undefined;
-  const sku = url.searchParams.get("sku")?.trim().toUpperCase() || undefined;
-  const limitRaw = Number(url.searchParams.get("limit"));
-  const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 500) : 100;
-  const daftar = await listOrder(db, { mp, status, dari, sampai, limit });
+  return { ok: true, filter };
+}
+
+/** Baris + agregat rekap (dipakai JSON ?aksi=rekap dan PDF ?aksi=pdf). */
+async function hitungRekap(db: D1Database, f: FilterRekap): Promise<{ orders: RincianOrder[]; agregat: AgregatRekap }> {
+  const daftar = await listOrder(db, { mp: f.mp, status: f.status, dari: f.dari, sampai: f.sampai, limit: f.limit });
   const orders: RincianOrder[] = [];
   const agregat = { order: 0, omzet: 0, hpp: 0, biaya: 0, pph: 0, ppn: 0, laba: 0, margin: 0 };
   for (const h of daftar) {
     const d = await ambilOrder(db, h.marketplace, h.no_pesanan);
     if (!d) continue;
-    if (sku && !d.items.some((i) => i.sku === sku)) continue;
+    if (f.sku && !d.items.some((i) => i.sku === f.sku)) continue;
     const r = hitungLaba(d.items, d.fees, d.pajak_pph, d.pajak_ppn_persen);
-    orders.push({ ...d, omzet: r.omzet, laba: r.laba, margin: r.margin });
+    orders.push({ ...d, omzet: r.omzet, hpp: r.hpp, biaya: r.biaya, pph: r.pph, ppn: r.ppn, laba: r.laba, margin: r.margin });
     agregat.order += 1;
     agregat.omzet += r.omzet; agregat.hpp += r.hpp; agregat.biaya += r.biaya;
     agregat.pph += r.pph; agregat.ppn += r.ppn; agregat.laba += r.laba;
   }
   agregat.margin = agregat.omzet > 0 ? (agregat.laba / agregat.omzet) * 100 : 0;
-  return json({ ok: true, orders, agregat });
+  return { orders, agregat };
+}
+
+export async function GET(request: Request) {
+  const sesi = await sesiRoute(request, 60);
+  if (!sesi.ok) return json({ ok: false, error: sesi.error }, sesi.status);
+  if (!sesi.user.is_admin) return json({ ok: false, error: "Akses ditolak." }, 403);
+  const url = new URL(request.url);
+  const aksi = url.searchParams.get("aksi");
+  if (aksi !== "rekap" && aksi !== "pdf") return json({ ok: true, header: HEADER_PESANAN });
+  const f = filterDariQuery(url);
+  if (!f.ok) return json({ ok: false, error: f.error }, 400);
+  const db = getDb();
+  const { orders, agregat } = await hitungRekap(db, f.filter);
+  if (aksi === "rekap") return json({ ok: true, orders, agregat });
+  const bytes = await bangunPdfRekap(
+    orders.map((o) => ({
+      no_pesanan: o.no_pesanan, marketplace: o.marketplace,
+      omzet: o.omzet, hpp: o.hpp, biaya: o.biaya, pph: o.pph, ppn: o.ppn, laba: o.laba,
+    })),
+    agregat
+  );
+  return new Response(new Uint8Array(bytes), {
+    status: 200,
+    headers: {
+      "content-type": "application/pdf",
+      "content-disposition": `attachment; filename="rekap-laba.pdf"`,
+      "cache-control": "no-store",
+    },
+  });
 }
 
 export async function POST(request: Request) {

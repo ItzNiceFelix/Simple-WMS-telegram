@@ -45,7 +45,7 @@ type Agregat = {
   margin: number;
 };
 
-/** Unduh rekap kini sebagai CSV (sumber data = GET rekap). */
+/** Unduh rekap sebagai CSV di klien (sumber data = GET rekap). */
 function unduhCsv(orders: RincianOrder[]): void {
   const baris = [
     "NoPesanan,Marketplace,Tanggal,Buyer,Status,Omzet,Laba,Margin%",

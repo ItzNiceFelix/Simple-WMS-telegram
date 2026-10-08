@@ -5,6 +5,11 @@
 import { test, expect } from "@playwright/test";
 import type { Page } from "@playwright/test";
 
+// Fixture konsisten dgn hitungLaba (lib/d1/order.ts):
+// omzet 200000; hpp 2×60000; biaya admin 4% = 8000; pph 5‰ = 1000;
+// laba = 200000 − 120000 − 8000 − 1000 = 71000 (margin 35.5%).
+// Agregat 1 order sama nilainya — sengaja identik agar selisih fixture
+// per-order vs agregat tidak lagi menyesatkan.
 const REKAP = {
   ok: true,
   orders: [
@@ -19,8 +24,12 @@ const REKAP = {
       items: [{ sku: "BRG-001", qty: 2, harga_satuan: 100000, hpp_snapshot: 60000, subtotal: 200000 }],
       fees: [{ jenis: "admin", basis: "persen", nilai: 4, amount: 8000 }],
       omzet: 200000,
-      laba: 111000,
-      margin: 55.5,
+      hpp: 120000,
+      biaya: 8000,
+      pph: 1000,
+      ppn: 0,
+      laba: 71000,
+      margin: 35.5,
     },
   ],
   agregat: { order: 1, omzet: 200000, hpp: 120000, biaya: 8000, pph: 1000, ppn: 0, laba: 71000, margin: 35.5 },

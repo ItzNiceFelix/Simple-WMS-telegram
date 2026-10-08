@@ -37,6 +37,9 @@ playwright/.cache/
 # TS incremental
 *.tsbuildinfo
 
+# Bundel sementara test:worker (esbuild → .tmp-*.mjs)
+.tmp-*.mjs
+
 # Artifact tooling browser (MCP/dev lokal)
 .playwright-mcp/
 
