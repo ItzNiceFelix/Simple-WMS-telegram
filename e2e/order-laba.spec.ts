@@ -64,6 +64,7 @@ test("laba: render + kartu agregat + filter tampil", async ({ page }) => {
   await page.goto("/laba?role=owner");
   await expect(page.getByTestId("muat-ulang-laba")).toBeVisible();
   await expect(page.getByTestId("export-laba")).toBeVisible();
+  await expect(page.getByTestId("export-laba-pdf")).toBeVisible();
   await expect(page.getByTestId("filter-dari-laba")).toBeVisible();
   await expect(page.getByTestId("filter-sampai-laba")).toBeVisible();
   await expect(page.getByTestId("filter-mp-laba")).toBeVisible();

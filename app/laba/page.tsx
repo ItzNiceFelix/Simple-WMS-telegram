@@ -4,7 +4,7 @@
 // Fetch LANGSUNG /api/order?aksi=rekap (kontrak DataSource beku Wave 3a).
 import { useCallback, useDeferredValue, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { ChartColumn, FileDown, RotateCcw } from "lucide-react";
+import { ChartColumn, FileDown, FileType, RotateCcw } from "lucide-react";
 
 import { PageHeader } from "@/components/dashboard/page-header";
 import { ButuhAkses } from "@/components/dashboard/butuh-akses";
@@ -149,6 +149,24 @@ function RekapLaba() {
             >
               <FileDown data-icon="inline-start" />
               Export
+            </Button>
+            <Button
+              size="lg"
+              variant="outline"
+              className="h-11 md:h-8"
+              data-testid="export-laba-pdf"
+              disabled={!orders || orders.length === 0}
+              onClick={() => {
+                const q = new URLSearchParams({ aksi: "pdf", limit: "500" });
+                if (dari) q.set("dari", dari);
+                if (sampai) q.set("sampai", sampai);
+                if (mpTertunda) q.set("mp", mpTertunda);
+                if (skuTertunda) q.set("sku", skuTertunda);
+                window.open(`/api/order?${q}`, "_blank");
+              }}
+            >
+              <FileType data-icon="inline-start" />
+              Export PDF
             </Button>
           </div>
         }
