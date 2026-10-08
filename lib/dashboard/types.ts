@@ -13,7 +13,9 @@ export type MovementType =
   | "opname"
   | "restock"
   | "koreksi_manual"
-  | "sync_confirmed";
+  | "sync_confirmed"
+  | "jual_mp"
+  | "retur_mp";
 
 export type MovementStatus =
   | "processed"

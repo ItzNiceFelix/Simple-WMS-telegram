@@ -84,6 +84,8 @@ const LABEL_JENIS: Record<MovementType, string> = {
   restock: "Stok masuk",
   koreksi_manual: "Koreksi manual",
   sync_confirmed: "Sinkron dikonfirmasi",
+  jual_mp: "Jual marketplace",
+  retur_mp: "Retur marketplace",
 };
 
 const LABEL_SUMBER: Record<MovementSource, string> = {
