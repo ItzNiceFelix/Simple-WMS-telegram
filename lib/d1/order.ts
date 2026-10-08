@@ -45,6 +45,15 @@ type GrupPesanan = {
 /** Impor batch baris pesanan: kelompok per order, beku hpp_snapshot, fee baris/preset. Idempoten. */
 export async function imporPesanan(db: D1Database, daftar: BarisPesanan[], oleh: string | null): Promise<Hasil<{ order: number; item: number }>> {
   void oleh;
+  // Ruling Task 3→4: validasi lib-level → gagal(400) sebelum CHECK DB melempar.
+  const FEE_VALID = ["admin", "service", "komisi", "ongkir", "voucher", "affiliate", "iklan", "lain"];
+  for (const b of daftar) {
+    if (!Number.isInteger(b.qty) || b.qty < 1) return gagal(400, `Qty ${b.sku} harus bilangan bulat ≥ 1 (order ${b.no_pesanan}).`);
+    if (!Number.isInteger(b.harga_satuan) || b.harga_satuan < 0) return gagal(400, `Harga ${b.sku} harus bilangan bulat ≥ 0 (order ${b.no_pesanan}).`);
+    if (b.fee_jenis !== undefined && !FEE_VALID.includes(b.fee_jenis)) return gagal(400, `Fee ${b.fee_jenis} tak dikenal (order ${b.no_pesanan}).`);
+    if (b.fee_basis !== undefined && b.fee_basis !== "flat" && b.fee_basis !== "persen") return gagal(400, `FeeBasis harus flat/persen (order ${b.no_pesanan}).`);
+    if (b.fee_nilai !== undefined && (!Number.isInteger(b.fee_nilai) || b.fee_nilai < 0)) return gagal(400, `FeeNilai harus ≥ 0 (order ${b.no_pesanan}).`);
+  }
   const grup: Record<string, GrupPesanan> = {};
   const urutan: string[] = [];
   for (const b of daftar) {
@@ -82,6 +91,8 @@ export async function imporPesanan(db: D1Database, daftar: BarisPesanan[], oleh:
     const g = grup[k];
     const omzet = g.items.reduce((a, it) => a + it.qty * it.harga, 0);
     stmts.push(db.prepare("INSERT OR IGNORE INTO orders (marketplace, no_pesanan, tanggal, buyer, pajak_pph, pajak_ppn_persen) VALUES (?, ?, ?, ?, ?, ?)").bind(g.mp, g.no, g.tanggal, g.buyer, g.pph ? 1 : 0, g.ppn));
+    // Ruling Task 3→4: reimport UPDATE header KECUALI status_fulfill (first-wins ditolak).
+    stmts.push(db.prepare("UPDATE orders SET tanggal = ?, buyer = ?, pajak_pph = ?, pajak_ppn_persen = ? WHERE marketplace = ? AND no_pesanan = ?").bind(g.tanggal, g.buyer, g.pph ? 1 : 0, g.ppn, g.mp, g.no));
     for (const it of g.items) {
       stmts.push(db.prepare("INSERT OR REPLACE INTO order_items (marketplace, no_pesanan, sku, qty, harga_satuan, hpp_snapshot, subtotal) VALUES (?, ?, ?, ?, ?, ?, ?)").bind(g.mp, g.no, it.sku, it.qty, it.harga, it.hpp, it.qty * it.harga));
       nItem++;
