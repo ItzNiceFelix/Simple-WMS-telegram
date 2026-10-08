@@ -1,3 +1,14 @@
-# .dev.vars — env lokal Worker (JANGAN commit nilai asli; file ini hanya template).
-# Disalin dari .env untuk dev: NEXTJS_ENV memilih file .env Next yang dimuat Worker lokal.
-NEXTJS_ENV=development
+# .dev.vars.example — template env lokal Worker (JANGAN isi nilai asli di sini).
+# Salin ke .dev.vars (gitignored) lalu isi:  cp .dev.vars.example .dev.vars
+# Secrets produksi via: wrangler secret put <NAMA>  (bukan file ini).
+
+# --- Secrets (WAJIB, isi via wrangler secret put / .dev.vars lokal) ---
+# TELEGRAM_BOT_TOKEN=isi-dari-BotFather
+# TELEGRAM_WEBHOOK_SECRET=string-acak-panjang-min-32
+# SUPER_ADMIN_ID=telegramId-owner-angka
+
+# --- Non-rahasia (sudah default di wrangler.jsonc vars, override bila perlu) ---
+# AI_PROVIDER_TEXT=groq
+# GEMINI_TIMEOUT_MS=120000
+# GEMINI_TOTAL_TIMEOUT_MS=240000
+# DASHBOARD_ALLOWED_ORIGINS=
