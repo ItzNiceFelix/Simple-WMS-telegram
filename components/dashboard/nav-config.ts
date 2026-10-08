@@ -1,9 +1,11 @@
 ﻿// components/dashboard/nav-config.ts
 import {
+  ChartColumn,
   ClipboardCheck,
   ClipboardList,
   History,
   LayoutDashboard,
+  Package,
   PackageSearch,
   Send,
   Settings,
@@ -30,6 +32,8 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/stok", label: "Stok", icon: PackageSearch, roles: ["owner", "admin", "guest"], utama: true },
   { href: "/histori", label: "Histori", icon: History, roles: ["owner", "admin", "guest"], utama: true },
   { href: "/draft", label: "Draft", icon: ClipboardList, roles: ["owner", "admin"], utama: true },
+  { href: "/order", label: "Order", icon: Package, roles: ["owner", "admin"], utama: true },
+  { href: "/laba", label: "Laba", icon: ChartColumn, roles: ["owner", "admin"] },
   { href: "/gudang", label: "Gudang", icon: Warehouse, roles: ["owner"] },
   { href: "/opname-gudang", label: "Opname", icon: ClipboardCheck, roles: ["owner", "admin"] },
   { href: "/permintaan-gudang", label: "Permintaan Gudang", icon: Send, roles: ["owner", "admin"] },
