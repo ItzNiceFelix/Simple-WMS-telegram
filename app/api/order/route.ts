@@ -148,7 +148,12 @@ export async function GET(request: Request) {
   if (!sesi.user.is_admin) return json({ ok: false, error: "Akses ditolak." }, 403);
   const url = new URL(request.url);
   const aksi = url.searchParams.get("aksi");
-  if (aksi !== "rekap" && aksi !== "pdf") return json({ ok: true, header: HEADER_PESANAN });
+  if (aksi !== "rekap" && aksi !== "pdf" && aksi !== "preset") return json({ ok: true, header: HEADER_PESANAN });
+  if (aksi === "preset") {
+    const db = getDb();
+    const { results } = await db.prepare("SELECT marketplace, jenis, basis, nilai FROM mp_fee_presets ORDER BY marketplace, jenis").all<{ marketplace: string; jenis: string; basis: string; nilai: number }>();
+    return json({ ok: true, presets: results });
+  }
   const f = filterDariQuery(url);
   if (!f.ok) return json({ ok: false, error: f.error }, 400);
   const db = getDb();
@@ -181,6 +186,27 @@ export async function POST(request: Request) {
   const aksi = body.aksi as string;
   const db = getDb();
 
+  if (aksi === "preset-tambah") {
+    const mp = teks(body.marketplace).toLowerCase();
+    const jenis = teks(body.jenis).toLowerCase();
+    const basis = teks(body.basis).toLowerCase();
+    const nilai = body.nilai;
+    if (!mp) return json({ ok: false, error: "Marketplace wajib diisi." }, 400);
+    if (!FEE_VALID.includes(jenis)) return json({ ok: false, error: "Jenis fee tak dikenal (admin/service/komisi/ongkir/voucher/affiliate/iklan/lain)." }, 400);
+    if (basis !== "flat" && basis !== "persen") return json({ ok: false, error: "Basis harus flat/persen." }, 400);
+    if (typeof nilai !== "number" || !Number.isInteger(nilai) || nilai < 0) return json({ ok: false, error: "Nilai harus bilangan bulat ≥ 0." }, 400);
+    await db.prepare("INSERT OR REPLACE INTO mp_fee_presets (marketplace, jenis, basis, nilai) VALUES (?, ?, ?, ?)").bind(mp, jenis, basis, nilai).run();
+    return json({ ok: true });
+  }
+
+  if (aksi === "preset-hapus") {
+    const mp = teks(body.marketplace).toLowerCase();
+    const jenis = teks(body.jenis).toLowerCase();
+    if (!mp || !jenis) return json({ ok: false, error: "Marketplace + jenis wajib diisi." }, 400);
+    await db.prepare("DELETE FROM mp_fee_presets WHERE marketplace = ? AND jenis = ?").bind(mp, jenis).run();
+    return json({ ok: true });
+  }
+
   if (aksi === "transisi") {
     const mp = teks(body.marketplace).toLowerCase();
     const no = teks(body.no_pesanan);
@@ -191,7 +217,6 @@ export async function POST(request: Request) {
     if (!hasil.ok) return json({ ok: false, error: hasil.error }, hasil.status);
     return json({ ok: true, status: hasil.status });
   }
-
   if (aksi === "preview") {
     const rows = body.rows;
     if (!Array.isArray(rows) || rows.length === 0) return json({ ok: false, error: "Rows kosong." }, 400);

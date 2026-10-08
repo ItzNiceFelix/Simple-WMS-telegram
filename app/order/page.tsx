@@ -4,7 +4,7 @@
 // Fetch LANGSUNG /api/order (kontrak DataSource beku Wave 3a).
 import { useCallback, useDeferredValue, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { FileUp, PackageSearch, RotateCcw } from "lucide-react";
+import { FileDown, FileUp, PackageSearch, RotateCcw } from "lucide-react";
 
 import { DialogImportExcel } from "@/components/dashboard/dialog-import-excel";
 import { PageHeader } from "@/components/dashboard/page-header";
@@ -158,6 +158,10 @@ function DaftarOrder() {
         deskripsi="Pesanan marketplace + transisi fulfill."
         aksi={
           <div className="flex gap-2">
+            <Button size="lg" variant="outline" className="h-11 md:h-8" data-testid="template-pesanan" onClick={() => window.open("/template-import-produk.xlsx", "_blank")}>
+              <FileDown data-icon="inline-start" />
+              Template
+            </Button>
             <Button size="lg" variant="outline" className="h-11 md:h-8" data-testid="impor-pesanan" onClick={() => setImportOpen(true)}>
               <FileUp data-icon="inline-start" />
               Impor Pesanan

@@ -4,9 +4,10 @@
 // Fetch LANGSUNG /api/order?aksi=rekap (kontrak DataSource beku Wave 3a).
 import { useCallback, useDeferredValue, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { ChartColumn, FileDown, FileType, RotateCcw } from "lucide-react";
+import { ChartColumn, FileDown, FileType, FileUp, RotateCcw } from "lucide-react";
 
 import { PageHeader } from "@/components/dashboard/page-header";
+import { DialogImportExcel } from "@/components/dashboard/dialog-import-excel";
 import { ButuhAkses } from "@/components/dashboard/butuh-akses";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -84,6 +85,7 @@ export default function HalamanLaba() {
 
 function RekapLaba() {
   const [orders, setOrders] = useState<RincianOrder[] | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
   const [agregat, setAgregat] = useState<Agregat | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dari, setDari] = useState("");
@@ -128,6 +130,14 @@ function RekapLaba() {
         deskripsi="Rekap omzet, biaya, pajak, dan laba pesanan."
         aksi={
           <div className="flex gap-2">
+            <Button size="lg" variant="outline" className="h-11 md:h-8" data-testid="template-pesanan" onClick={() => window.open("/template-import-produk.xlsx", "_blank")}>
+              <FileDown data-icon="inline-start" />
+              Template
+            </Button>
+            <Button size="lg" variant="outline" className="h-11 md:h-8" data-testid="impor-pesanan" onClick={() => setImportOpen(true)}>
+              <FileUp data-icon="inline-start" />
+              Impor Pesanan
+            </Button>
             <Button
               size="lg"
               variant="outline"
@@ -303,6 +313,7 @@ function RekapLaba() {
           </>
         )}
       </div>
+      <DialogImportExcel open={importOpen} onOpenChange={setImportOpen} tipe="pesanan" onSukses={() => void muat()} />
     </>
   );
 }
