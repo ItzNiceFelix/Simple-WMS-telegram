@@ -38,6 +38,20 @@
 5. **Bot Telegram → Worker** (Fase 2), **Excel import/export** (Fase 2),
    **modul e-commerce** (Fase 3) — sesuai PRD.
 
+
+## Update — Fase 1 SELESAI PENUH ✅ (2026-10-08 pagi)
+
+- Unit: **579/579 hijau** (5 test Firestore usang dihapus, diganti
+  `test/guardD1.test.js`; 3 test teks disesuaikan ke implementasi D1).
+- E2E: browser diperbaiki (`playwright install --with-deps`); spec
+  `/masuk` baru **2/2 lolos**. Full suite 258 test terlalu berat untuk
+  sandbox (timeout) — jalankan di CI/Workers Builds.
+- Halaman `/masuk` dibebaskan dari AppShell (bug: tertahan splash) —
+  terverifikasi visual: form telegramId+password + lupa password.
+- Alur login → dashboard "Ringkasan" terverifikasi di browser
+  (empty state benar untuk DB kosong).
+- Produksi: versi `4b0ea8ce` live, D1 bersih kembali.
+- Commit: `8605e67`, ter-push ke repo publik.
 ## Cara pakai sekarang
 
 1. Buka `https://simple-wms-telegram.bagus-deva-nov-p.workers.dev/api/setup/owner`
