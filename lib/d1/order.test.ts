@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { alokasiLabaSku, hitungLaba } from "./order";
+import { alokasiLabaSku, ambilOrder, hitungLaba, imporPesanan, listOrder, transisiFulfill, type BarisPesanan } from "./order";
+import type { Hasil } from "./db";
 
 describe("hitungLaba", () => {
   it("omzet-hpp-biaya-pph-ppn benar", () => {
@@ -33,5 +34,202 @@ describe("hitungLaba", () => {
     const r = hitungLaba(items, [{ jenis: "admin", basis: "persen", nilai: 10 }], true, 0);
     const al = alokasiLabaSku(items, r);
     assert.ok(Math.abs(al["A"] + al["B"] - r.laba) < 1);
+  });
+});
+
+type Row = Record<string, unknown>;
+const kunciOrder = (mp: string, no: string) => `${mp}|${no}`;
+
+function buatDbOrder() {
+  const products: Record<string, Row> = {
+    A: { sku: "A", nama_accurate: "Produk A", hpp: 60000, hpp_baru: null, is_online_product: 1, stok_min: null },
+  };
+  const bins: Record<string, number> = { "A|ONLINE": 10 };
+  const moves: Row[] = [];
+  const orders: Record<string, Row> = {};
+  const items: Record<string, Row> = {};
+  const fees: Row[] = [];
+  const presets: Row[] = [
+    { marketplace: "shopee", jenis: "admin", basis: "persen", nilai: 4 },
+    { marketplace: "tokopedia", jenis: "service", basis: "persen", nilai: 6 },
+  ];
+  let feeSeq = 0;
+  const db = {
+    data: { products, bins, moves, orders, items, fees, presets },
+    prepare(sql: string) {
+      const st = {
+        _sql: sql,
+        _args: [] as unknown[],
+        bind(...a: unknown[]) {
+          st._args = a;
+          return st;
+        },
+        async first(): Promise<unknown> {
+          const a = st._args;
+          if (sql.includes("FROM products WHERE sku")) return products[String(a[0])] ?? null;
+          if (sql.startsWith("SELECT qty FROM stock_by_bin")) return { qty: bins[`${a[0]}|${a[1]}`] ?? 0 };
+          if (sql.includes("SELECT status_fulfill FROM orders")) {
+            const o = orders[kunciOrder(String(a[0]), String(a[1]))];
+            return o ? { status_fulfill: o["status_fulfill"] } : null;
+          }
+          if (sql.startsWith("SELECT marketplace, no_pesanan, tanggal, buyer, status_fulfill, pajak_pph")) {
+            return orders[kunciOrder(String(a[0]), String(a[1]))] ?? null;
+          }
+          return null;
+        },
+        async run() {
+          const a = st._args;
+          if (sql.startsWith("INSERT INTO stock_by_bin")) {
+            bins[`${a[0]}|${a[1]}`] = Number(a[2]);
+            return { meta: {} };
+          }
+          if (sql.startsWith("INSERT INTO stock_moves")) {
+            moves.push({ sku: a[0], qty: a[1], jenis: sql.includes("'jual_mp'") ? "jual_mp" : "retur_mp", gudang_id: a[2] });
+            return { meta: {} };
+          }
+          if (sql.startsWith("UPDATE orders SET status_fulfill")) {
+            const o = orders[kunciOrder(String(a[1]), String(a[2]))];
+            if (o) o["status_fulfill"] = a[0];
+            return { meta: {} };
+          }
+          if (sql.startsWith("INSERT OR IGNORE INTO orders")) {
+            const k = kunciOrder(String(a[0]), String(a[1]));
+            if (!orders[k]) orders[k] = { marketplace: a[0], no_pesanan: a[1], tanggal: a[2], buyer: a[3], status_fulfill: "pending", pajak_pph: a[4], pajak_ppn_persen: a[5] };
+            return { meta: {} };
+          }
+          if (sql.startsWith("INSERT OR REPLACE INTO order_items")) {
+            items[`${a[0]}|${a[1]}|${a[2]}`] = { marketplace: a[0], no_pesanan: a[1], sku: a[2], qty: a[3], harga_satuan: a[4], hpp_snapshot: a[5], subtotal: a[6] };
+            return { meta: {} };
+          }
+          if (sql.startsWith("DELETE FROM order_fees")) {
+            for (let i = fees.length - 1; i >= 0; i--) if (fees[i]["marketplace"] === a[0] && fees[i]["no_pesanan"] === a[1]) fees.splice(i, 1);
+            return { meta: {} };
+          }
+          if (sql.startsWith("INSERT INTO order_fees")) {
+            feeSeq += 1;
+            fees.push({ id: feeSeq, marketplace: a[0], no_pesanan: a[1], jenis: a[2], basis: a[3], nilai: a[4], amount: a[5] });
+            return { meta: {} };
+          }
+          return { meta: {} };
+        },
+        async all(): Promise<{ results: unknown[] }> {
+          const a = st._args;
+          if (sql.includes("FROM order_items WHERE marketplace")) {
+            return { results: Object.values(items).filter((x) => x["marketplace"] === a[0] && x["no_pesanan"] === a[1]) };
+          }
+          if (sql.includes("FROM mp_fee_presets WHERE marketplace")) {
+            return { results: presets.filter((x) => x["marketplace"] === a[0]) };
+          }
+          if (sql.includes("FROM order_fees WHERE marketplace")) {
+            return { results: fees.filter((x) => x["marketplace"] === a[0] && x["no_pesanan"] === a[1]) };
+          }
+          if (sql.includes("FROM orders") && sql.includes("ORDER BY tanggal DESC")) {
+            let r = Object.values(orders).sort((x, y) => Number(y["tanggal"]) - Number(x["tanggal"]));
+            if (sql.includes("marketplace = ?")) r = r.filter((x) => x["marketplace"] === a[0]);
+            // ponytail: mock abaikan filter status/periode; cukup untuk kontrak Task 4. Perluas bila route butuh.
+            return { results: r.slice(0, 100) };
+          }
+          return { results: [] };
+        },
+      };
+      return st;
+    },
+    async batch(stmts: { _sql: string; _args: unknown[] }[]) {
+      for (const s of stmts) await this.prepare(s._sql).bind(...s._args).run();
+      return [];
+    },
+  };
+  return db as unknown as D1Database & { data: { products: Record<string, Row>; bins: Record<string, number>; moves: Row[]; orders: Record<string, Row>; items: Record<string, Row>; fees: Row[]; presets: Row[] } };
+}
+
+function statusGagal(r: Hasil<unknown>): number {
+  assert.equal(r.ok, false);
+  if (r.ok) throw new Error("diharapkan gagal");
+  return r.status;
+}
+
+const barisA = (no: string, qty: number): BarisPesanan => ({ marketplace: "shopee", no_pesanan: no, tanggal: 1728288000, buyer: "Budi", sku: "A", qty, harga_satuan: 100000 });
+
+describe("transisiFulfill", () => {
+  it("pack kurangi stok + movement jual_mp", async () => {
+    const db = buatDbOrder();
+    await imporPesanan(db, [barisA("SHP-1", 3)], null);
+    const r = await transisiFulfill(db, "shopee", "SHP-1", "pack", "owner1");
+    assert.equal(r.ok, true);
+    assert.equal(db.data.bins["A|ONLINE"], 7);
+    const mv = db.data.moves.filter((m) => m["jenis"] === "jual_mp");
+    assert.equal(mv.length, 1);
+    assert.equal(mv[0]["qty"], -3);
+  });
+  it("pack stok kurang → 400, stok utuh", async () => {
+    const db = buatDbOrder();
+    await imporPesanan(db, [barisA("SHP-2", 99)], null);
+    const r = await transisiFulfill(db, "shopee", "SHP-2", "pack", null);
+    assert.equal(statusGagal(r), 400);
+    assert.equal(db.data.bins["A|ONLINE"], 10);
+  });
+  it("batal kembalikan stok + retur_mp", async () => {
+    const db = buatDbOrder();
+    await imporPesanan(db, [barisA("SHP-3", 3)], null);
+    await transisiFulfill(db, "shopee", "SHP-3", "pack", null);
+    const r = await transisiFulfill(db, "shopee", "SHP-3", "batal", null);
+    assert.equal(r.ok, true);
+    assert.equal(db.data.bins["A|ONLINE"], 10);
+    const mv = db.data.moves.filter((m) => m["jenis"] === "retur_mp");
+    assert.equal(mv.length, 1);
+    assert.equal(mv[0]["qty"], 3);
+  });
+  it("pending→kirim langsung → 409; order tak ada → 404", async () => {
+    const db = buatDbOrder();
+    await imporPesanan(db, [barisA("SHP-4", 1)], null);
+    assert.equal(statusGagal(await transisiFulfill(db, "shopee", "SHP-4", "kirim", null)), 409);
+    assert.equal(statusGagal(await transisiFulfill(db, "shopee", "TAK-ADA", "pack", null)), 404);
+  });
+});
+
+describe("imporPesanan", () => {
+  it("2 order: preset bila tanpa fee + snapshot beku", async () => {
+    const db = buatDbOrder();
+    const r = await imporPesanan(db, [
+      { marketplace: "shopee", no_pesanan: "O-1", tanggal: 1728288000, buyer: "Budi", sku: "A", qty: 2, harga_satuan: 100000 },
+      { marketplace: "tokopedia", no_pesanan: "O-2", tanggal: 1728288000, buyer: "Sari", sku: "A", qty: 1, harga_satuan: 50000, fee_jenis: "ongkir", fee_basis: "flat", fee_nilai: 10000 },
+    ], null);
+    assert.equal(r.ok, true);
+    if (r.ok) {
+      assert.equal(r.order, 2);
+      assert.equal(r.item, 2);
+    }
+    const o1 = await ambilOrder(db, "shopee", "O-1");
+    assert.ok(o1);
+    assert.equal(o1?.items[0]?.hpp_snapshot, 60000);
+    assert.equal(o1?.fees.length, 1);
+    assert.equal(o1?.fees[0]?.jenis, "admin");
+    assert.equal(o1?.fees[0]?.amount, 8000);
+    const o2 = await ambilOrder(db, "tokopedia", "O-2");
+    assert.equal(o2?.fees.length, 1);
+    assert.equal(o2?.fees[0]?.jenis, "ongkir");
+    db.data.products["A"]["hpp"] = 99999;
+    const o1b = await ambilOrder(db, "shopee", "O-1");
+    assert.equal(o1b?.items[0]?.hpp_snapshot, 60000);
+  });
+  it("SKU tak dikenal → 400; impor ulang idempoten", async () => {
+    const db = buatDbOrder();
+    assert.equal(statusGagal(await imporPesanan(db, [{ ...barisA("X-1", 1), sku: "ZILCH" }], null)), 400);
+    await imporPesanan(db, [barisA("O-9", 1)], null);
+    await imporPesanan(db, [barisA("O-9", 1)], null);
+    const o = await ambilOrder(db, "shopee", "O-9");
+    assert.equal(o?.items.length, 1);
+    assert.equal(o?.fees.length, 1);
+    assert.equal((await listOrder(db, {})).length, 1);
+  });
+});
+
+describe("ambilOrder + listOrder", () => {
+  it("null bila tak ada; filter mp", async () => {
+    const db = buatDbOrder();
+    assert.equal(await ambilOrder(db, "shopee", "NOPE"), null);
+    await imporPesanan(db, [barisA("L-1", 1), { ...barisA("L-2", 1), marketplace: "tiktok" }], null);
+    assert.equal((await listOrder(db, {})).length, 2);
+    assert.equal((await listOrder(db, { mp: "shopee" })).length, 1);
   });
 });
