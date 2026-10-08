@@ -5,6 +5,7 @@
 // Export: tombol unduh per tipe (produk/stok/hpp) + filter gudang.
 import { useState } from "react"
 import * as XLSX from "xlsx"
+import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
 import {
@@ -82,6 +83,7 @@ export function DialogImportExcel({ open, onOpenChange, gudangId = "ONLINE", onS
           body: JSON.stringify({ aksi: "preview", rows, file: file.name }),
           credentials: "include",
         })
+        if (!res.ok) throw new Error(`Gagal preview pesanan (${res.status}).`);
         const raw: unknown = await res.json()
         if (!isPreviewOk(raw)) {
           tampilkanGagalTulis(raw && typeof raw === "object" && "error" in raw && typeof raw.error === "string" ? raw.error : `Gagal (${res.status}).`)
@@ -94,6 +96,7 @@ export function DialogImportExcel({ open, onOpenChange, gudangId = "ONLINE", onS
       form.append("file", file)
       form.append("gudang_id", gudangId)
       const res = await fetch(endpoint, { method: "POST", body: form, credentials: "include" })
+      if (!res.ok) throw new Error(`Gagal preview (${res.status}).`);
       const raw: unknown = await res.json()
       if (!isPreviewOk(raw)) {
         tampilkanGagalTulis(raw && typeof raw === "object" && "error" in raw && typeof raw.error === "string" ? raw.error : `Gagal (${res.status}).`)
@@ -117,6 +120,7 @@ export function DialogImportExcel({ open, onOpenChange, gudangId = "ONLINE", onS
         body: JSON.stringify({ aksi: "konfirmasi", batch_id: preview.batch_id }),
         credentials: "include",
       })
+      if (!res.ok) throw new Error(`Gagal konfirmasi (${res.status}).`);
       const raw: unknown = await res.json()
       if (!isKonfirmasiOk(raw)) {
         tampilkanGagalTulis(raw && typeof raw === "object" && "error" in raw && typeof raw.error === "string" ? raw.error : `Gagal (${res.status}).`)
@@ -160,8 +164,8 @@ export function DialogImportExcel({ open, onOpenChange, gudangId = "ONLINE", onS
             </p>
             {preview.peringatan && preview.peringatan.length > 0 && (
               <ul className="max-h-32 space-y-1 overflow-y-auto rounded-lg bg-amber-50 p-3 text-xs text-amber-800">
-                {preview.peringatan.slice(0, 20).map((w) => (
-                  <li key={w}>{w}</li>
+                {preview.peringatan.slice(0, 20).map((w, i) => (
+                  <li key={`${i}-${w.slice(0, 32)}`}>{w}</li>
                 ))}
                 {preview.peringatan.length > 20 && <li>… +{preview.peringatan.length - 20} lagi</li>}
               </ul>
