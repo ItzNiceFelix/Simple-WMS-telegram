@@ -28,12 +28,37 @@ const PANDUAN = [
   ["", "", ""],
   ["Alur import: upload → preview sukses/gagal per baris → Konfirmasi → tulis atomik."],
   ["SKU yang sudah ada = UPDATE (upsert), baru = INSERT."],
+  ["", "", ""],
+  ["Sheet Pesanan (kirim ke /api/order, 2-fase: preview → konfirmasi).", "", ""],
+  ["NoPesanan*", "Ya", "Kode pesanan marketplace, dikelompokkan per (Marketplace, NoPesanan)"],
+  ["Marketplace*", "Ya", "Bebas (shopee/tiktok/tokopedia/dll), dinormalkan lowercase"],
+  ["Tanggal*", "Ya", "Format YYYY-MM-DD valid"],
+  ["SKU*", "Ya", "Harus ada di master produk"],
+  ["Qty*", "Ya", "Bilangan bulat >= 1"],
+  ["HargaSatuan*", "Ya", "Bilangan bulat >= 0 (rupiah)"],
+  ["Buyer", "Tidak", "Nama pembeli, bebas"],
+  ["FeeJenis", "Tidak", "admin/service/komisi/ongkir/voucher/affiliate/iklan/lain; kosong = tanpa fee"],
+  ["FeeBasis", "Tidak", "flat/persen, default flat bila FeeJenis diisi"],
+  ["FeeNilai", "Tidak", "Bilangan bulat >= 0; persen = % dari (Qty x HargaSatuan)"],
+  ["PPh", "Tidak", "YA/TIDAK, default YA"],
+  ["PPN%", "Tidak", "Angka >= 0, default 0"],
+  ["", "", ""],
+  ["Satu order boleh multi-baris (satu baris = satu SKU)."],
+  ["Peringatan (tak blokir): order campur baris ber-fee + tanpa-fee."],
+];
+// Header Pesanan: string-equality dengan HEADER_PESANAN di app/api/order/route.ts.
+const HEADER_PESANAN = ["NoPesanan*", "Marketplace*", "Tanggal*", "SKU*", "Qty*", "HargaSatuan*", "Buyer", "FeeJenis", "FeeBasis", "FeeNilai", "PPh", "PPN%"];
+const CONTOH_PESANAN = [
+  ["ORD-001", "shopee", "2026-10-01", "BRG-001", 2, 129000, "Budi", "admin", "persen", 5, "YA", 11],
+  ["ORD-001", "shopee", "2026-10-01", "BRG-002", 1, 159000, "Budi", "admin", "persen", 5, "YA", 11],
+  ["ORD-002", "tiktok", "2026-10-02", "BRG-003", 3, 45000, "Siti", "", "", "", "TIDAK", 0],
 ];
 
 const wb = XLSX.utils.book_new();
 XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([HEADER, ...CONTOH]), "Produk");
 XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["SKU*", "QtyFisik*", "Catatan"], ["BRG-001", 98, "hasil hitung"], ["BRG-002", 50, ""]]), "StokOpname");
 XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([["SKU*", "HPPBaru*"], ["BRG-001", 78000]]), "HPP-Update");
+XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([HEADER_PESANAN, ...CONTOH_PESANAN]), "Pesanan");
 XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(PANDUAN), "PANDUAN");
 XLSX.writeFile(wb, "public/template-import-produk.xlsx");
 console.log("[template] public/template-import-produk.xlsx ditulis");
