@@ -66,7 +66,17 @@ export async function kirimPesanBot(env: Env, chatId: number | string, teks: str
     });
     if (!res.ok) {
       const t = await res.text().catch(() => "");
-      throw new Error(`sendMessage ${res.status}: ${t.slice(0, 200)}`);
+      type TgErrorBody = { description?: string; parameters?: { migrate_to_chat_id?: number } };
+      let data: TgErrorBody | null = null;
+      try {
+        data = JSON.parse(t) as TgErrorBody;
+      } catch {
+        data = null;
+      }
+      const desc = typeof data?.description === "string" ? data.description : t;
+      const err = new Error(`sendMessage ${res.status}: ${desc.slice(0, 200)}`);
+      (err as Error & { telegram?: unknown }).telegram = data;
+      throw err;
     }
   }
 }
@@ -306,7 +316,10 @@ async function prosesUpdate(env: Env, update: Update): Promise<void> {
     return;
   }
   const msg = update.message;
-  if (!msg || !msg.from) return;
+  if (!msg) return;
+  // Migrasi grup → supergroup datang sebagai message biasa (pola scaFlow FIX_NOTES v13).
+  if (await tanganiMigrasiGrup(env, msg)) return;
+  if (!msg.from) return;
   const tgId = String(msg.from.id);
   const chatId = msg.chat.id;
   const teks = (msg.text ?? msg.caption ?? "").trim();

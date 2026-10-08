@@ -2,6 +2,8 @@
 // Mock D1 minimal + stub fetch Bot API via global.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { antreNotifikasi, drainQueue } from "./notify";
+import type { Env } from "./api";
 
 type Row = Record<string, unknown>;
 
@@ -42,9 +44,39 @@ function buatDbMock() {
             }
             return { meta: {} };
           }
+          if (st._sql.startsWith("UPDATE groups SET chat_id")) {
+            const g = groups.find((x) => x.chat_id === st._args[1]);
+            if (g) {
+              g.chat_id = st._args[0];
+              g.chat_type = "supergroup";
+              g.last_error = null;
+            }
+            return { meta: {} };
+          }
+          if (st._sql.startsWith("UPDATE notify_queue SET target_group")) {
+            for (const q of queue) if (q.target_group === st._args[1] && q.sent_at == null) q.target_group = st._args[0];
+            return { meta: {} };
+          }
           if (st._sql.startsWith("DELETE FROM notify_queue")) {
             const i = queue.findIndex((x) => x.id === st._args[0]);
             if (i >= 0) queue.splice(i, 1);
+            return { meta: {} };
+          }
+          if (st._sql.startsWith("DELETE FROM groups")) {
+            const chat = st._args[0];
+            const cocok = groups.filter((x) => x.chat_id === chat).map((x) => x.id as number);
+            if (cocok.length > 1) {
+              const min = Math.min(...cocok);
+              for (let i = groups.length - 1; i >= 0; i--) if (groups[i].chat_id === chat && groups[i].id !== min) groups.splice(i, 1);
+            }
+            return { meta: {} };
+          }
+          if (st._sql.startsWith("UPDATE groups SET status")) {
+            const g = groups.find((x) => x.chat_id === st._args[1]);
+            if (g) {
+              g.status = "left";
+              g.last_error = st._args[0];
+            }
             return { meta: {} };
           }
           return { meta: {} };
@@ -81,14 +113,14 @@ describe("notify queue + drain", () => {
       return { ok: true } as Response;
     };
     try {
-      const { antreNotifikasi, drainQueue } = await import("./notify.js");
-      const env = { DB: buatDbMock(), TELEGRAM_BOT_TOKEN: "x" } as unknown as import("./api.js").Env;
+      const db = buatDbMock();
+      const env = { DB: db, TELEGRAM_BOT_TOKEN: "x" } as unknown as Env;
       await antreNotifikasi(env.DB, "info", "halo", 111);
-      assert.equal(env.DB.data.queue.length, 1);
+      assert.equal(db.data.queue.length, 1);
       const h = await drainQueue(env);
       assert.equal(h.terkirim, 1);
       assert.equal(h.gagal, 0);
-      assert.ok(env.DB.data.queue[0].sent_at != null);
+      assert.ok(db.data.queue[0].sent_at != null);
     } finally {
       globalThis.fetch = fetchAsli;
     }
@@ -98,14 +130,38 @@ describe("notify queue + drain", () => {
     const fetchAsli = globalThis.fetch;
     (globalThis as Record<string, unknown>).fetch = async () => ({ ok: false, status: 400, text: async () => "Bad Request: chat not found" }) as Response;
     try {
-      const { antreNotifikasi, drainQueue } = await import("./notify.js");
-      const env = { DB: buatDbMock(), TELEGRAM_BOT_TOKEN: "x" } as unknown as import("./api.js").Env;
+      const db = buatDbMock();
+      const env = { DB: db, TELEGRAM_BOT_TOKEN: "x" } as unknown as Env;
       await antreNotifikasi(env.DB, "info", "halo", 999);
       const h = await drainQueue(env);
       assert.equal(h.terkirim, 0);
-      assert.equal(h.gagal, 1);
-      assert.equal(env.DB.data.queue[0].attempts, 1);
-      assert.equal(env.DB.data.queue[0].sent_at, null);
+      assert.equal(db.data.queue[0].attempts, 1);
+      assert.equal(db.data.queue[0].sent_at, null);
+    } finally {
+      globalThis.fetch = fetchAsli;
+    }
+  });
+
+  it("grup upgrade → chat_id pindah + retry terkirim", async () => {
+    const fetchAsli = globalThis.fetch;
+    let panggil = 0;
+    (globalThis as Record<string, unknown>).fetch = async () => {
+      panggil += 1;
+      if (panggil === 1) {
+        return { ok: false, status: 400, text: async () => JSON.stringify({ ok: false, description: "Bad Request: group chat was upgraded to a supergroup chat", parameters: { migrate_to_chat_id: -100456 } }) } as Response;
+      }
+      return { ok: true } as Response;
+    };
+    try {
+      const db = buatDbMock();
+      db.data.groups.push({ id: 1, chat_id: -123, title: "G", chat_type: "group", status: "active" });
+      const env = { DB: db, TELEGRAM_BOT_TOKEN: "x" } as unknown as Env;
+      await antreNotifikasi(env.DB, "info", "halo", null, -123);
+      const h = await drainQueue(env);
+      assert.equal(h.terkirim, 1);
+      assert.equal(h.gagal, 0);
+      assert.equal(db.data.groups[0].chat_id, -100456);
+      assert.ok(db.data.queue[0].sent_at != null);
     } finally {
       globalThis.fetch = fetchAsli;
     }

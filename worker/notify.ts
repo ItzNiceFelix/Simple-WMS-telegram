@@ -60,7 +60,26 @@ export async function drainQueue(env: Env): Promise<{ terkirim: number; gagal: n
       terkirim++;
     } catch (e) {
       const pesan = e instanceof Error ? e.message : String(e);
-      // Grup upgrade ke supergroup → catat, migrasi ditangani webhook (FIX_NOTES v13)
+      // Grup upgrade ke supergroup → update chat_id + retry sekali ke chat baru (pola scaFlow v13).
+      const param = (e as Error & { telegram?: { parameters?: { migrate_to_chat_id?: number } } })?.telegram?.parameters?.migrate_to_chat_id;
+      const upgraded = q.target_group != null && (param != null || /upgraded to a supergroup/i.test(pesan));
+      if (upgraded && q.target_group != null) {
+        const cocok = pesan.match(/-100\d+/);
+        const chatBaru = Number(param ?? (cocok ? cocok[0] : q.target_group));
+        await env.DB.prepare("UPDATE groups SET chat_id = ?, chat_type = 'supergroup', last_error = NULL WHERE chat_id = ?").bind(chatBaru, q.target_group).run().catch(() => undefined);
+        await env.DB.prepare("UPDATE notify_queue SET target_group = ? WHERE target_group = ? AND sent_at IS NULL").bind(chatBaru, q.target_group).run().catch(() => undefined);
+        await env.DB.prepare("DELETE FROM groups WHERE chat_id = ? AND id NOT IN (SELECT MIN(id) FROM groups WHERE chat_id = ?)").bind(chatBaru, chatBaru).run().catch(() => undefined);
+        try {
+          await kirimPesanBot(env, chatBaru, q.payload);
+          await env.DB.prepare("UPDATE notify_queue SET sent_at = ?, last_error = NULL WHERE id = ?").bind(Math.floor(Date.now() / 1000), q.id).run();
+          terkirim++;
+        } catch (e2) {
+          const pesan2 = e2 instanceof Error ? e2.message : String(e2);
+          await env.DB.prepare("UPDATE notify_queue SET attempts = attempts + 1, last_error = ? WHERE id = ?").bind(pesan2.slice(0, 300), q.id).run();
+          gagal++;
+        }
+        continue;
+      }
       // Grup/user mati → hapus dari subscriber + tandai antrean
       if (/kicked|not enough rights|chat not found|bot was blocked|user is deactivated/i.test(pesan)) {
         if (q.target_group != null) {
