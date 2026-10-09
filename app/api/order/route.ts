@@ -76,9 +76,10 @@ async function validasiBarisPesanan(db: D1Database, row: Record<string, unknown>
     const basis = teks(row["FeeBasis"]).toLowerCase() || "flat";
     if (basis !== "flat" && basis !== "persen") return { ok: false, pesan: `Baris ${noBaris}: FeeBasis harus flat/persen.` };
     feeBasis = basis;
-    const nilai = row["FeeNilai"] == null || row["FeeNilai"] === "" ? 0 : intBaris(row["FeeNilai"]);
-    if (nilai === null || Number.isNaN(nilai as unknown as number) || (nilai as number) < 0) return { ok: false, pesan: `Baris ${noBaris}: FeeNilai harus bilangan bulat ≥ 0.` };
-    feeNilai = nilai as number;
+    const nilai = row["FeeNilai"] == null || row["FeeNilai"] === "" ? 0 : Number(row["FeeNilai"]);
+    if (!Number.isFinite(nilai) || nilai < 0) return { ok: false, pesan: `Baris ${noBaris}: FeeNilai harus angka ≥ 0 (desimal boleh).` };
+    if (feeBasis === "persen" && nilai > 100) return { ok: false, pesan: `Baris ${noBaris}: FeeNilai persen maksimal 100.` };
+    feeNilai = nilai;
   }
   const pph = teks(row["PPh"]).toUpperCase() || "YA";
   if (pph !== "YA" && pph !== "TIDAK") return { ok: false, pesan: `Baris ${noBaris}: PPh harus YA/TIDAK.` };
@@ -221,7 +222,8 @@ export async function POST(request: Request) {
     if (!mp) return json({ ok: false, error: "Marketplace wajib diisi." }, 400);
     if (!FEE_VALID.includes(jenis)) return json({ ok: false, error: "Jenis fee tak dikenal (admin/service/komisi/ongkir/voucher/affiliate/iklan/lain)." }, 400);
     if (basis !== "flat" && basis !== "persen") return json({ ok: false, error: "Basis harus flat/persen." }, 400);
-    if (typeof nilai !== "number" || !Number.isInteger(nilai) || nilai < 0) return json({ ok: false, error: "Nilai harus bilangan bulat ≥ 0." }, 400);
+    if (typeof nilai !== "number" || !Number.isFinite(nilai) || nilai < 0) return json({ ok: false, error: "Nilai harus angka ≥ 0 (desimal boleh, mis. 3.5)." }, 400);
+    if (basis === "persen" && nilai > 100) return json({ ok: false, error: "Persen maksimal 100." }, 400);
     await db.prepare("INSERT OR REPLACE INTO mp_fee_presets (marketplace, jenis, basis, nilai) VALUES (?, ?, ?, ?)").bind(mp, jenis, basis, nilai).run();
     return json({ ok: true });
   }

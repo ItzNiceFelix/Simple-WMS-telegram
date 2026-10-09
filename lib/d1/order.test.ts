@@ -26,6 +26,15 @@ describe("hitungLaba", () => {
     assert.equal(r.ppn, 5500);
     assert.equal(r.laba, 50000 - 30000 - 10000 - 5500);
   });
+  it("persen desimal 3.5% dibulatkan per order", () => {
+    const r = hitungLaba(
+      [{ sku: "A", qty: 1, harga_satuan: 100000, hpp_snapshot: 60000 }],
+      [{ jenis: "admin", basis: "persen", nilai: 3.5 }],
+      false, 0
+    );
+    assert.equal(r.biaya, 3500);
+    assert.equal(r.laba, 100000 - 60000 - 3500);
+  });
   it("alokasi per SKU jumlah = laba order", () => {
     const items = [
       { sku: "A", qty: 1, harga_satuan: 100000, hpp_snapshot: 60000 },

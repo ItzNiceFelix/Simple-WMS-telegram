@@ -66,13 +66,18 @@ export function BiayaMp({ bolehUbah }: { bolehUbah: boolean }) {
   }, [muat]);
 
   async function tambah() {
-    const nilaiInt = Number(nilai);
+    const teksNilai = nilai.trim().replace(",", ".");
+    const nilaiNum = Number(teksNilai);
     if (!mp.trim()) {
       toast.error("Marketplace wajib diisi.");
       return;
     }
-    if (!Number.isInteger(nilaiInt) || nilaiInt < 0) {
-      toast.error("Nilai harus bilangan bulat ≥ 0.");
+    if (teksNilai === "" || !Number.isFinite(nilaiNum) || nilaiNum < 0) {
+      toast.error("Nilai harus angka ≥ 0 (desimal boleh, mis. 3.5).");
+      return;
+    }
+    if (basis === "persen" && nilaiNum > 100) {
+      toast.error("Persen maksimal 100.");
       return;
     }
     setMengirim(true);
@@ -86,7 +91,7 @@ export function BiayaMp({ bolehUbah }: { bolehUbah: boolean }) {
           marketplace: mp.trim(),
           jenis,
           basis,
-          nilai: nilaiInt,
+          nilai: nilaiNum,
         }),
       });
       const data = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
@@ -237,8 +242,8 @@ export function BiayaMp({ bolehUbah }: { bolehUbah: boolean }) {
                 id="preset-nilai"
                 className="h-11 md:h-8"
                 data-testid="preset-nilai"
-                placeholder={basis === "persen" ? "%" : "Rp"}
-                inputMode="numeric"
+                placeholder={basis === "persen" ? "cth. 3.5" : "Rp"}
+                inputMode="decimal"
                 value={nilai}
                 onChange={(e) => setNilai(e.target.value)}
                 disabled={mengirim}

@@ -82,7 +82,8 @@ export async function imporPesanan(db: D1Database, daftar: BarisPesanan[], oleh:
     if (!Number.isInteger(b.harga_satuan) || b.harga_satuan < 0) return gagal(400, `Harga ${b.sku} harus bilangan bulat ≥ 0 (order ${b.no_pesanan}).`);
     if (b.fee_jenis !== undefined && !FEE_VALID.includes(b.fee_jenis)) return gagal(400, `Fee ${b.fee_jenis} tak dikenal (order ${b.no_pesanan}).`);
     if (b.fee_basis !== undefined && b.fee_basis !== "flat" && b.fee_basis !== "persen") return gagal(400, `FeeBasis harus flat/persen (order ${b.no_pesanan}).`);
-    if (b.fee_nilai !== undefined && (!Number.isInteger(b.fee_nilai) || b.fee_nilai < 0)) return gagal(400, `FeeNilai harus ≥ 0 (order ${b.no_pesanan}).`);
+    if (b.fee_nilai !== undefined && (typeof b.fee_nilai !== "number" || !Number.isFinite(b.fee_nilai) || b.fee_nilai < 0)) return gagal(400, `FeeNilai harus angka ≥ 0 (order ${b.no_pesanan}).`);
+    if (b.fee_basis === "persen" && (b.fee_nilai ?? 0) > 100) return gagal(400, `FeeNilai persen maksimal 100 (order ${b.no_pesanan}).`);
   }
   const grup: Record<string, GrupPesanan> = {};
   const urutan: string[] = [];
