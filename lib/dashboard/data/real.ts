@@ -22,12 +22,22 @@ type SesiWeb = {
   superAdmin: boolean;
 };
 
+const BATAS_BACA_MS = 8000;
+
+/** Error khusus timeout agar UI bisa bedakan "server lambat" dari "koneksi gagal". */
+export class GalatTimeoutBaca extends Error {
+  constructor(scope: string) {
+    super(`Server lambat membaca ${scope} (>8 dtk). Coba lagi.`);
+    this.name = "GalatTimeoutBaca";
+  }
+}
+
 async function ambilSesiWeb(): Promise<SesiWeb> {
-  const res = await fetch("/api/me", { credentials: "include" });
-  const data = (await res.json().catch(() => null)) as {
+  const res = await fetch("/api/me", { credentials: "include", signal: AbortSignal.timeout(BATAS_BACA_MS) }).catch(() => null);
+  const data = (await res?.json().catch(() => null)) as {
     ok?: boolean; role?: Role; user?: { id?: string }; error?: string;
   } | null;
-  if (!res.ok || !data?.ok || !data.user?.id || !data.role) {
+  if (!res?.ok || !data?.ok || !data.user?.id || !data.role) {
     throw new Error(data?.error || "Belum login. Masuk lewat halaman login.");
   }
   return { uid: data.user.id, role: data.role, superAdmin: data.role === "owner" };
@@ -35,7 +45,13 @@ async function ambilSesiWeb(): Promise<SesiWeb> {
 
 async function bacaServer<T>(scope: string, params: Record<string, string> = {}): Promise<T> {
   const q = new URLSearchParams({ scope, ...params }).toString();
-  const res = await fetch(`/api/baca?${q}`, { credentials: "include" });
+  let res: Response;
+  try {
+    res = await fetch(`/api/baca?${q}`, { credentials: "include", signal: AbortSignal.timeout(BATAS_BACA_MS) });
+  } catch (e) {
+    if (e instanceof DOMException && e.name === "TimeoutError") throw new GalatTimeoutBaca(scope);
+    throw e;
+  }
   const data = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } & Record<string, unknown>;
   if (!res.ok || !data || data.ok !== true) {
     throw new Error((data?.error as string) ?? `Gagal membaca ${scope} (${res.status}).`);

@@ -85,7 +85,7 @@ function DaftarStok() {
   const [gudang, setGudang] = useState<GudangDoc[]>([]);
   const [gudangId, setGudangId] = useState<string>("SEMUA");
   const [hanyaOnline, setHanyaOnline] = useState(true);
-  const [error, setError] = useState(false);
+  const [pesanError, setPesanError] = useState<string | null>(null);
   const [cari, setCari] = useState("");
   const [filter, setFilter] = useState<Filter>("semua");
   const [sort, setSort] = useState<Sort>("nama");
@@ -112,7 +112,7 @@ function DaftarStok() {
   }, [data]);
 
   const muat = useCallback(async () => {
-    setError(false);
+    setPesanError(null);
     setRows(null);
     try {
       const f: StockFilter = {
@@ -120,8 +120,8 @@ function DaftarStok() {
         is_online: hanyaOnline ? true : "semua",
       };
       setRows(await data.listStock(f));
-    } catch {
-      setError(true);
+    } catch (e) {
+      setPesanError(e instanceof Error ? e.message : "Gagal memuat daftar stok.");
     }
   }, [data, gudangId, hanyaOnline]);
 
@@ -337,12 +337,12 @@ function DaftarStok() {
           </div>
         </div>
 
-        {error ? (
+        {pesanError ? (
           <Alert variant="destructive" data-testid="error-stok">
             <TriangleAlert aria-hidden />
             <AlertTitle>Gagal memuat daftar stok.</AlertTitle>
             <AlertDescription className="flex flex-col items-start gap-2">
-              Periksa koneksi lalu coba lagi.
+              {pesanError}
               <Button variant="outline" size="sm" onClick={() => void muat()}>
                 Coba lagi
               </Button>

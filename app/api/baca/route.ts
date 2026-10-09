@@ -34,14 +34,23 @@ export async function GET(request: Request) {
   if (scope === "stok") {
     const gudangFilter = url.searchParams.get("gudang_id");
     const onlineSaja = url.searchParams.get("is_online") !== "false";
-    let sql = `SELECT p.sku, p.nama_accurate, p.hpp, p.is_online_product, p.stok_min FROM products p`;
+    let sql = `SELECT p.sku, p.nama_accurate, p.hpp, p.is_online_product, p.stok_min, b.warehouse_id, b.qty
+      FROM products p LEFT JOIN stock_by_bin b ON b.sku = p.sku`;
     const args: unknown[] = [];
     if (onlineSaja) sql += " WHERE p.is_online_product = 1";
     sql += " ORDER BY p.sku ASC LIMIT 2000";
-    const { results } = await db.prepare(sql).bind(...args).all<{ sku: string; nama_accurate: string; hpp: number | null; is_online_product: number; stok_min: number | null }>();
+    const { results } = await db.prepare(sql).bind(...args).all<{
+      sku: string; nama_accurate: string; hpp: number | null; is_online_product: number; stok_min: number | null;
+      warehouse_id: string | null; qty: number | null;
+    }>();
+    const grup = new Map<string, { p: (typeof results)[number]; qtyMap: Record<string, number> }>();
+    for (const r of results) {
+      let g = grup.get(r.sku);
+      if (!g) { g = { p: r, qtyMap: {} }; grup.set(r.sku, g); }
+      if (r.warehouse_id != null && r.qty != null) g.qtyMap[r.warehouse_id] = r.qty;
+    }
     const baris = [];
-    for (const p of results) {
-      const qtyMap = await bacaQtyPerGudang(db, p.sku);
+    for (const { p, qtyMap } of grup.values()) {
       const nilai = gudangFilter ? (qtyMap[gudangFilter] ?? 0) : (qtyMap.ONLINE ?? 0);
       if (gudangFilter && !(gudangFilter in qtyMap)) continue;
       const status = nilai < 0 ? "minus" : p.stok_min != null && nilai < p.stok_min ? "menipis" : "aman";

@@ -32,10 +32,10 @@ export default function HalamanRingkasan() {
   const [ringkasan, setRingkasan] = useState<RingkasanData | null>(null);
   const [stock, setStock] = useState<StockRow[] | null>(null);
   const [movements, setMovements] = useState<MovementDoc[] | null>(null);
-  const [error, setError] = useState(false);
+  const [pesanError, setPesanError] = useState<string | null>(null);
 
   const muat = useCallback(async () => {
-    setError(false);
+    setPesanError(null);
     setRingkasan(null);
     setStock(null);
     setMovements(null);
@@ -48,8 +48,8 @@ export default function HalamanRingkasan() {
       setRingkasan(r);
       setStock(s);
       setMovements(m);
-    } catch {
-      setError(true);
+    } catch (e) {
+      setPesanError(e instanceof Error ? e.message : "Gagal memuat ringkasan. Coba lagi.");
     }
   }, [data]);
 
@@ -77,12 +77,12 @@ export default function HalamanRingkasan() {
       />
 
       <div className="flex flex-col gap-6" data-testid="h1-ringkasan">
-        {error ? (
+        {pesanError ? (
           <Alert variant="destructive" data-testid="error-ringkasan">
             <TriangleAlert aria-hidden />
             <AlertTitle>Gagal memuat ringkasan. Coba lagi.</AlertTitle>
             <AlertDescription className="flex flex-col items-start gap-2">
-              Ringkasan tidak bisa diambil saat ini.
+              {pesanError}
               <Button variant="outline" size="sm" onClick={() => void muat()}>
                 Coba lagi
               </Button>
