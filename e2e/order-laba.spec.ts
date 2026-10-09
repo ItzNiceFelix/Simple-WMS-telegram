@@ -44,7 +44,10 @@ const SNAPSHOT = {
     biaya: 4000,
     laba: 36000,
     tolak: [{ no_pesanan: "SHP-X", alasan: "SKU kosong (ref + induk kosong)" }],
-    file: "Order.shipping.xlsx",
+    rincian: [
+      { sku: "BRG-001", unit: 3, hppSatuan: 15000, hargaJual: 30000, marginSatuan: 12000, marginPersen: 40, kontribusi: 36000 },
+    ],
+    file: "Order.all.20261008_20261008.xlsx",
     at: 1728288000,
     by: "owner",
   },
@@ -96,6 +99,8 @@ test("laba: snapshot + kartu agregat + tolak tampil", async ({ page }) => {
   await expect(page.getByTestId("kartu-agregat-laba")).toBeVisible();
   await expect(page.getByTestId("tolak-laba")).toBeVisible();
   await expect(page.getByTestId("daftar-tanggal-laba")).toBeVisible();
+  await expect(page.getByTestId("rincian-sku-laba")).toBeVisible();
+  await expect(page.getByTestId("rincian-BRG-001")).toBeVisible();
 });
 
 test("order+laba kosong: empty state tampil", async ({ page }) => {

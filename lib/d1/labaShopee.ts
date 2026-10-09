@@ -10,6 +10,16 @@ export type BarisShopee = Record<string, unknown>;
 
 export type TolakLaba = { no_pesanan: string; alasan: string };
 
+export type RincianSku = {
+  sku: string;
+  unit: number;
+  hppSatuan: number;
+  hargaJual: number;
+  marginSatuan: number;
+  marginPersen: number;
+  kontribusi: number;
+};
+
 export type AgregatLaba = {
   jml_order: number;
   jml_baris: number;
@@ -18,6 +28,7 @@ export type AgregatLaba = {
   biaya: number;
   laba: number;
   tolak: TolakLaba[];
+  rincian: RincianSku[];
 };
 
 export type SnapshotLaba = AgregatLaba & {
@@ -41,11 +52,11 @@ function teks(v: unknown): string {
   return typeof v === "string" ? v.trim() : v == null ? "" : String(v).trim();
 }
 
-const STATUS_ABAI = ["dibatalkan", "batal", "cancel", "cancelled"];
+const STATUS_HITUNG = ["telah dikirim", "sedang dikirim", "selesai"];
 
-function statusDibuang(status: string): boolean {
+function statusDihitung(status: string): boolean {
   const s = status.toLowerCase();
-  return STATUS_ABAI.some((k) => s.includes(k));
+  return STATUS_HITUNG.some((k) => s.includes(k));
 }
 
 /** Tanggal hari ini zona Jakarta (YYYY-MM-DD). */
@@ -87,16 +98,20 @@ export async function hitungLabaShopee(
   let hpp = 0;
   let biaya = 0;
   const tolak: TolakLaba[] = [];
+  const perSku = new Map<string, { sku: string; unit: number; hppSatuan: number; harga: number; omzetSku: number; hppSku: number; biayaSku: number; kontribusi: number }>();
+  const cacheHpp = new Map<string, number | null>();
+  const hppSku = async (sku: string): Promise<number | null> => {
+    if (!cacheHpp.has(sku)) cacheHpp.set(sku, await ambilHpp(sku));
+    return cacheHpp.get(sku) ?? null;
+  };
 
   for (const [no, daftar] of grup) {
     const status = teks(daftar[0]["Status Pesanan"]);
-    if (statusDibuang(status)) continue;
-    const qtyTotal = daftar.reduce((a, r) => a + angkaShopee(r["Jumlah"]), 0);
-    const returTotal = daftar.reduce((a, r) => a + angkaShopee(r["Returned quantity"]), 0);
-    if (qtyTotal > 0 && returTotal >= qtyTotal) continue; // retur penuh
+    if (!statusDihitung(status)) continue;
 
     // SKU per baris: ref → induk; kosong = tolak seorder.
-    const skuBaris: { sku: string; qty: number; subtotal: number }[] = [];
+    // qty bersih = Jumlah − Returned quantity (retur parsial mengurangi unit terjual).
+    const skuBaris: { sku: string; qty: number; subtotal: number; harga: number }[] = [];
     let alasanTolak: string | null = null;
     for (const r of daftar) {
       const sku = teks(r["Nomor Referensi SKU"]) || teks(r["SKU Induk"]);
@@ -104,17 +119,25 @@ export async function hitungLabaShopee(
         alasanTolak = "SKU kosong (ref + induk kosong)";
         break;
       }
-      skuBaris.push({ sku: sku.toUpperCase(), qty: angkaShopee(r["Jumlah"]), subtotal: angkaShopee(r["Subtotal Pesanan"]) });
+      const qty = Math.max(0, angkaShopee(r["Jumlah"]) - angkaShopee(r["Returned quantity"]));
+      if (qty === 0) continue; // baris retur penuh: tak hitung, tak tolak
+      skuBaris.push({
+        sku: sku.toUpperCase(),
+        qty,
+        subtotal: angkaShopee(r["Subtotal Pesanan"]),
+        harga: angkaShopee(r["Harga Setelah Diskon"]),
+      });
     }
     if (alasanTolak) {
       tolak.push({ no_pesanan: no, alasan: alasanTolak });
       continue;
     }
+    if (skuBaris.length === 0) continue; // order retur penuh
 
     // HPP master; tak cocok = tolak seorder.
     let hppOrder = 0;
     for (const b of skuBaris) {
-      const h = await ambilHpp(b.sku);
+      const h = await hppSku(b.sku);
       if (h == null) {
         alasanTolak = `SKU ${b.sku} tak cocok master stok`;
         break;
@@ -142,13 +165,50 @@ export async function hitungLabaShopee(
     const biayaOrder = persenPreset + flatPreset + biayaFile;
 
     jml_order += 1;
-    jml_baris += daftar.length;
+    jml_baris += skuBaris.length;
     omzet += omzetOrder;
     hpp += hppOrder;
     biaya += biayaOrder;
+
+    // Agregat per SKU: biaya dialokasi proporsional ke subtotal baris.
+    for (const b of skuBaris) {
+      const h = (await hppSku(b.sku)) ?? 0;
+      const porsi = omzetOrder > 0 ? b.subtotal / omzetOrder : 0;
+      const biayaAlokasi = Math.round(biayaOrder * porsi);
+      const ada = perSku.get(b.sku);
+      if (ada) {
+        ada.unit += b.qty;
+        ada.omzetSku += b.subtotal;
+        ada.hppSku += b.qty * h;
+        ada.biayaSku += biayaAlokasi;
+        ada.kontribusi += b.subtotal - b.qty * h - biayaAlokasi;
+        if (b.harga > 0) ada.harga = b.harga;
+      } else {
+        perSku.set(b.sku, {
+          sku: b.sku, unit: b.qty, hppSatuan: h, harga: b.harga,
+          omzetSku: b.subtotal, hppSku: b.qty * h, biayaSku: biayaAlokasi,
+          kontribusi: b.subtotal - b.qty * h - biayaAlokasi,
+        });
+      }
+    }
   }
 
-  return { jml_order, jml_baris, omzet, hpp, biaya, laba: omzet - hpp - biaya, tolak };
+  const rincian: RincianSku[] = [...perSku.values()]
+    .map((s) => {
+      const marginSatuan = s.unit > 0 ? Math.round(s.kontribusi / s.unit) : 0;
+      return {
+        sku: s.sku,
+        unit: s.unit,
+        hppSatuan: s.hppSatuan,
+        hargaJual: s.harga,
+        marginSatuan,
+        marginPersen: s.omzetSku > 0 ? Math.round(((s.kontribusi / s.omzetSku) * 100) * 10) / 10 : 0,
+        kontribusi: s.kontribusi,
+      };
+    })
+    .sort((a, b) => b.kontribusi - a.kontribusi);
+
+  return { jml_order, jml_baris, omzet, hpp, biaya, laba: omzet - hpp - biaya, tolak, rincian };
 }
 
 /** Resolver HPP produksi via D1 products. */
@@ -160,7 +220,7 @@ export function ambilHppDb(db: D1Database): (sku: string) => Promise<number | nu
   };
 }
 
-/** Simpan snapshot agregat (timpa per tanggal Jakarta). */
+/** Simpan snapshot agregat + rincian SKU (timpa per tanggal). */
 export async function simpanLabaHarian(
   db: D1Database,
   tanggal: string,
@@ -170,25 +230,49 @@ export async function simpanLabaHarian(
   marketplace = "shopee"
 ): Promise<Hasil<{ tanggal: string }>> {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(tanggal)) return gagal(400, "Tanggal harus YYYY-MM-DD.");
-  await db
-    .prepare(
-      "INSERT OR REPLACE INTO laba_harian (tanggal, marketplace, jml_order, jml_baris, omzet, hpp, biaya, laba, tolak_json, file, at, by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    )
-    .bind(
-      tanggal,
-      marketplace,
-      agregat.jml_order,
-      agregat.jml_baris,
-      agregat.omzet,
-      agregat.hpp,
-      agregat.biaya,
-      agregat.laba,
-      JSON.stringify(agregat.tolak),
-      file.slice(0, 120),
-      sekarang(),
-      oleh
-    )
-    .run();
+  // Kompatibel pra-migrasi 0010: coba tulis rincian_json, fallback tanpa kolom itu.
+  try {
+    await db
+      .prepare(
+        "INSERT OR REPLACE INTO laba_harian (tanggal, marketplace, jml_order, jml_baris, omzet, hpp, biaya, laba, tolak_json, rincian_json, file, at, by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      )
+      .bind(
+        tanggal,
+        marketplace,
+        agregat.jml_order,
+        agregat.jml_baris,
+        agregat.omzet,
+        agregat.hpp,
+        agregat.biaya,
+        agregat.laba,
+        JSON.stringify(agregat.tolak),
+        JSON.stringify(agregat.rincian),
+        file.slice(0, 120),
+        sekarang(),
+        oleh
+      )
+      .run();
+  } catch {
+    await db
+      .prepare(
+        "INSERT OR REPLACE INTO laba_harian (tanggal, marketplace, jml_order, jml_baris, omzet, hpp, biaya, laba, tolak_json, file, at, by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      )
+      .bind(
+        tanggal,
+        marketplace,
+        agregat.jml_order,
+        agregat.jml_baris,
+        agregat.omzet,
+        agregat.hpp,
+        agregat.biaya,
+        agregat.laba,
+        JSON.stringify(agregat.tolak),
+        file.slice(0, 120),
+        sekarang(),
+        oleh
+      )
+      .run();
+  }
   return { ok: true, tanggal };
 }
 
@@ -219,6 +303,18 @@ export async function muatLabaHarian(db: D1Database, tanggal: string): Promise<S
   } catch {
     tolak = [];
   }
+  // Rincian dibaca terpisah agar kompatibel pra-migrasi 0010.
+  let rincian: RincianSku[] = [];
+  try {
+    const r2 = await db
+      .prepare("SELECT rincian_json FROM laba_harian WHERE tanggal = ?")
+      .bind(tanggal)
+      .first<{ rincian_json: string }>();
+    const parsed: unknown = JSON.parse(r2?.rincian_json ?? "[]");
+    if (Array.isArray(parsed)) rincian = parsed as RincianSku[];
+  } catch {
+    rincian = [];
+  }
   return {
     tanggal: row.tanggal,
     marketplace: row.marketplace,
@@ -229,6 +325,7 @@ export async function muatLabaHarian(db: D1Database, tanggal: string): Promise<S
     biaya: row.biaya,
     laba: row.laba,
     tolak,
+    rincian,
     file: row.file,
     at: row.at,
     by: row.by,

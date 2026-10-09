@@ -58,6 +58,7 @@ export function DialogLabaShopee({
   const [rows, setRows] = useState<Record<string, unknown>[] | null>(null);
   const [agregat, setAgregat] = useState<Agregat | null>(null);
   const [mengirim, setMengirim] = useState(false);
+  const [tanggal, setTanggal] = useState(() => new Date().toISOString().slice(0, 10));
 
   function tutup(v: boolean) {
     if (mengirim) return;
@@ -123,7 +124,7 @@ export function DialogLabaShopee({
       const res = await fetch("/api/laba", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ aksi: "simpan", rows, file: file?.name ?? "" }),
+        body: JSON.stringify({ aksi: "simpan", rows, file: file?.name ?? "", tanggal }),
         credentials: "include",
       });
       const raw: unknown = await res.json().catch(() => null);
@@ -151,8 +152,8 @@ export function DialogLabaShopee({
         <DialogHeader>
           <DialogTitle>Hitung Laba Shopee</DialogTitle>
           <DialogDescription>
-            Upload file export shipping Shopee (.xlsx, sheet &quot;orders&quot;) → preview estimasi → Simpan
-            Perhitungan (tanggal hari ini WIB).
+            Upload file export Order.all Shopee (.xlsx, sheet &quot;orders&quot;) → preview estimasi → pilih tanggal
+            simpan → Simpan Perhitungan. Patokan harga = Subtotal Pesanan.
           </DialogDescription>
         </DialogHeader>
         {!agregat ? (
@@ -232,7 +233,16 @@ export function DialogLabaShopee({
               >
                 Ganti file
               </Button>
-              <Button onClick={() => void simpan()} disabled={mengirim} data-testid="simpan-laba-shopee">
+              <Input
+                type="date"
+                className="h-11 md:h-8"
+                aria-label="Tanggal simpan"
+                data-testid="tanggal-simpan-laba"
+                value={tanggal}
+                onChange={(e) => setTanggal(e.target.value)}
+                disabled={mengirim}
+              />
+              <Button onClick={() => void simpan()} disabled={mengirim || !/^\d{4}-\d{2}-\d{2}$/.test(tanggal)} data-testid="simpan-laba-shopee">
                 {mengirim ? <Spinner data-icon="inline-start" /> : null}
                 {mengirim ? "Menyimpan…" : "Simpan Perhitungan"}
               </Button>

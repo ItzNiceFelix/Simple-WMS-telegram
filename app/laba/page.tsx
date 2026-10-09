@@ -28,6 +28,16 @@ import { formatAngka, formatRupiah } from "@/lib/dashboard/format";
 
 type Tolak = { no_pesanan: string; alasan: string };
 
+type Rincian = {
+  sku: string;
+  unit: number;
+  hppSatuan: number;
+  hargaJual: number;
+  marginSatuan: number;
+  marginPersen: number;
+  kontribusi: number;
+};
+
 type Snapshot = {
   tanggal: string;
   marketplace: string;
@@ -38,6 +48,7 @@ type Snapshot = {
   biaya: number;
   laba: number;
   tolak: Tolak[];
+  rincian: Rincian[];
   file: string;
 };
 
@@ -249,6 +260,42 @@ function LabaShopee() {
                     </li>
                   ))}
                 </ul>
+              </div>
+            ) : null}
+            {(snapshot.rincian?.length ?? 0) > 0 ? (
+              <div data-testid="rincian-sku-laba">
+                <h2 className="mb-1 text-sm font-semibold">Rincian SKU Terjual</h2>
+                <p className="mb-2 text-xs text-muted-foreground">
+                  Urut kontribusi margin terbesar. Harga jual = info (tak masuk hitung); patokan = Subtotal Pesanan.
+                </p>
+                <div className="overflow-x-auto rounded-lg border border-border">
+                  <table className="w-full min-w-[640px] text-sm">
+                    <thead>
+                      <tr className="bg-muted text-left text-xs text-muted-foreground">
+                        <th className="px-3 py-2 font-medium">SKU Master</th>
+                        <th className="px-3 py-2 text-right font-medium">Unit Terjual</th>
+                        <th className="px-3 py-2 text-right font-medium">HPP / Unit</th>
+                        <th className="px-3 py-2 text-right font-medium">Harga Jual / Unit</th>
+                        <th className="px-3 py-2 text-right font-medium">Est. Margin / Unit</th>
+                        <th className="px-3 py-2 text-right font-medium">Total Kontribusi Margin</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {snapshot.rincian.map((r) => (
+                        <tr key={r.sku} className="border-t border-border tabular-nums" data-testid={`rincian-${r.sku}`}>
+                          <td className="px-3 py-2 font-medium">{r.sku}</td>
+                          <td className="px-3 py-2 text-right">{formatAngka(r.unit)}</td>
+                          <td className="px-3 py-2 text-right">{formatRupiah(r.hppSatuan)}</td>
+                          <td className="px-3 py-2 text-right">{r.hargaJual > 0 ? formatRupiah(r.hargaJual) : "—"}</td>
+                          <td className="px-3 py-2 text-right">
+                            {formatRupiah(r.marginSatuan)} ({formatAngka(Math.round(r.marginPersen * 10) / 10)}%)
+                          </td>
+                          <td className="px-3 py-2 text-right font-semibold">{formatRupiah(r.kontribusi)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               </div>
             ) : null}
           </>
