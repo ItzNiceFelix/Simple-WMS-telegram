@@ -25,7 +25,7 @@ interface Props {
   onOpenChange: (open: boolean) => void
   gudangId?: string
   onSukses?: () => void
-  tipe?: "produk" | "pesanan"
+  tipe?: "produk" | "pesanan" | "pesanan-shopee";
 }
 
 type Preview = {
@@ -48,7 +48,7 @@ export function DialogImportExcel({ open, onOpenChange, gudangId = "ONLINE", onS
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<Preview | null>(null)
   const [mengirim, setMengirim] = useState(false)
-  const endpoint = tipe === "pesanan" ? "/api/order" : "/api/excel"
+  const endpoint = tipe === "pesanan" || tipe === "pesanan-shopee" ? "/api/order" : "/api/excel";
 
   function tutup(v: boolean) {
     if (mengirim) return
@@ -63,34 +63,33 @@ export function DialogImportExcel({ open, onOpenChange, gudangId = "ONLINE", onS
     if (!file) return
     setMengirim(true)
     try {
+      if (tipe === "pesanan-shopee") {
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, { type: "array" });
+        const ordersWs = wb.Sheets["orders"];
+        const advanceWs = wb.Sheets["Advance Fulfilment"];
+        if (!ordersWs || !advanceWs) { tampilkanGagalTulis('Workbook wajib memiliki sheet "orders" dan "Advance Fulfilment".'); return; }
+        const ordersRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ordersWs, { defval: "" });
+        const advanceRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(advanceWs, { defval: "" });
+        const res = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ aksi: "preview-shopee", ordersRows, advanceRows, file: file.name }), credentials: "include" });
+        const raw = await res.json().catch(() => null) as { ok?: boolean; error?: string; batch_id?: number; review?: { no_pesanan: string; no_resi: string }[]; gagal?: { no_pesanan: string; pesan: string }[]; orders?: unknown[] } | null;
+        if (!res.ok || !raw?.ok) { tampilkanGagalTulis(raw?.error ?? `Gagal preview (${res.status}).`); return; }
+        setPreview({ batch_id: raw.batch_id ?? 0, total: ordersRows.length + advanceRows.length, sukses: raw.orders?.length ?? 0, gagal: (raw.gagal ?? []).map((g, i) => ({ baris: i + 1, pesan: `${g.no_pesanan}: ${g.pesan}` })), peringatan: (raw.review ?? []).map((r) => `Review resi ${r.no_pesanan}: ${r.no_resi}`) });
+        return;
+      }
       if (tipe === "pesanan") {
-        const buf = await file.arrayBuffer()
-        const wb = XLSX.read(buf, { type: "array" })
-        const nama = wb.SheetNames.includes("Pesanan") ? "Pesanan" : wb.SheetNames[0]
-        const ws = nama ? wb.Sheets[nama] : undefined
-        if (!nama || !ws) {
-          tampilkanGagalTulis("Sheet Pesanan tidak ditemukan.")
-          return
-        }
-        const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: "" })
-        if (rows.length === 0) {
-          tampilkanGagalTulis(`Sheet ${nama} kosong.`)
-          return
-        }
-        const res = await fetch(endpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ aksi: "preview", rows, file: file.name }),
-          credentials: "include",
-        })
+        const buf = await file.arrayBuffer();
+        const wb = XLSX.read(buf, { type: "array" });
+        const nama = wb.SheetNames.includes("Pesanan") ? "Pesanan" : wb.SheetNames[0];
+        const ws = nama ? wb.Sheets[nama] : undefined;
+        if (!nama || !ws) { tampilkanGagalTulis("Sheet Pesanan tidak ditemukan."); return; }
+        const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: "" });
+        if (rows.length === 0) { tampilkanGagalTulis(`Sheet ${nama} kosong.`); return; }
+        const res = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ aksi: "preview", rows, file: file.name }), credentials: "include" });
         if (!res.ok) throw new Error(`Gagal preview pesanan (${res.status}).`);
-        const raw: unknown = await res.json()
-        if (!isPreviewOk(raw)) {
-          tampilkanGagalTulis(raw && typeof raw === "object" && "error" in raw && typeof raw.error === "string" ? raw.error : `Gagal (${res.status}).`)
-          return
-        }
-        setPreview(raw)
-        return
+        const raw: unknown = await res.json();
+        if (!isPreviewOk(raw)) { tampilkanGagalTulis(`Gagal (${res.status}).`); return; }
+        setPreview(raw); return;
       }
       const form = new FormData()
       form.append("file", file)

@@ -92,7 +92,62 @@ function DaftarOrder() {
   const [mp, setMp] = useState("");
   const [target, setTarget] = useState<Target | null>(null);
   const [mengirim, setMengirim] = useState(false);
+  const [terpilih, setTerpilih] = useState<Set<string>>(new Set());
   const mpTertunda = useDeferredValue(mp.trim().toLowerCase());
+
+  const kunciOrder = (o: RincianOrder) => `${o.marketplace}|${o.no_pesanan}`;
+
+  function togglePilih(o: RincianOrder): void {
+    const k = kunciOrder(o);
+    setTerpilih((lama) => {
+      const baru = new Set(lama);
+      if (baru.has(k)) baru.delete(k);
+      else baru.add(k);
+      return baru;
+    });
+  }
+
+  function pilihSemua(): void {
+    if (!orders) return;
+    setTerpilih(new Set(orders.map(kunciOrder)));
+  }
+
+  async function aksiMassal(ke: string): Promise<void> {
+    if (!orders || terpilih.size === 0) return;
+    const targets = orders
+      .filter((o) => terpilih.has(kunciOrder(o)))
+      .map((o) => ({ marketplace: o.marketplace, no_pesanan: o.no_pesanan, ke }));
+    setMengirim(true);
+    try {
+      const res = await fetch("/api/order", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ aksi: "transisi-batch", targets }),
+      });
+      const data = (await res.json().catch(() => null)) as { ok?: boolean; error?: string; count?: number } | null;
+      if (!res.ok || !data?.ok) {
+        tampilkanGagalTulis(data?.error ?? `Gagal (${res.status}).`);
+        return;
+      }
+      toast.success(`${data.count ?? targets.length} order → ${ke}.`);
+      setTerpilih(new Set());
+      await muat();
+    } catch {
+      toast.error("Jaringan gagal. Coba lagi.");
+    } finally {
+      setMengirim(false);
+    }
+  }
+
+  function unduhPicklist(): void {
+    if (!orders || terpilih.size === 0) return;
+    const targets = orders
+      .filter((o) => terpilih.has(kunciOrder(o)))
+      .map((o) => ({ marketplace: o.marketplace, no_pesanan: o.no_pesanan }));
+    const q = new URLSearchParams({ aksi: "picklist-pdf", targets: JSON.stringify(targets) });
+    window.open(`/api/order?${q}`, "_blank");
+  }
 
   const muat = useCallback(async () => {
     setError(null);
@@ -206,6 +261,48 @@ function DaftarOrder() {
           </Field>
         </div>
 
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border p-2" data-testid="toolbar-bulk-order">
+          <Button size="sm" variant="outline" className="h-9" data-testid="pilih-semua-order" onClick={pilihSemua} disabled={!orders || orders.length === 0}>
+            Pilih semua
+          </Button>
+          <Button size="sm" variant="ghost" className="h-9" onClick={() => setTerpilih(new Set())} disabled={terpilih.size === 0}>
+            Kosongkan
+          </Button>
+          <span className="text-sm text-muted-foreground" data-testid="jumlah-terpilih-order">
+            {terpilih.size} dipilih
+          </span>
+          <div className="flex flex-wrap gap-2 md:ml-auto">
+            {[
+              { ke: "pack", label: "Pack" },
+              { ke: "kirim", label: "Kirim" },
+              { ke: "selesai", label: "Selesai" },
+              { ke: "batal", label: "Batal" },
+            ].map((a) => (
+              <Button
+                key={a.ke}
+                size="sm"
+                variant={a.ke === "batal" ? "destructive" : "outline"}
+                className="h-9"
+                data-testid={`bulk-${a.ke}-order`}
+                disabled={mengirim || terpilih.size === 0}
+                onClick={() => void aksiMassal(a.ke)}
+              >
+                {a.label}
+              </Button>
+            ))}
+            <Button
+              size="sm"
+              className="h-9"
+              data-testid="download-picklist-order"
+              disabled={terpilih.size === 0}
+              onClick={unduhPicklist}
+            >
+              <FileDown data-icon="inline-start" />
+              Picklist PDF
+            </Button>
+          </div>
+        </div>
+
         {error ? (
           <Alert variant="destructive">
             <AlertTitle>Gagal memuat</AlertTitle>
@@ -232,6 +329,7 @@ function DaftarOrder() {
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-10">Pilih</TableHead>
                   <TableHead>No Pesanan</TableHead>
                   <TableHead>MP</TableHead>
                   <TableHead>Tanggal</TableHead>
@@ -244,6 +342,16 @@ function DaftarOrder() {
               <TableBody>
                 {orders.map((o) => (
                   <TableRow key={`${o.marketplace}/${o.no_pesanan}`} data-testid={`order-${o.no_pesanan}`}>
+                    <TableCell>
+                      <input
+                        type="checkbox"
+                        className="size-5 accent-primary"
+                        aria-label={`Pilih ${o.no_pesanan}`}
+                        data-testid={`pilih-${o.no_pesanan}`}
+                        checked={terpilih.has(kunciOrder(o))}
+                        onChange={() => togglePilih(o)}
+                      />
+                    </TableCell>
                     <TableCell className="font-medium">{o.no_pesanan}</TableCell>
                     <TableCell>{o.marketplace}</TableCell>
                     <TableCell className="tabular-nums">

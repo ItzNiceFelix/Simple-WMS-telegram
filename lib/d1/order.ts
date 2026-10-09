@@ -136,53 +136,7 @@ export async function imporPesanan(db: D1Database, daftar: BarisPesanan[], oleh:
   return { ok: true, order: urutan.length, item: nItem };
 }
 
-const PETA_TRANSISI: Record<string, string[]> = {
-  pending: ["pack", "batal"],
-  pack: ["kirim", "batal"],
-  kirim: ["selesai", "batal"],
-  selesai: [],
-  batal: [],
-};
-
-export async function transisiFulfill(db: D1Database, mp: string, no: string, ke: "pack" | "kirim" | "selesai" | "batal", oleh: string | null): Promise<Hasil<{ status: string }>> {
-  const order = await db.prepare("SELECT status_fulfill FROM orders WHERE marketplace = ? AND no_pesanan = ?").bind(mp, no).first<{ status_fulfill: string }>();
-  if (!order) return gagal(404, "Pesanan tidak ditemukan.");
-  if (!PETA_TRANSISI[order.status_fulfill]?.includes(ke)) return gagal(409, `Transisi ${order.status_fulfill} → ${ke} tidak diizinkan.`);
-  if (ke === "pack") {
-    const { results: items } = await db.prepare("SELECT sku, qty FROM order_items WHERE marketplace = ? AND no_pesanan = ?").bind(mp, no).all<{ sku: string; qty: number }>();
-    for (const it of items) {
-      const stok = await bacaQty(db, it.sku, GUDANG_ONLINE);
-      if (stok < it.qty) return gagal(400, `Stok ${it.sku} tidak cukup (${stok} < ${it.qty}).`);
-    }
-    const stmts: D1PreparedStatement[] = [];
-    const at = sekarang();
-    for (const it of items) {
-      const lama = await bacaQty(db, it.sku, GUDANG_ONLINE);
-      stmts.push(
-        db.prepare("INSERT INTO stock_by_bin (sku, warehouse_id, qty) VALUES (?, ?, ?) ON CONFLICT(sku, warehouse_id) DO UPDATE SET qty = excluded.qty").bind(it.sku, GUDANG_ONLINE, lama - it.qty),
-        db.prepare("INSERT INTO stock_moves (sku, qty, jenis, gudang_id, source, status, created_by, at, by) VALUES (?, ?, 'jual_mp', ?, 'web_dashboard', 'processed', ?, ?, ?)").bind(it.sku, -it.qty, GUDANG_ONLINE, oleh, at, oleh)
-      );
-    }
-    await db.batch(stmts);
-  }
-  if (ke === "batal") {
-    const { results: items } = await db.prepare("SELECT sku, qty FROM order_items WHERE marketplace = ? AND no_pesanan = ?").bind(mp, no).all<{ sku: string; qty: number }>();
-    if (order.status_fulfill === "pack" || order.status_fulfill === "kirim") {
-      const stmts: D1PreparedStatement[] = [];
-      const at = sekarang();
-      for (const it of items) {
-        const lama = await bacaQty(db, it.sku, GUDANG_ONLINE);
-        stmts.push(
-          db.prepare("INSERT INTO stock_by_bin (sku, warehouse_id, qty) VALUES (?, ?, ?) ON CONFLICT(sku, warehouse_id) DO UPDATE SET qty = excluded.qty").bind(it.sku, GUDANG_ONLINE, lama + it.qty),
-          db.prepare("INSERT INTO stock_moves (sku, qty, jenis, gudang_id, source, status, created_by, at, by) VALUES (?, ?, 'retur_mp', ?, 'web_dashboard', 'processed', ?, ?, ?)").bind(it.sku, it.qty, GUDANG_ONLINE, oleh, at, oleh)
-        );
-      }
-      await db.batch(stmts);
-    }
-  }
-  await db.prepare("UPDATE orders SET status_fulfill = ? WHERE marketplace = ? AND no_pesanan = ?").bind(ke, mp, no).run();
-  return { ok: true, status: ke };
-}
+export { transisiFulfill, transisiFulfillBatch, type KeFulfill, type TargetFulfill } from "./orderTransisi";
 
 export type OrderDetail = {
   marketplace: string; no_pesanan: string; tanggal: number; buyer: string;

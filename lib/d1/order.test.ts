@@ -1,6 +1,6 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { alokasiLabaSku, ambilOrder, hitungLaba, imporPesanan, listOrder, porsiSku, transisiFulfill, type BarisPesanan, type OrderItem } from "./order";
+import { alokasiLabaSku, ambilOrder, hitungLaba, imporPesanan, listOrder, porsiSku, transisiFulfill, transisiFulfillBatch, type BarisPesanan, type OrderItem } from "./order";
 import type { Hasil } from "./db";
 
 describe("hitungLaba", () => {
@@ -68,6 +68,10 @@ function buatDbOrder() {
           const a = st._args;
           if (sql.includes("FROM products WHERE sku")) return products[String(a[0])] ?? null;
           if (sql.startsWith("SELECT qty FROM stock_by_bin")) return { qty: bins[`${a[0]}|${a[1]}`] ?? 0 };
+          if (sql.includes("SELECT status_fulfill, stok_dikurangi FROM orders")) {
+            const o = orders[kunciOrder(String(a[0]), String(a[1]))];
+            return o ? { status_fulfill: o["status_fulfill"], stok_dikurangi: o["stok_dikurangi"] ?? 0 } : null;
+          }
           if (sql.includes("SELECT status_fulfill FROM orders")) {
             const o = orders[kunciOrder(String(a[0]), String(a[1]))];
             return o ? { status_fulfill: o["status_fulfill"] } : null;
@@ -84,7 +88,15 @@ function buatDbOrder() {
             return { meta: {} };
           }
           if (sql.startsWith("INSERT INTO stock_moves")) {
-            moves.push({ sku: a[0], qty: a[1], jenis: sql.includes("'jual_mp'") ? "jual_mp" : "retur_mp", gudang_id: a[2] });
+            moves.push({ sku: a[0], qty: a[1], jenis: String(a[2]), gudang_id: a[3] });
+            return { meta: {} };
+          }
+          if (sql.startsWith("UPDATE orders SET status_fulfill = ?, stok_dikurangi = ?")) {
+            const o = orders[kunciOrder(String(a[2]), String(a[3]))];
+            if (o) {
+              o["status_fulfill"] = a[0];
+              o["stok_dikurangi"] = a[1];
+            }
             return { meta: {} };
           }
           if (sql.startsWith("UPDATE orders SET status_fulfill")) {
@@ -94,7 +106,7 @@ function buatDbOrder() {
           }
           if (sql.startsWith("INSERT OR IGNORE INTO orders")) {
             const k = kunciOrder(String(a[0]), String(a[1]));
-            if (!orders[k]) orders[k] = { marketplace: a[0], no_pesanan: a[1], tanggal: a[2], buyer: a[3], status_fulfill: "pending", pajak_pph: a[4], pajak_ppn_persen: a[5] };
+            if (!orders[k]) orders[k] = { marketplace: a[0], no_pesanan: a[1], tanggal: a[2], buyer: a[3], status_fulfill: "pending", pajak_pph: a[4], pajak_ppn_persen: a[5], stok_dikurangi: 0 };
             return { meta: {} };
           }
           if (sql.startsWith("INSERT OR REPLACE INTO order_items")) {
@@ -231,6 +243,46 @@ describe("transisiFulfill", () => {
     await imporPesanan(db, [barisA("SHP-4", 1)], null);
     assert.equal(statusGagal(await transisiFulfill(db, "shopee", "SHP-4", "kirim", null)), 409);
     assert.equal(statusGagal(await transisiFulfill(db, "shopee", "TAK-ADA", "pack", null)), 404);
+  });
+});
+
+describe("transisiFulfillBatch", () => {
+  it("dua order pack: keduanya terpotong", async () => {
+    const db = buatDbOrder();
+    await imporPesanan(db, [barisA("B-1", 2), barisA("B-2", 3)], null);
+    const r = await transisiFulfillBatch(db, [{ mp: "shopee", no: "B-1", ke: "pack" }, { mp: "shopee", no: "B-2", ke: "pack" }], null);
+    assert.equal(r.ok, true);
+    assert.equal(db.data.bins["A|ONLINE"], 5);
+    assert.equal(db.data.moves.filter((m) => m["jenis"] === "jual_mp").length, 2);
+  });
+
+  it("satu order stok kurang: tidak ada perubahan sama sekali", async () => {
+    const db = buatDbOrder();
+    await imporPesanan(db, [barisA("B-3", 4), barisA("B-4", 9)], null);
+    const r = await transisiFulfillBatch(db, [{ mp: "shopee", no: "B-3", ke: "pack" }, { mp: "shopee", no: "B-4", ke: "pack" }], null);
+    assert.equal(statusGagal(r), 400);
+    assert.equal(db.data.bins["A|ONLINE"], 10);
+    assert.equal(db.data.moves.length, 0);
+    assert.equal(db.data.orders[kunciOrder("shopee", "B-3")]["status_fulfill"], "pending");
+  });
+
+  it("batal order ber-resi eksternal tidak menyentuh stok", async () => {
+    const db = buatDbOrder();
+    await imporPesanan(db, [barisA("B-5", 2)], null);
+    db.data.orders[kunciOrder("shopee", "B-5")]["status_fulfill"] = "kirim";
+    const r = await transisiFulfillBatch(db, [{ mp: "shopee", no: "B-5", ke: "batal" }], null);
+    assert.equal(r.ok, true);
+    assert.equal(db.data.bins["A|ONLINE"], 10);
+    assert.equal(db.data.moves.filter((m) => m["jenis"] === "retur_mp").length, 0);
+  });
+
+  it("target duplikat dihitung sekali", async () => {
+    const db = buatDbOrder();
+    await imporPesanan(db, [barisA("B-6", 3)], null);
+    const r = await transisiFulfillBatch(db, [{ mp: "shopee", no: "B-6", ke: "pack" }, { mp: "shopee", no: "B-6", ke: "pack" }], null);
+    assert.equal(r.ok, true);
+    if (r.ok) assert.equal(r.count, 1);
+    assert.equal(db.data.bins["A|ONLINE"], 7);
   });
 });
 
