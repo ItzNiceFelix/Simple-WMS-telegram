@@ -5,11 +5,12 @@
 import XLSX from "xlsx";
 import { writeFileSync } from "node:fs";
 
-const HEADER = ["SKU*", "Nama*", "Kategori", "Satuan*", "StokAwal", "HPP", "HargaJual", "RakBin", "StokMin", "Barcode", "Expired(YYYY-MM-DD)", "Aktif"];
+const HEADER = ["SKU*", "Nama*", "Kategori", "Satuan*", "StokAwal", "Gudang", "HPP", "HargaJual", "RakBin", "StokMin", "Barcode", "Expired(YYYY-MM-DD)", "Aktif"];
 const CONTOH = [
-  ["BRG-001", "Kemeja Lengan Panjang", "Pakaian", "pcs", 100, 75000, 129000, "A-01", 10, "8991234567890", "", "YA"],
-  ["BRG-002", "Celana Chino Slim", "Pakaian", "pcs", 50, 95000, 159000, "A-02", 5, "", "", "YA"],
-  ["BRG-003", "Kopi Bubuk 250g", "Makanan", "pcs", 200, 28000, 45000, "B-01", 20, "", "2027-12-31", "YA"],
+  ["BRG-001", "Kemeja Lengan Panjang", "Pakaian", "pcs", 100, "ONLINE", 75000, 129000, "A-01", 10, "8991234567890", "", "YA"],
+  ["BRG-001", "Kemeja Lengan Panjang", "Pakaian", "pcs", 20, "GUDANG-A", 75000, 129000, "A-01", 10, "8991234567890", "", "YA"],
+  ["BRG-002", "Celana Chino Slim", "Pakaian", "pcs", 50, "", 95000, 159000, "A-02", 5, "", "", "YA"],
+  ["BRG-003", "Kopi Bubuk 250g", "Makanan", "pcs", 200, "ONLINE", 28000, 45000, "B-01", 20, "", "2027-12-31", "YA"],
 ];
 const PANDUAN = [
   ["Kolom", "Wajib", "Aturan"],
@@ -17,7 +18,8 @@ const PANDUAN = [
   ["Nama*", "Ya", "Nama produk Accurate/master"],
   ["Kategori", "Tidak", "Bebas, untuk filter"],
   ["Satuan*", "Ya", "pcs/dus/pak/dll"],
-  ["StokAwal", "Tidak", "Bilangan bulat >= 0, default 0"],
+  ["StokAwal", "Tidak", "Bilangan bulat >= 0, default 0. Ditulis ke gudang kolom Gudang."],
+  ["Gudang", "Tidak", "ID gudang terdaftar (huruf besar). Kosong = gudang pilihan saat import. Satu SKU boleh multi-baris untuk gudang berbeda. Gudang belum terdaftar = baris ditolak."],
   ["HPP", "Tidak", "Bilangan bulat >= 0 (rupiah)"],
   ["HargaJual", "Tidak", "Bilangan bulat >= 0 (rupiah)"],
   ["RakBin", "Tidak", "Kode rak/bin, dicatat (bin penuh Fase 2 lanjutan)"],

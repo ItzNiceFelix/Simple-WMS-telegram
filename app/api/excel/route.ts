@@ -20,6 +20,7 @@ const MAKS_FILE = 5 * 1024 * 1024;
 type BarisValid = {
   sku: string; nama: string; satuan: string; stokAwal: number;
   hpp: number | null; kategori: string | null; stokMin: number | null; barcode: string | null;
+  gudang: string | null;
 };
 
 function angkaBaris(v: unknown): number | null {
@@ -55,6 +56,7 @@ function validasiBaris(row: Record<string, unknown>, noBaris: number): { ok: tru
       kategori: String(row["Kategori"] ?? "").trim() || null,
       stokMin: (stokMin as number | null) ?? null,
       barcode,
+      gudang: String(row["Gudang"] ?? "").trim().toUpperCase() || null,
     },
   };
 }
@@ -123,9 +125,10 @@ export async function POST(request: Request) {
     } catch {
       return json({ ok: false, error: "Payload batch rusak." }, 500);
     }
-    const gudangId = batch.gudang_id || "ONLINE";
-    if (!user.is_owner && !user.scope_gudang.includes(gudangId)) {
-      return json({ ok: false, error: "Di luar scope gudang Anda." }, 403);
+    const gudangDefault = batch.gudang_id || "ONLINE";
+    const diLuarScope = daftar.filter((b) => !user.is_owner && !user.scope_gudang.includes(b.gudang ?? gudangDefault));
+    if (diLuarScope.length > 0) {
+      return json({ ok: false, error: `Di luar scope gudang Anda: ${diLuarScope.slice(0, 3).map((b) => `${b.sku}@${b.gudang ?? gudangDefault}`).join(", ")}${diLuarScope.length > 3 ? ` (+${diLuarScope.length - 3})` : ""}.` }, 403);
     }
     const at = Math.floor(Date.now() / 1000);
     let sukses = 0;
@@ -133,14 +136,15 @@ export async function POST(request: Request) {
       const chunk = daftar.slice(i, i + 50);
       const stmts: D1PreparedStatement[] = [];
       for (const b of chunk) {
+        const g = b.gudang ?? gudangDefault;
         stmts.push(
           db.prepare(`INSERT INTO products (sku, nama_accurate, nama_accurate_normalized, hpp, stok_min, is_online_product, updated_at)
             VALUES (?, ?, ?, ?, ?, 1, ?) ON CONFLICT(sku) DO UPDATE SET nama_accurate = excluded.nama_accurate, hpp = excluded.hpp, stok_min = excluded.stok_min, updated_at = excluded.updated_at`)
             .bind(b.sku, b.nama, normalisasiNama(b.nama), b.hpp, b.stokMin, at),
           db.prepare("INSERT INTO stock_by_bin (sku, warehouse_id, qty) VALUES (?, ?, ?) ON CONFLICT(sku, warehouse_id) DO UPDATE SET qty = excluded.qty")
-            .bind(b.sku, gudangId, b.stokAwal),
+            .bind(b.sku, g, b.stokAwal),
           db.prepare("INSERT INTO stock_moves (sku, qty, jenis, gudang_id, source, status, created_by, at, by) VALUES (?, ?, 'restock', ?, 'web_dashboard', 'processed', ?, ?, ?)")
-            .bind(b.sku, b.stokAwal, gudangId, user.tg_id, at, user.tg_id)
+            .bind(b.sku, b.stokAwal, g, user.tg_id, at, user.tg_id)
         );
       }
       await db.batch(stmts);
@@ -168,28 +172,35 @@ export async function POST(request: Request) {
   const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: "" });
   if (rows.length === 0) return json({ ok: false, error: "Sheet kosong." }, 400);
   if (rows.length > 5000) return json({ ok: false, error: "Maksimal 5000 baris per import." }, 400);
-  const gudangId = typeof form.get("gudang_id") === "string" && form.get("gudang_id") ? String(form.get("gudang_id")) : "ONLINE";
+  const gudangDefault = typeof form.get("gudang_id") === "string" && form.get("gudang_id") ? String(form.get("gudang_id")).trim().toUpperCase() : "ONLINE";
 
   const sukses: BarisValid[] = [];
   const gagal: { baris: number; pesan: string }[] = [];
-  const lihatSku = new Set<string>();
-  rows.forEach((r, i) => {
+  const lihatSkuGudang = new Set<string>();
+  for (let i = 0; i < rows.length; i++) {
     const noBaris = i + 2;
-    const v = validasiBaris(r, noBaris);
+    const v = validasiBaris(rows[i], noBaris);
     if (!v.ok) {
       gagal.push({ baris: noBaris, pesan: v.pesan });
-      return;
+      continue;
     }
-    if (lihatSku.has(v.data.sku)) {
-      gagal.push({ baris: noBaris, pesan: `Baris ${noBaris}: SKU ${v.data.sku} duplikat dalam file.` });
-      return;
+    const gudang = v.data.gudang ?? gudangDefault;
+    const ada = await db.prepare("SELECT id FROM warehouses WHERE id = ? AND aktif = 1").bind(gudang).first<{ id: string }>();
+    if (!ada) {
+      gagal.push({ baris: noBaris, pesan: `Baris ${noBaris}: Gudang ${gudang} belum terdaftar — buat dulu di /gudang.` });
+      continue;
     }
-    lihatSku.add(v.data.sku);
-    sukses.push(v.data);
-  });
+    const kunci = `${v.data.sku}|${gudang}`;
+    if (lihatSkuGudang.has(kunci)) {
+      gagal.push({ baris: noBaris, pesan: `Baris ${noBaris}: pasangan SKU ${v.data.sku} + Gudang ${gudang} duplikat dalam file.` });
+      continue;
+    }
+    lihatSkuGudang.add(kunci);
+    sukses.push({ ...v.data, gudang });
+  }
   const ins = await db.prepare("INSERT INTO import_batches (tipe, file, total, sukses, gagal, gudang_id, payload_json, status, at, by) VALUES ('produk', ?, ?, ?, ?, ?, ?, 'preview', ?, ?)").bind(
     typeof file === "object" && "name" in file ? String((file as { name: string }).name).slice(0, 120) : "upload.xlsx",
-    rows.length, sukses.length, gagal.length, gudangId, JSON.stringify(sukses), Math.floor(Date.now() / 1000), user.tg_id
+    rows.length, sukses.length, gagal.length, gudangDefault, JSON.stringify(sukses), Math.floor(Date.now() / 1000), user.tg_id
   ).run();
   const batchId = Number(ins.meta.last_row_id);
   for (let i = 0; i < gagal.length; i += 100) {
