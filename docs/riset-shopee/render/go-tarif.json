@@ -1,0 +1,414 @@
+{
+ "mei2026": [
+  {
+   "kat": "Audio",
+   "grup": "D",
+   "biasa": "5,5",
+   "khusus": "7",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Elektronik",
+   "grup": "C",
+   "biasa": "3,5",
+   "khusus": "5",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Gaming & Konsol",
+   "grup": "D",
+   "biasa": "5,5",
+   "khusus": "7",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Handphone & Aksesoris",
+   "grup": "A",
+   "biasa": "1",
+   "khusus": "2,5",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Kamera & Drone",
+   "grup": "D",
+   "biasa": "5,5",
+   "khusus": "7",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Komputer & Aksesoris",
+   "grup": "A",
+   "biasa": "1",
+   "khusus": "2,5",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Aksesoris Fashion",
+   "grup": "B",
+   "biasa": "2",
+   "khusus": "3,5",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Fashion Bayi & Anak",
+   "grup": "B",
+   "biasa": "2",
+   "khusus": "3,5",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Fashion Muslim",
+   "grup": "G",
+   "biasa": "7,5",
+   "khusus": "9",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Jam Tangan",
+   "grup": "H",
+   "biasa": "8",
+   "khusus": "9,5",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Koper & Tas Travel",
+   "grup": "G",
+   "biasa": "7,5",
+   "khusus": "9",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Pakaian Pria",
+   "grup": "F",
+   "biasa": "6,5",
+   "khusus": "8",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Pakaian Wanita",
+   "grup": "F",
+   "biasa": "6,5",
+   "khusus": "8",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Sepatu Pria",
+   "grup": "F",
+   "biasa": "6,5",
+   "khusus": "8",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Sepatu Wanita",
+   "grup": "F",
+   "biasa": "6,5",
+   "khusus": "8",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Tas Pria",
+   "grup": "G",
+   "biasa": "7,5",
+   "khusus": "9",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Tas Wanita",
+   "grup": "G",
+   "biasa": "7,5",
+   "khusus": "9",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Ibu & Bayi",
+   "grup": "D",
+   "biasa": "5,5",
+   "khusus": "7",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Kesehatan",
+   "grup": "D",
+   "biasa": "5,5",
+   "khusus": "7",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Makanan & Minuman",
+   "grup": "E",
+   "biasa": "6",
+   "khusus": "7,5",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Perawatan & Kecantikan",
+   "grup": "D",
+   "biasa": "5,5",
+   "khusus": "7",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Buku & Alat Tulis",
+   "grup": "D",
+   "biasa": "5,5",
+   "khusus": "7",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Buku & Majalah",
+   "grup": "D",
+   "biasa": "5,5",
+   "khusus": "7",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Hewan Peliharaan",
+   "grup": "G",
+   "biasa": "7,5",
+   "khusus": "9",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Hobi & Koleksi",
+   "grup": "E",
+   "biasa": "6",
+   "khusus": "7,5",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Mobil",
+   "grup": "G",
+   "biasa": "7,5",
+   "khusus": "9",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Olahraga & Outdoor",
+   "grup": "G",
+   "biasa": "7,5",
+   "khusus": "9",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Perlengkapan Rumah",
+   "grup": "D",
+   "biasa": "5,5",
+   "khusus": "7",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Sepeda Motor",
+   "grup": "G",
+   "biasa": "7,5",
+   "khusus": "9",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  },
+  {
+   "kat": "Tiket, Voucher, & Layanan",
+   "grup": "D",
+   "biasa": "5,5",
+   "khusus": "7",
+   "plafon_biasa_40rb": true,
+   "plafon_khusus": true
+  }
+ ],
+ "des2026": [
+  {
+   "kat": "Audio",
+   "grup": "D",
+   "biasa": "8,5",
+   "khusus": "10,5"
+  },
+  {
+   "kat": "Elektronik",
+   "grup": "C",
+   "biasa": "6,5",
+   "khusus": "8,5"
+  },
+  {
+   "kat": "Gaming & Konsol",
+   "grup": "D",
+   "biasa": "8,5",
+   "khusus": "10,5"
+  },
+  {
+   "kat": "Handphone & Aksesoris",
+   "grup": "A",
+   "biasa": "1,5",
+   "khusus": "3,5"
+  },
+  {
+   "kat": "Kamera & Drone",
+   "grup": "B",
+   "biasa": "5,0",
+   "khusus": "7,0"
+  },
+  {
+   "kat": "Komputer & Aksesoris",
+   "grup": "A",
+   "biasa": "1,5",
+   "khusus": "3,5"
+  },
+  {
+   "kat": "Aksesoris Fashion",
+   "grup": "C",
+   "biasa": "6,5",
+   "khusus": "8,5"
+  },
+  {
+   "kat": "Fashion Bayi & Anak",
+   "grup": "B",
+   "biasa": "5,0",
+   "khusus": "7,0"
+  },
+  {
+   "kat": "Fashion Muslim",
+   "grup": "E",
+   "biasa": "9,0",
+   "khusus": "11,0"
+  },
+  {
+   "kat": "Jam Tangan",
+   "grup": "H",
+   "biasa": "11,0",
+   "khusus": "13,0"
+  },
+  {
+   "kat": "Koper & Tas Travel",
+   "grup": "H",
+   "biasa": "11,0",
+   "khusus": "13,0"
+  },
+  {
+   "kat": "Pakaian Pria",
+   "grup": "F",
+   "biasa": "9,5",
+   "khusus": "11,5"
+  },
+  {
+   "kat": "Pakaian Wanita",
+   "grup": "E",
+   "biasa": "9,0",
+   "khusus": "11,0"
+  },
+  {
+   "kat": "Sepatu Pria",
+   "grup": "G",
+   "biasa": "10,5",
+   "khusus": "12,5"
+  },
+  {
+   "kat": "Sepatu Wanita",
+   "grup": "G",
+   "biasa": "10,5",
+   "khusus": "12,5"
+  },
+  {
+   "kat": "Tas Pria",
+   "grup": "H",
+   "biasa": "11,0",
+   "khusus": "13,0"
+  },
+  {
+   "kat": "Tas Wanita",
+   "grup": "H",
+   "biasa": "11,0",
+   "khusus": "13,0"
+  },
+  {
+   "kat": "Ibu & Bayi",
+   "grup": "E",
+   "biasa": "9,0",
+   "khusus": "11,0"
+  },
+  {
+   "kat": "Kesehatan",
+   "grup": "D",
+   "biasa": "8,5",
+   "khusus": "10,5"
+  },
+  {
+   "kat": "Makanan & Minuman",
+   "grup": "F",
+   "biasa": "9,5",
+   "khusus": "11,5"
+  },
+  {
+   "kat": "Perawatan & Kecantikan",
+   "grup": "E",
+   "biasa": "9,0",
+   "khusus": "11,0"
+  },
+  {
+   "kat": "Buku & Alat Tulis",
+   "grup": "E",
+   "biasa": "9,0",
+   "khusus": "11,0"
+  },
+  {
+   "kat": "Buku & Majalah",
+   "grup": "E",
+   "biasa": "9,0",
+   "khusus": "11,0"
+  },
+  {
+   "kat": "Hewan Peliharaan",
+   "grup": "E",
+   "biasa": "9,0",
+   "khusus": "11,0"
+  },
+  {
+   "kat": "Hobi & Koleksi",
+   "grup": "E",
+   "biasa": "9,0",
+   "khusus": "11,0"
+  },
+  {
+   "kat": "Mobil",
+   "grup": "F",
+   "biasa": "9,5",
+   "khusus": "11,5"
+  },
+  {
+   "kat": "Olahraga & Outdoor",
+   "grup": "F",
+   "biasa": "9,5",
+   "khusus": "11,5"
+  },
+  {
+   "kat": "Perlengkapan Rumah",
+   "grup": "D",
+   "biasa": "8,5",
+   "khusus": "10,5"
+  }
+ ]
+}
