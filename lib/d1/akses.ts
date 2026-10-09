@@ -24,12 +24,32 @@ export async function mintaAkses(db: D1Database, tgId: number, username: string 
 
 export async function putuskanAkses(db: D1Database, tgId: number, setuju: boolean, oleh: string | null): Promise<Hasil<{ status: string }>> {
   const at = sekarang();
+  if (setuju) {
+    // Ambil nama dari request sebelum status berubah.
+    const req = await db
+      .prepare("SELECT telegram_display_name, telegram_username FROM access_requests WHERE tg_id = ? AND status = 'pending'")
+      .bind(tgId)
+      .first<{ telegram_display_name: string | null; telegram_username: string | null }>();
+    if (!req) return gagal(409, "Permintaan sudah diproses atau tidak ada.");
+    const r = await db
+      .prepare("UPDATE access_requests SET status = 'approved', resolved_by = ?, resolved_at = ?, rejected_until = NULL WHERE tg_id = ? AND status = 'pending'")
+      .bind(oleh, at, tgId)
+      .run();
+    if ((r.meta.changes ?? 0) !== 1) return gagal(409, "Permintaan sudah diproses atau tidak ada.");
+    // Resmikan langsung jadi users role guest — sesi kenalan legacy tak ada di worker,
+    // tanpa baris users user nyangkut approved selamanya (gateAdmin tolak).
+    await db
+      .prepare("INSERT INTO users (tg_id, username, display_name, role, active, added_at, approved_by) VALUES (?, ?, ?, 'guest', 1, ?, ?) ON CONFLICT(tg_id) DO UPDATE SET active = 1, approved_by = excluded.approved_by")
+      .bind(String(tgId), req.telegram_username, req.telegram_display_name ?? String(tgId), at, oleh)
+      .run();
+    return { ok: true, status: "approved" };
+  }
   const r = await db
-    .prepare("UPDATE access_requests SET status = ?, resolved_by = ?, resolved_at = ?, rejected_until = ? WHERE tg_id = ? AND status = 'pending'")
-    .bind(setuju ? "approved" : "rejected", oleh, at, setuju ? null : at + COOLDOWN_DETIK, tgId)
+    .prepare("UPDATE access_requests SET status = 'rejected', resolved_by = ?, resolved_at = ?, rejected_until = ? WHERE tg_id = ? AND status = 'pending'")
+    .bind(oleh, at, at + COOLDOWN_DETIK, tgId)
     .run();
   if ((r.meta.changes ?? 0) !== 1) return gagal(409, "Permintaan sudah diproses atau tidak ada.");
-  return { ok: true, status: setuju ? "approved" : "rejected" };
+  return { ok: true, status: "rejected" };
 }
 
 export async function listAkses(db: D1Database, status?: string): Promise<Akses[]> {

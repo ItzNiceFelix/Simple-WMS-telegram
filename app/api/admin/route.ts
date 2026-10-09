@@ -10,7 +10,7 @@ import { normalisasiNama, tambahProduk } from "@/lib/d1/produk";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
 
 // Teks identik jalur bot (dashboard-prd-v3b §5.2 S6.1; handleApprovalCallback.js:125, handleAksesBaru.js:21).
-const PESAN_SETUJU = "Sudah disetujui! Boleh kenalan dulu, namanya siapa?";
+const PESAN_SETUJU = "Sudah disetujui! Sekarang udah bisa pakai bot ini ya. Ketik /start untuk daftar perintah.";
 const PESAN_TOLAK = "Maaf, saat ini belum bisa saya bantu ya.";
 
 /** Best-effort via Bot API (pola minta-kode). Gagal → false, tanpa rollback status. */
