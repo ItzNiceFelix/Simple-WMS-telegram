@@ -63,6 +63,7 @@ export interface ProdukDoc {
   tier_override?: string | null;
   pre_order?: boolean;
   ukuran_khusus?: boolean;
+  go_override?: string | null;
   variants?: ProdukVariant[];
   search_keywords?: string[];
   updated_at: string | null;

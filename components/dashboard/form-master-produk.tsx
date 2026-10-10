@@ -34,6 +34,7 @@ export function FormMasterProduk({ sku, awal, onSukses }: {
   const [tier, setTier] = useState(awal.tier_override ?? "");
   const [preOrder, setPreOrder] = useState(awal.pre_order ? "ya" : "tidak");
   const [ukuran, setUkuran] = useState(awal.ukuran_khusus ? "ya" : "tidak");
+  const [go, setGo] = useState(awal.go_override ?? "");
   const [daftarKat, setDaftarKat] = useState<OpsiKategori[] | null>(null);
   const [daftarTier, setDaftarTier] = useState<OpsiTier[] | null>(null);
   const [mengirim, setMengirim] = useState(false);
@@ -64,6 +65,7 @@ export function FormMasterProduk({ sku, awal, onSukses }: {
           tier_override: tier.trim() || null,
           pre_order: preOrder,
           ukuran_khusus: ukuran,
+          go_override: go.trim().toUpperCase() || null,
         }),
       });
       const data = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
@@ -92,6 +94,7 @@ export function FormMasterProduk({ sku, awal, onSukses }: {
           {awal.tier_override ? <Badge variant="secondary">Override {awal.tier_override}</Badge> : null}
           {awal.pre_order ? <Badge variant="outline">Pre-order</Badge> : null}
           {awal.ukuran_khusus ? <Badge variant="outline">Ukuran khusus</Badge> : null}
+          {awal.go_override ? <Badge variant="secondary">GO {awal.go_override}</Badge> : null}
         </div>
         <Field>
           <FieldLabel htmlFor="master-kategori">Kategori (path Shopee)</FieldLabel>
@@ -155,6 +158,22 @@ export function FormMasterProduk({ sku, awal, onSukses }: {
                 <SelectGroup>
                   <SelectItem value="tidak">tidak</SelectItem>
                   <SelectItem value="ya">ya</SelectItem>
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field className="w-36">
+            <FieldLabel htmlFor="master-go">GO override</FieldLabel>
+            <Select value={go || "__kosong__"} onValueChange={(v) => typeof v === "string" && setGo(v === "__kosong__" ? "" : v)}>
+              <SelectTrigger id="master-go" className="h-11 w-full md:h-8" data-testid="master-go">
+                <SelectValue>{go || "—"}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  <SelectItem value="__kosong__">—</SelectItem>
+                  {["A", "B", "C", "D", "E", "F", "G", "H"].map((g) => (
+                    <SelectItem key={g} value={g}>{g}</SelectItem>
+                  ))}
                 </SelectGroup>
               </SelectContent>
             </Select>

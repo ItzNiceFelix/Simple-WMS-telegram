@@ -84,6 +84,7 @@ export async function GET(request: Request) {
           is_online_product: p.is_online_product === 1,
           kategori: p.kategori ?? null, tier_override: p.tier_override ?? null,
           pre_order: p.pre_order === 1, ukuran_khusus: p.ukuran_khusus === 1,
+          go_override: (p.go_override as string | null) ?? null,
           variants: varian.map((v) => ({ variasi: v.variasi })),
           search_keywords: kw.map((k) => k.keyword), updated_at: keIso(p.updated_at as number | null),
         },

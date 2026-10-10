@@ -61,6 +61,12 @@ export async function PATCH(request: Request, { params }: { params: Promise<{ sk
     if (v === -1) return json({ ok: false, error: "ukuran_khusus harus ya/tidak." }, 400);
     if (v !== null) { patch.push("ukuran_khusus = ?"); vals.push(v); }
   }
+  if (body.go_override !== undefined) {
+    const g = teks(body.go_override).toUpperCase();
+    if (g && !/^[A-H]$/.test(g)) return json({ ok: false, error: "go_override harus A–H." }, 400);
+    patch.push("go_override = ?");
+    vals.push(g || null);
+  }
   if (patch.length === 0) return json({ ok: false, error: "Tak ada field diubah." }, 400);
   vals.push(sku);
   await db.prepare(`UPDATE products SET ${patch.join(", ")} WHERE sku = ?`).bind(...vals).run();

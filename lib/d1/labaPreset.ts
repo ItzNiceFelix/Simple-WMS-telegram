@@ -93,15 +93,15 @@ export async function hitungDanSimpan(
     grupGo: siap.grupGo,
     ambilSku: async (sku) => {
       const p = await db.prepare(
-        "SELECT hpp, kategori, tier_override, pre_order, ukuran_khusus FROM products WHERE sku = ?"
+        "SELECT hpp, kategori, tier_override, pre_order, ukuran_khusus, go_override FROM products WHERE sku = ?"
       ).bind(sku).first<{
         hpp: number | null; kategori: string | null; tier_override: string | null;
-        pre_order: number; ukuran_khusus: number;
+        pre_order: number; ukuran_khusus: number; go_override: string | null;
       }>();
       if (!p) return null;
       return {
         hpp: p.hpp, kategori: p.kategori, tierOverride: p.tier_override,
-        preOrder: p.pre_order === 1, ukuranKhusus: p.ukuran_khusus === 1,
+        preOrder: p.pre_order === 1, ukuranKhusus: p.ukuran_khusus === 1, goOverride: p.go_override,
       };
     },
     konteks: {

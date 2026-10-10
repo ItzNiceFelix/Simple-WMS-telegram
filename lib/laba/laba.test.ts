@@ -129,7 +129,7 @@ describe("E2/E-R3 hitungLabaPreset", () => {
     kategoriTabel: new Map([["Perlengkapan Rumah > Peralatan Makan", "T10"]]),
     ambilSku: async (sku) => {
       const s = skuDB[sku];
-      return s ? { hpp: s.hpp, kategori: s.kategori, tierOverride: null, preOrder: false, ukuranKhusus: false } : null;
+      return s ? { hpp: s.hpp, kategori: s.kategori, tierOverride: null, preOrder: false, ukuranKhusus: false, goOverride: null } : null;
     },
     konteks: { iklanPersen: null, pesananKumulatif: null, bergabungSejak: null, uploadPertama: null },
   });
@@ -184,7 +184,7 @@ describe("E2/E-R3 hitungLabaPreset", () => {
       [baris({ "No. Pesanan": "U" })],
       {
         ...opsi([]),
-        ambilSku: async () => ({ hpp: 4000, kategori: "Kategori Aneh", tierOverride: null, preOrder: false, ukuranKhusus: false }),
+        ambilSku: async () => ({ hpp: 4000, kategori: "Kategori Aneh", tierOverride: null, preOrder: false, ukuranKhusus: false, goOverride: null }),
       }
     );
     assert.equal(a.jml_order, 1);
@@ -203,6 +203,27 @@ describe("E2/E-R3 hitungLabaPreset", () => {
       grupGo: new Map([["Perlengkapan Rumah > Peralatan Makan", "D"]]),
     });
     assert.ok(a.peringatan.some((p) => p.includes("tidak dapat dihitung")));
+  });
+  it("go_override menang atas grup kategori; ukuran biasa vs khusus eksklusif", async () => {
+    const goD = (ukuran: string | null, nilai: number) => A({
+      id: 6, jenis: "program", kode_program: "gratis_ongkir_xtra", kategori: "D",
+      ukuran, nilai, plafon_per_qty: 40000,
+    });
+    const goH = A({
+      id: 7, jenis: "program", kode_program: "gratis_ongkir_xtra", kategori: "H",
+      ukuran: "khusus", nilai: 9.5, plafon_per_qty: 60000,
+    });
+    const o = (over: string | null, khusus: boolean) => ({
+      ...opsi([goD("biasa", 5.5), goD("khusus", 7), goH]),
+      grupGo: new Map([["Perlengkapan Rumah > Peralatan Makan", "D"]]),
+      ambilSku: async () => ({ hpp: 4000, kategori: "Perlengkapan Rumah > Peralatan Makan", tierOverride: null, preOrder: false, ukuranKhusus: khusus, goOverride: over }),
+    });
+    const b = await hitungLabaPreset([baris()], o(null, false));
+    assert.ok(b.biaya > 0 && b.peringatan.length === 0);
+    const k = await hitungLabaPreset([baris()], o(null, true));
+    assert.ok(k.biaya > b.biaya);
+    const h = await hitungLabaPreset([baris()], o("H", true));
+    assert.ok(h.biaya > k.biaya);
   });
 
   it("SKU tak cocok master → tolak seorder", async () => {

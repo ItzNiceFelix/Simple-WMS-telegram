@@ -22,7 +22,7 @@ export type AgregatPreset = {
 
 export type InfoSku = {
   hpp: number | null; kategori: string | null; tierOverride: string | null;
-  preOrder: boolean; ukuranKhusus: boolean;
+  preOrder: boolean; ukuranKhusus: boolean; goOverride: string | null;
 };
 
 export type OpsiHitung = {
@@ -156,7 +156,7 @@ export async function hitungLabaPreset(
       }
       // Program aktif per preset (toggle di lapisan API; di sini rules sudah difilter aktif).
       // Rule program menyimpan grup huruf di kolom kategori; '*' cocok semua baris.
-      const grupBaris = o.grupGo?.get(info.kategori ?? "") ?? info.tier;
+      const grupBaris = (info.goOverride?.trim() || o.grupGo?.get(info.kategori ?? "")) ?? info.tier;
       for (const pr of o.rules.filter((x) => x.unit === "per_baris" && x.kode_program)) {
         const katCocok = pr.kategori === "*" ? "*" : (grupBaris === pr.kategori ? pr.kategori : "__tak_cocok__");
         if (!cocok(pr, { jenis: pr.jenis, kategori: katCocok, status_toko: o.preset.status_toko, tanggal: o.tanggal })) continue;
@@ -166,7 +166,7 @@ export async function hitungLabaPreset(
           if (!h.ok) { peringatanSet.add(h.alasan); continue; }
         }
         if (pr.ukuran === "khusus" && !info.ukuranKhusus) continue;
-        if (pr.kode_program === "pre_order" && !info.preOrder) continue;
+        if (pr.ukuran === "biasa" && info.ukuranKhusus) continue;
         biayaPerBaris[i] += feePlafonQty(b.dasar, pr.nilai, pr.plafon_per_qty, b.qty);
       }
       // Pajak per baris (pph/ppn dari fee_rules).
