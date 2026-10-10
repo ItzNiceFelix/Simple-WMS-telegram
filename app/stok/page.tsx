@@ -15,6 +15,7 @@ import { DialogStokGudang } from "@/components/dashboard/dialog-stok-gudang";
 import { tampilkanGagalTulis } from "@/components/dashboard/umpan-tulis";
 import { DialogTambahProduk } from "@/components/dashboard/dialog-tambah-produk";
 import { DialogImportExcel } from "@/components/dashboard/dialog-import-excel";
+import { AksiMassalKategori } from "@/components/dashboard/aksi-massal-kategori";
 import { StatusBadge } from "@/components/dashboard/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -52,7 +53,7 @@ import { formatAngka, formatRupiah } from "@/lib/dashboard/format";
 import { useData, useRole } from "@/lib/dashboard/sumber-data";
 import type { GudangDoc, StockFilter, StockRow } from "@/lib/dashboard/types";
 
-type Filter = "semua" | "menipis" | "minus";
+type Filter = "semua" | "menipis" | "minus" | "belum_petakan" | "kat_kosong";
 type Sort = "nama" | "stok" | "kekurangan";
 
 interface Target {
@@ -94,7 +95,7 @@ function DaftarStok() {
   const [tambahOpen, setTambahOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
   const [onlineSedang, setOnlineSedang] = useState<string | null>(null);
-
+  const [terpilih, setTerpilih] = useState<Set<string>>(new Set());
   // Daftar gudang untuk kontrol filter (F9). Gagal memuat -> filter tetap "Semua gudang".
   useEffect(() => {
     let batal = false;
@@ -165,6 +166,8 @@ function DaftarStok() {
     );
     if (filter === "menipis") out = out.filter((r) => r.status === "menipis");
     if (filter === "minus") out = out.filter((r) => r.status === "minus");
+    if (filter === "belum_petakan") out = out.filter((r) => r.kategori && !r.terpetakan);
+    if (filter === "kat_kosong") out = out.filter((r) => !r.kategori);
 
     const sorted = out.slice();
     if (filter === "minus") {
@@ -181,6 +184,15 @@ function DaftarStok() {
   }, [rows, cari, filter, sort]);
 
   const teksKosong = filter === "minus" ? "Tidak ada produk minus." : "Tidak ada produk cocok.";
+
+  function togglePilih(kode: string) {
+    setTerpilih((lama) => {
+      const baru = new Set(lama);
+      if (baru.has(kode)) baru.delete(kode);
+      else baru.add(kode);
+      return baru;
+    });
+  }
 
   return (
     <>
@@ -309,6 +321,12 @@ function DaftarStok() {
               <ToggleGroupItem value="minus" className="h-11 md:h-8" data-testid="filter-minus">
                 Perlu Minta Gudang Cabang
               </ToggleGroupItem>
+              <ToggleGroupItem value="belum_petakan" className="h-11 md:h-8" data-testid="filter-belum-petakan">
+                Belum terpetakan
+              </ToggleGroupItem>
+              <ToggleGroupItem value="kat_kosong" className="h-11 md:h-8" data-testid="filter-kat-kosong">
+                Kategori kosong
+              </ToggleGroupItem>
             </ToggleGroup>
 
             <div className="flex flex-wrap items-center gap-2">
@@ -336,6 +354,23 @@ function DaftarStok() {
             </div>
           </div>
         </div>
+
+        {rows !== null && rows.some((r) => !r.kategori || !r.terpetakan) ? (
+          <Alert data-testid="ringkasan-kategori-stok">
+            <AlertTitle>Kategori Shopee belum lengkap</AlertTitle>
+            <AlertDescription>
+              {rows.filter((r) => !r.kategori).length} produk kategori kosong ·{" "}
+              {rows.filter((r) => r.kategori && !r.terpetakan).length} belum terpetakan.{" "}
+              <button type="button" className="font-medium underline" onClick={() => setFilter("belum_petakan")}>
+                Lihat daftar
+              </button>
+            </AlertDescription>
+          </Alert>
+        ) : null}
+
+        {role === "owner" ? (
+          <AksiMassalKategori sku={[...terpilih]} onSukses={() => { setTerpilih(new Set()); void muat(); }} />
+        ) : null}
 
         {pesanError ? (
           <Alert variant="destructive" data-testid="error-stok">
@@ -473,8 +508,10 @@ function DaftarStok() {
               <Table>
                 <TableHeader>
                   <TableRow>
+                    {role === "owner" ? <TableHead className="w-10">Pilih</TableHead> : null}
                     <TableHead>Kode</TableHead>
                     <TableHead>Nama</TableHead>
+                    <TableHead>Kategori</TableHead>
                     <TableHead className="text-right">HPP</TableHead>
                     <TableHead className="text-right">Stok</TableHead>
                     {gudangId !== "SEMUA" ? (
@@ -489,6 +526,18 @@ function DaftarStok() {
                 <TableBody>
                   {hasil.map((r) => (
                     <TableRow key={r.kode_barang} data-testid={`baris-${r.kode_barang}`}>
+                      {role === "owner" ? (
+                        <TableCell>
+                          <input
+                            type="checkbox"
+                            className="size-5 accent-primary"
+                            aria-label={`Pilih ${r.kode_barang}`}
+                            data-testid={`pilih-${r.kode_barang}`}
+                            checked={terpilih.has(r.kode_barang)}
+                            onChange={() => togglePilih(r.kode_barang)}
+                          />
+                        </TableCell>
+                      ) : null}
                       <TableCell className="font-medium">{r.kode_barang}</TableCell>
                       <TableCell className="max-w-64 truncate">
                           <Link
@@ -498,6 +547,18 @@ function DaftarStok() {
                           >
                           {r.nama_accurate ?? "â€”"}
                         </Link>
+                      </TableCell>
+                      <TableCell className="max-w-48 truncate" title={r.kategori ?? undefined}>
+                        {r.kategori ? (
+                          <span className={r.terpetakan ? "" : "text-yellow-700"}>
+                            {r.kategori.length > 40 ? `${r.kategori.slice(0, 40)}…` : r.kategori}
+                          </span>
+                        ) : (
+                          <Badge variant="destructive" data-testid={`kat-kosong-${r.kode_barang}`}>Kosong</Badge>
+                        )}
+                        {r.kategori && !r.terpetakan ? (
+                          <Badge variant="outline" className="ml-1" data-testid={`kat-belum-${r.kode_barang}`}>Belum terpetakan</Badge>
+                        ) : null}
                       </TableCell>
                       <TableCell className="text-right tabular-nums">
                         {formatRupiah(r.hpp)}

@@ -14,7 +14,6 @@ import { listOpname } from "../lib/d1/opname";
 import { listTransfer } from "../lib/d1/transfer";
 import { listAkses, mintaAkses } from "../lib/d1/akses";
 import { ambilAdmin } from "../lib/d1/admin";
-import { ambilOrder, hitungLaba, listOrder } from "../lib/d1/order";
 
 export type Update = {
   update_id: number;
@@ -186,33 +185,25 @@ async function tanganiCommand(env: Env, tgId: string, chatId: number, msgId: num
     return;
   }
   if (cmd === "laba") {
+    // Agregat snapshot laba_snapshot per preset (7/30 hari). Laba hanya dihitung di /laba (A4).
     const arg = (args[0] || "7h").toLowerCase();
     const hari = arg === "30h" ? 30 : 7;
-    const sampai = Math.floor(Date.now() / 1000);
-    const dari = sampai - hari * 86400;
-    const daftar = await listOrder(env.DB, { dari, sampai, limit: 500 });
-    if (daftar.length === 0) {
-      await kirimPesanBot(env, chatId, `Belum ada order ${hari} hari terakhir.`, msgId);
+    const { results } = await env.DB.prepare(
+      "SELECT s.preset_id, p.nama, SUM(s.jml_order) AS order_no, SUM(s.omzet) AS omzet, SUM(s.laba) AS laba " +
+      "FROM laba_snapshot s JOIN seller_presets p ON p.id = s.preset_id " +
+      "WHERE s.tanggal >= date('now', ?) GROUP BY s.preset_id, p.nama ORDER BY laba DESC"
+    ).bind(`-${hari} days`).all<{ preset_id: number; nama: string; order_no: number; omzet: number; laba: number }>();
+    if (results.length === 0) {
+      await kirimPesanBot(env, chatId, `Belum ada snapshot laba ${hari} hari terakhir. Hitung dulu di /laba.`, msgId);
       return;
     }
-    const perMp: Record<string, { order: number; omzet: number; laba: number }> = {};
+    const baris = [`<b>Laba ${hari}h per preset</b>`];
     let totalOmzet = 0;
     let totalLaba = 0;
-    for (const h of daftar) {
-      const d = await ambilOrder(env.DB, h.marketplace, h.no_pesanan);
-      if (!d) continue;
-      const r = hitungLaba(d.items, d.fees, d.pajak_pph, d.pajak_ppn_persen);
-      const agg = perMp[h.marketplace] ?? { order: 0, omzet: 0, laba: 0 };
-      agg.order += 1;
-      agg.omzet += r.omzet;
-      agg.laba += r.laba;
-      perMp[h.marketplace] = agg;
+    for (const r of results) {
+      baris.push(`${esc(r.nama)}: ${r.order_no} order, omzet <b>${r.omzet}</b>, laba <b>${r.laba}</b>`);
       totalOmzet += r.omzet;
       totalLaba += r.laba;
-    }
-    const baris = [`<b>Laba ${hari}h</b> — ${daftar.length} order`];
-    for (const [mp, a] of Object.entries(perMp).sort((x, y) => y[1].laba - x[1].laba)) {
-      baris.push(`${esc(mp)}: ${a.order} order, omzet <b>${a.omzet}</b>, laba <b>${a.laba}</b>`);
     }
     baris.push(`Total omzet <b>${totalOmzet}</b>, laba <b>${totalLaba}</b>`);
     await kirimPesanBot(env, chatId, baris.join("\n"), msgId);

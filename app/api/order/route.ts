@@ -1,18 +1,13 @@
-// app/api/order/route.ts — Import pesanan 2-fase + transisi fulfill + rekap laba (Fase 3a).
+// app/api/order/route.ts — Import pesanan 2-fase + transisi fulfill + daftar order (stok, tanpa laba).
 // POST { aksi:'preview', rows } → validasi per baris → import_batches(tipe='pesanan') + import_errors → { batch_id, total, sukses, gagal, peringatan }.
 // POST { aksi:'konfirmasi', batch_id } → imporPesanan → { ok, order, item }.
 // POST { aksi:'transisi', marketplace, no_pesanan, ke } → transisiFulfill.
-// GET ?aksi=rekap&dari=&sampai=&mp=&status=&sku=&limit= → { ok, orders:[...rincian], agregat }.
-//   sku diisi → tiap baris berisi PORSI SKU itu (porsiSku) + `porsi_sku: true`,
-//   bukan total order; agregat = jumlah porsi. Lihat hitungRekap.
-// GET ?aksi=pdf&<filter sama> → application/pdf (tabel rekap; baris+agregat dari hitungRekap yang sama).
-//   Saat `sku` diisi, tabel PDF menganotasi " (porsi SKU X)" pada judul.
-// Semua owner/admin (tulis + rekap laba sensitif).
+// GET ?aksi=daftar&dari=&sampai=&mp=&status=&sku=&limit= → { ok, orders } (header+item+fee, tanpa laba).
+// Semua owner/admin.
 import { getDb } from "@/lib/d1/db";
 import { ambilProduk } from "@/lib/d1/produk";
-import { ambilOrder, hitungLaba, imporPesanan, listOrder, porsiSku, transisiFulfill, type BarisPesanan, type OrderDetail } from "@/lib/d1/order";
+import { ambilOrder, imporPesanan, listOrder, transisiFulfill, type BarisPesanan, type OrderDetail } from "@/lib/d1/order";
 import { transisiFulfillBatch, type KeFulfill } from "@/lib/d1/orderTransisi";
-import { bangunPdfRekap } from "@/lib/d1/rekapPdf";
 import { buatPicklist } from "@/lib/d1/picklist";
 import { bangunPdfPicklist } from "@/lib/d1/picklistPdf";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
@@ -21,16 +16,13 @@ import { gabungkanSheetShopee, type ShopeeDisposition, type ShopeeOrderRow, type
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Header template 12 kolom — string equality dengan Task 5 (sheet Pesanan).
-const HEADER_PESANAN = ["NoPesanan*", "Marketplace*", "Tanggal*", "SKU*", "Qty*", "HargaSatuan*", "Buyer", "FeeJenis", "FeeBasis", "FeeNilai", "PPh", "PPN%"];
+// Header template 7 kolom (tanpa fee/pajak — laba pindah ke /laba per preset).
+const HEADER_PESANAN = ["NoPesanan*", "Marketplace*", "Tanggal*", "SKU*", "Qty*", "HargaSatuan*", "Buyer"];
 
-const FEE_VALID = ["admin", "service", "komisi", "ongkir", "voucher", "affiliate", "iklan", "lain"];
 const KE_VALID = ["pack", "kirim", "selesai", "batal"];
 const MAKS_BARIS = 5000;
 
 type BarisGagal = { baris: number; pesan: string };
-type RincianOrder = OrderDetail & { laba: number; margin: number; omzet: number; hpp: number; biaya: number; pph: number; ppn: number; porsi_sku?: true };
-type AgregatRekap = { order: number; omzet: number; hpp: number; biaya: number; pph: number; ppn: number; laba: number; margin: number };
 function teks(v: unknown): string {
   return typeof v === "string" ? v.trim() : v == null ? "" : String(v).trim();
 }
@@ -68,42 +60,22 @@ async function validasiBarisPesanan(db: D1Database, row: Record<string, unknown>
   if (qty === null || Number.isNaN(qty as unknown as number) || (qty as number) < 1) return { ok: false, pesan: `Baris ${noBaris}: Qty harus bilangan bulat ≥ 1.` };
   const harga = intBaris(row["HargaSatuan*"]);
   if (harga === null || Number.isNaN(harga as unknown as number) || (harga as number) < 0) return { ok: false, pesan: `Baris ${noBaris}: HargaSatuan harus bilangan bulat ≥ 0.` };
-  const feeJenis = teks(row["FeeJenis"]).toLowerCase();
-  if (feeJenis && !FEE_VALID.includes(feeJenis)) return { ok: false, pesan: `Baris ${noBaris}: FeeJenis tak dikenal (${FEE_VALID.join("/")}).` };
-  let feeBasis: "flat" | "persen" = "flat";
-  let feeNilai = 0;
-  if (feeJenis) {
-    const basis = teks(row["FeeBasis"]).toLowerCase() || "flat";
-    if (basis !== "flat" && basis !== "persen") return { ok: false, pesan: `Baris ${noBaris}: FeeBasis harus flat/persen.` };
-    feeBasis = basis;
-    const nilai = row["FeeNilai"] == null || row["FeeNilai"] === "" ? 0 : Number(row["FeeNilai"]);
-    if (!Number.isFinite(nilai) || nilai < 0) return { ok: false, pesan: `Baris ${noBaris}: FeeNilai harus angka ≥ 0 (desimal boleh).` };
-    if (feeBasis === "persen" && nilai > 100) return { ok: false, pesan: `Baris ${noBaris}: FeeNilai persen maksimal 100.` };
-    feeNilai = nilai;
-  }
-  const pph = teks(row["PPh"]).toUpperCase() || "YA";
-  if (pph !== "YA" && pph !== "TIDAK") return { ok: false, pesan: `Baris ${noBaris}: PPh harus YA/TIDAK.` };
-  const ppnTeks = teks(row["PPN%"]);
-  const ppn = ppnTeks === "" ? 0 : Number(ppnTeks);
-  if (!Number.isFinite(ppn) || ppn < 0) return { ok: false, pesan: `Baris ${noBaris}: PPN% harus angka ≥ 0.` };
   return {
     ok: true,
     data: {
       marketplace: mp, no_pesanan: no, tanggal, buyer: teks(row["Buyer"]), sku,
       qty: qty as number, harga_satuan: harga as number,
-      ...(feeJenis ? { fee_jenis: feeJenis, fee_basis: feeBasis, fee_nilai: feeNilai } : {}),
-      pajak_pph: pph === "YA", pajak_ppn_persen: ppn,
     },
   };
 }
 
-type FilterRekap = { mp?: string; status?: string; sku?: string; dari?: number; sampai?: number; limit: number };
+type FilterDaftar = { mp?: string; status?: string; sku?: string; dari?: number; sampai?: number; limit: number };
 
-/** Filter query string untuk rekap JSON & PDF (satu sumber agar tak drift). */
-function filterDariQuery(url: URL): { ok: true; filter: FilterRekap } | { ok: false; error: string } {
+/** Filter query string untuk daftar order. */
+function filterDariQuery(url: URL): { ok: true; filter: FilterDaftar } | { ok: false; error: string } {
   const dariTeks = url.searchParams.get("dari") || "";
   const sampaiTeks = url.searchParams.get("sampai") || "";
-  const filter: FilterRekap = {
+  const filter: FilterDaftar = {
     mp: url.searchParams.get("mp")?.trim().toLowerCase() || undefined,
     status: url.searchParams.get("status")?.trim() || undefined,
     sku: url.searchParams.get("sku")?.trim().toUpperCase() || undefined,
@@ -123,28 +95,6 @@ function filterDariQuery(url: URL): { ok: true; filter: FilterRekap } | { ok: fa
     filter.sampai = s + 86399;
   }
   return { ok: true, filter };
-}
-
-/** Baris + agregat rekap (dipakai JSON ?aksi=rekap dan PDF ?aksi=pdf). */
-async function hitungRekap(db: D1Database, f: FilterRekap): Promise<{ orders: RincianOrder[]; agregat: AgregatRekap }> {
-  const daftar = await listOrder(db, { mp: f.mp, status: f.status, dari: f.dari, sampai: f.sampai, limit: f.limit });
-  const orders: RincianOrder[] = [];
-  const agregat = { order: 0, omzet: 0, hpp: 0, biaya: 0, pph: 0, ppn: 0, laba: 0, margin: 0 };
-  for (const h of daftar) {
-    const d = await ambilOrder(db, h.marketplace, h.no_pesanan);
-    if (!d) continue;
-    if (f.sku && !d.items.some((i) => i.sku === f.sku)) continue;
-    const r = hitungLaba(d.items, d.fees, d.pajak_pph, d.pajak_ppn_persen);
-    // Filter sku = rekap per SKU: angka baris HARUS porsi SKU itu, bukan total order
-    // (order multi-SKU akan menyesatkan bila total). Tanpa filter sku: total order.
-    const angka = f.sku ? porsiSku(d.items, r, f.sku) : { omzet: r.omzet, hpp: r.hpp, biaya: r.biaya, pph: r.pph, ppn: r.ppn, laba: r.laba, margin: r.margin };
-    orders.push({ ...d, ...angka });
-    agregat.order += 1;
-    agregat.omzet += angka.omzet; agregat.hpp += angka.hpp; agregat.biaya += angka.biaya;
-    agregat.pph += angka.pph; agregat.ppn += angka.ppn; agregat.laba += angka.laba;
-  }
-  agregat.margin = agregat.omzet > 0 ? (agregat.laba / agregat.omzet) * 100 : 0;
-  return { orders, agregat };
 }
 
 export async function GET(request: Request) {
@@ -176,33 +126,19 @@ export async function GET(request: Request) {
       },
     });
   }
-  if (aksi !== "rekap" && aksi !== "pdf" && aksi !== "preset") return json({ ok: true, header: HEADER_PESANAN });
-  if (aksi === "preset") {
-    const db = getDb();
-    const { results } = await db.prepare("SELECT marketplace, jenis, basis, nilai FROM mp_fee_presets ORDER BY marketplace, jenis").all<{ marketplace: string; jenis: string; basis: string; nilai: number }>();
-    return json({ ok: true, presets: results });
-  }
+  if (aksi !== "daftar") return json({ ok: true, header: HEADER_PESANAN });
   const f = filterDariQuery(url);
   if (!f.ok) return json({ ok: false, error: f.error }, 400);
   const db = getDb();
-  const { orders, agregat } = await hitungRekap(db, f.filter);
-  if (aksi === "rekap") return json({ ok: true, orders, agregat });
-  const bytes = await bangunPdfRekap(
-    orders.map((o) => ({
-      no_pesanan: o.no_pesanan, marketplace: o.marketplace,
-      omzet: o.omzet, hpp: o.hpp, biaya: o.biaya, pph: o.pph, ppn: o.ppn, laba: o.laba,
-    })),
-    agregat,
-    f.filter.sku ? `porsi SKU ${f.filter.sku}` : undefined
-  );
-  return new Response(new Uint8Array(bytes), {
-    status: 200,
-    headers: {
-      "content-type": "application/pdf",
-      "content-disposition": `attachment; filename="rekap-laba.pdf"`,
-      "cache-control": "no-store",
-    },
-  });
+  const daftar = await listOrder(db, { mp: f.filter.mp, status: f.filter.status, dari: f.filter.dari, sampai: f.filter.sampai, limit: f.filter.limit });
+  const orders: OrderDetail[] = [];
+  for (const h of daftar) {
+    const d = await ambilOrder(db, h.marketplace, h.no_pesanan);
+    if (!d) continue;
+    if (f.filter.sku && !d.items.some((i) => i.sku === f.filter.sku)) continue;
+    orders.push(d);
+  }
+  return json({ ok: true, orders });
 }
 
 export async function POST(request: Request) {
@@ -213,28 +149,6 @@ export async function POST(request: Request) {
   const body = await bacaBody(request);
   const aksi = body.aksi as string;
   const db = getDb();
-
-  if (aksi === "preset-tambah") {
-    const mp = teks(body.marketplace).toLowerCase();
-    const jenis = teks(body.jenis).toLowerCase();
-    const basis = teks(body.basis).toLowerCase();
-    const nilai = body.nilai;
-    if (!mp) return json({ ok: false, error: "Marketplace wajib diisi." }, 400);
-    if (!FEE_VALID.includes(jenis)) return json({ ok: false, error: "Jenis fee tak dikenal (admin/service/komisi/ongkir/voucher/affiliate/iklan/lain)." }, 400);
-    if (basis !== "flat" && basis !== "persen") return json({ ok: false, error: "Basis harus flat/persen." }, 400);
-    if (typeof nilai !== "number" || !Number.isFinite(nilai) || nilai < 0) return json({ ok: false, error: "Nilai harus angka ≥ 0 (desimal boleh, mis. 3.5)." }, 400);
-    if (basis === "persen" && nilai > 100) return json({ ok: false, error: "Persen maksimal 100." }, 400);
-    await db.prepare("INSERT OR REPLACE INTO mp_fee_presets (marketplace, jenis, basis, nilai) VALUES (?, ?, ?, ?)").bind(mp, jenis, basis, nilai).run();
-    return json({ ok: true });
-  }
-
-  if (aksi === "preset-hapus") {
-    const mp = teks(body.marketplace).toLowerCase();
-    const jenis = teks(body.jenis).toLowerCase();
-    if (!mp || !jenis) return json({ ok: false, error: "Marketplace + jenis wajib diisi." }, 400);
-    await db.prepare("DELETE FROM mp_fee_presets WHERE marketplace = ? AND jenis = ?").bind(mp, jenis).run();
-    return json({ ok: true });
-  }
 
   if (aksi === "transisi-batch") {
     const daftar = Array.isArray(body.targets) ? body.targets : [];
@@ -302,17 +216,7 @@ export async function POST(request: Request) {
       lihatItem.add(kunci);
       sukses.push(v.data);
     }
-    // Ruling controller: warning info (tak blokir) bila order campur baris ber-fee + tanpa-fee.
-    const feePerOrder = new Map<string, { ada: number; total: number }>();
-    for (const b of sukses) {
-      const k = `${b.marketplace} ${b.no_pesanan}`;
-      const c = feePerOrder.get(k) ?? { ada: 0, total: 0 };
-      c.total += 1;
-      if (b.fee_jenis) c.ada += 1;
-      feePerOrder.set(k, c);
-    }
-    const peringatan = [...feePerOrder].filter(([, c]) => c.ada > 0 && c.ada < c.total)
-      .map(([k]) => `Order ${k}: sebagian baris tanpa FeeJenis (fee hanya dari baris ber-fee; preset tak dipakai).`);
+    const peringatan: string[] = [];
     const namaFile = typeof body.file === "string" && body.file.trim() ? body.file.trim().slice(0, 120) : "pesanan.json";
     const ins = await db.prepare("INSERT INTO import_batches (tipe, file, total, sukses, gagal, gudang_id, payload_json, status, at, by) VALUES ('pesanan', ?, ?, ?, ?, 'ONLINE', ?, 'preview', ?, ?)")
       .bind(namaFile, rows.length, sukses.length, gagal.length, JSON.stringify(sukses), Math.floor(Date.now() / 1000), user.tg_id).run();

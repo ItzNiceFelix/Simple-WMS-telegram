@@ -11,7 +11,7 @@ import { ButuhAkses } from "@/components/dashboard/butuh-akses";
 import { KelolaAdmin } from "@/components/dashboard/kelola-admin";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
-import { BiayaMp } from "@/components/dashboard/biaya-mp";
+import { PresetToko } from "@/components/dashboard/preset-toko";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Field, FieldDescription, FieldLabel } from "@/components/ui/field";
 import {
@@ -228,7 +228,7 @@ function Pengaturan() {
           </Card>
         ) : null}
 
-        {adalahStaff ? <BiayaMp bolehUbah={bolehUbah} /> : null}
+        {adalahStaff ? <PresetToko bolehUbah={bolehUbah} /> : null}
         {bolehUbah ? <KelolaAdmin /> : null}
       </div>
     </>

@@ -19,7 +19,9 @@ const MAKS_FILE = 5 * 1024 * 1024;
 
 type BarisValid = {
   sku: string; nama: string; satuan: string; stokAwal: number;
-  hpp: number | null; kategori: string | null; stokMin: number | null; barcode: string | null;
+  hpp: number | null; kategori: string | null; tierOverride: string | null;
+  preOrder: boolean | null; ukuranKhusus: boolean | null;
+  stokMin: number | null; barcode: string | null;
   gudang: string | null;
 };
 
@@ -47,6 +49,11 @@ function validasiBaris(row: Record<string, unknown>, noBaris: number): { ok: tru
   if (expired && !/^\d{4}-\d{2}-\d{2}$/.test(expired)) return { ok: false, pesan: `Baris ${noBaris}: Expired harus YYYY-MM-DD.` };
   const aktif = String(row["Aktif"] ?? "YA").trim().toUpperCase();
   if (!["YA", "TIDAK", ""].includes(aktif)) return { ok: false, pesan: `Baris ${noBaris}: Aktif = YA/TIDAK.` };
+  for (const [label, v] of [["Pre-Order", String(row["Pre-Order"] ?? "").trim()], ["Ukuran Khusus", String(row["Ukuran Khusus"] ?? "").trim()]] as const) {
+    if (v && v.toLowerCase() !== "ya" && v.toLowerCase() !== "tidak") {
+      return { ok: false, pesan: `Baris ${noBaris}: ${label} harus ya/tidak.` };
+    }
+  }
   return {
     ok: true,
     data: {
@@ -54,6 +61,17 @@ function validasiBaris(row: Record<string, unknown>, noBaris: number): { ok: tru
       stokAwal: stokAwal ?? 0,
       hpp: (hpp as number | null) ?? null,
       kategori: String(row["Kategori"] ?? "").trim() || null,
+      tierOverride: String(row["Tier Override"] ?? "").trim() || null,
+      preOrder: (() => {
+        const v = String(row["Pre-Order"] ?? "").trim().toLowerCase();
+        if (!v) return null;
+        return v === "ya";
+      })(),
+      ukuranKhusus: (() => {
+        const v = String(row["Ukuran Khusus"] ?? "").trim().toLowerCase();
+        if (!v) return null;
+        return v === "ya";
+      })(),
       stokMin: (stokMin as number | null) ?? null,
       barcode,
       gudang: String(row["Gudang"] ?? "").trim().toUpperCase() || null,
@@ -72,7 +90,7 @@ export async function GET(request: Request) {
   const gudangId = url.searchParams.get("gudang_id") || "ONLINE";
   const q = (url.searchParams.get("q") || "").toLowerCase();
   const db = getDb();
-  const HEADER = ["SKU*", "Nama*", "Kategori", "Satuan*", "StokAwal", "HPP", "HargaJual", "RakBin", "StokMin", "Barcode", "Expired(YYYY-MM-DD)", "Aktif"];
+  const HEADER = ["SKU*", "Nama*", "Kategori", "Tier Override", "Pre-Order", "Ukuran Khusus", "Satuan*", "StokAwal", "HPP", "HargaJual", "RakBin", "StokMin", "Barcode", "Expired(YYYY-MM-DD)", "Aktif"];
   let rows: (string | number | null)[][] = [HEADER];
   if (tipe === "stok") {
     const { results } = await db.prepare(
@@ -87,10 +105,10 @@ export async function GET(request: Request) {
     rows = [["SKU", "Nama", "HPP", "HPPBaru"], ...results.map((r) => [r.sku, r.nama_accurate, r.hpp, r.hpp_baru])];
   } else {
     const { results } = await db.prepare(
-      `SELECT p.sku, p.nama_accurate, p.hpp, p.stok_min, b.qty FROM products p LEFT JOIN stock_by_bin b ON b.sku = p.sku AND b.warehouse_id = ?
+      `SELECT p.sku, p.nama_accurate, p.kategori, p.tier_override, p.pre_order, p.ukuran_khusus, p.hpp, p.stok_min, b.qty FROM products p LEFT JOIN stock_by_bin b ON b.sku = p.sku AND b.warehouse_id = ?
        ${q ? "WHERE lower(p.sku) LIKE ? OR lower(p.nama_accurate) LIKE ?" : ""} ORDER BY p.sku LIMIT 5000`
-    ).bind(...(q ? [gudangId, `%${q}%`, `%${q}%`] : [gudangId])).all<{ sku: string; nama_accurate: string; hpp: number | null; stok_min: number | null; qty: number | null }>();
-    rows = [HEADER, ...results.map((r) => [r.sku, r.nama_accurate, "", "pcs", r.qty ?? 0, r.hpp, "", "", r.stok_min, "", "", "YA"])];
+    ).bind(...(q ? [gudangId, `%${q}%`, `%${q}%`] : [gudangId])).all<{ sku: string; nama_accurate: string; kategori: string | null; tier_override: string | null; pre_order: number; ukuran_khusus: number; hpp: number | null; stok_min: number | null; qty: number | null }>();
+    rows = [HEADER, ...results.map((r) => [r.sku, r.nama_accurate, r.kategori ?? "", r.tier_override ?? "", r.pre_order ? "ya" : "tidak", r.ukuran_khusus ? "ya" : "tidak", "pcs", r.qty ?? 0, r.hpp, "", "", r.stok_min, "", "", "YA"])];
   }
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), tipe);
@@ -131,12 +149,43 @@ export async function POST(request: Request) {
       return json({ ok: false, error: `Di luar scope gudang Anda: ${diLuarScope.slice(0, 3).map((b) => `${b.sku}@${b.gudang ?? gudangDefault}`).join(", ")}${diLuarScope.length > 3 ? ` (+${diLuarScope.length - 3})` : ""}.` }, 403);
     }
     const at = Math.floor(Date.now() / 1000);
+    // Validasi kategori/tier sekali untuk seluruh batch (gagal = seluruh batch ditolak dengan pesan jelas).
+    const katUnik = [...new Set(daftar.map((b) => b.kategori).filter((k): k is string => !!k))];
+    if (katUnik.length > 0) {
+      const { results: katAda } = await db.prepare(
+        `SELECT kategori_path FROM kategori_tarif WHERE kategori_path IN (${katUnik.map(() => "?").join(", ")})`
+      ).bind(...katUnik).all<{ kategori_path: string }>();
+      const himpunan = new Set(katAda.map((k) => k.kategori_path));
+      const takAda = katUnik.filter((k) => !himpunan.has(k));
+      if (takAda.length > 0) {
+        return json({ ok: false, error: `Kategori tak ada di kategori_tarif: ${takAda.slice(0, 5).join(", ")}${takAda.length > 5 ? ` (+${takAda.length - 5})` : ""}. Baris tetap bisa diimpor tanpa kategori — kosongkan kolom Kategori.` }, 400);
+      }
+    }
+    const tierUnik = [...new Set(daftar.map((b) => b.tierOverride).filter((k): k is string => !!k))];
+    if (tierUnik.length > 0) {
+      const { results: tierAda } = await db.prepare(
+        `SELECT tier FROM tier_admin WHERE tier IN (${tierUnik.map(() => "?").join(", ")})`
+      ).bind(...tierUnik).all<{ tier: string }>();
+      const himpunan = new Set(tierAda.map((k) => k.tier));
+      const takAda = tierUnik.filter((k) => !himpunan.has(k));
+      if (takAda.length > 0) {
+        return json({ ok: false, error: `Tier Override tak dikenal: ${takAda.join(", ")}.` }, 400);
+      }
+    }
     let sukses = 0;
+    const peringatan: string[] = [];
     for (let i = 0; i < daftar.length; i += 50) {
       const chunk = daftar.slice(i, i + 50);
       const stmts: D1PreparedStatement[] = [];
       for (const b of chunk) {
         const g = b.gudang ?? gudangDefault;
+        // Kolom kosong = tidak diubah (tak menimpa kategori/pre-order/ukuran yang sudah diisi).
+        const setKat: string[] = [];
+        const valKat: unknown[] = [];
+        if (b.kategori) { setKat.push("kategori = ?"); valKat.push(b.kategori); }
+        if (b.tierOverride) { setKat.push("tier_override = ?"); valKat.push(b.tierOverride); }
+        if (b.preOrder !== null) { setKat.push("pre_order = ?"); valKat.push(b.preOrder ? 1 : 0); }
+        if (b.ukuranKhusus !== null) { setKat.push("ukuran_khusus = ?"); valKat.push(b.ukuranKhusus ? 1 : 0); }
         stmts.push(
           db.prepare(`INSERT INTO products (sku, nama_accurate, nama_accurate_normalized, hpp, stok_min, is_online_product, updated_at)
             VALUES (?, ?, ?, ?, ?, 1, ?) ON CONFLICT(sku) DO UPDATE SET nama_accurate = excluded.nama_accurate, hpp = excluded.hpp, stok_min = excluded.stok_min, updated_at = excluded.updated_at`)
@@ -146,12 +195,17 @@ export async function POST(request: Request) {
           db.prepare("INSERT INTO stock_moves (sku, qty, jenis, gudang_id, source, status, created_by, at, by) VALUES (?, ?, 'restock', ?, 'web_dashboard', 'processed', ?, ?, ?)")
             .bind(b.sku, b.stokAwal, g, user.tg_id, at, user.tg_id)
         );
+        if (setKat.length > 0) {
+          stmts.push(db.prepare(`UPDATE products SET ${setKat.join(", ")} WHERE sku = ?`).bind(...valKat, b.sku));
+        } else if (b.kategori === null && b.tierOverride === null) {
+          peringatan.push(`${b.sku}: tanpa kategori (belum terpetakan)`);
+        }
       }
       await db.batch(stmts);
       sukses += chunk.length;
     }
     await db.prepare("UPDATE import_batches SET status = 'done', sukses = ? WHERE id = ?").bind(sukses, batch.id).run();
-    return json({ ok: true, sukses, batch_id: batch.id });
+    return json({ ok: true, sukses, batch_id: batch.id, peringatan: peringatan.slice(0, 50) });
   }
 
   // Upload file (multipart)

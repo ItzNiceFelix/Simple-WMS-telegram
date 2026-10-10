@@ -402,6 +402,7 @@ function toRow(kode: string, filter?: { gudang_id?: string | null }): StockRow |
     ? (qtyPerGudang[filter.gudang_id] ?? null)
     : (stok?.stok_gudang_online ?? null);
   const reorder = stok?.reorder_point ?? null;
+  const kat = "kategori" in produk && typeof produk.kategori === "string" ? produk.kategori : null;
   return {
     kode_barang: kode,
     nama_accurate: produk.nama_accurate,
@@ -412,6 +413,8 @@ function toRow(kode: string, filter?: { gudang_id?: string | null }): StockRow |
     reorder_point: reorder,
     status: statusStok(nilai, reorder),
     kekurangan: kekuranganStok(nilai),
+    kategori: kat,
+    terpetakan: false,
   };
 }
 

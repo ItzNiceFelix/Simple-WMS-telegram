@@ -59,6 +59,10 @@ export interface ProdukDoc {
   hpp: number | null;
   hpp_baru: number | null;
   is_online_product: boolean;
+  kategori?: string | null;
+  tier_override?: string | null;
+  pre_order?: boolean;
+  ukuran_khusus?: boolean;
   variants?: ProdukVariant[];
   search_keywords?: string[];
   updated_at: string | null;
@@ -78,6 +82,10 @@ export interface StockRow {
   status: StockStatus;
   /** Kekurangan = Math.abs(stok) saat status "minus". */
   kekurangan: number;
+  /** Path kategori Shopee (PRD v2 U5). Null = kosong. */
+  kategori?: string | null;
+  /** True bila path ada di kategori_tarif atau tier_override terisi. */
+  terpetakan?: boolean;
 }
 
 /** v5 (F9): filter listStock. Default is_online=true; gudang_id untuk scope. */

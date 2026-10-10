@@ -49,16 +49,20 @@ export function DialogLabaShopee({
   open,
   onOpenChange,
   onSukses,
+  preset,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSukses?: () => void;
+  preset: { id: number; nama: string; status_toko: string };
 }) {
   const [file, setFile] = useState<File | null>(null);
   const [rows, setRows] = useState<Record<string, unknown>[] | null>(null);
   const [agregat, setAgregat] = useState<Agregat | null>(null);
   const [mengirim, setMengirim] = useState(false);
-  const [tanggal, setTanggal] = useState(() => new Date().toISOString().slice(0, 10));
+  const [tanggal, setTanggal] = useState(() =>
+    new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jakarta", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date())
+  );
 
   function tutup(v: boolean) {
     if (mengirim) return;
@@ -97,7 +101,7 @@ export function DialogLabaShopee({
       const res = await fetch("/api/laba", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ aksi: "hitung", rows: data, file: file.name }),
+        body: JSON.stringify({ aksi: "hitung", presetId: preset.id, rows: data, file: file.name }),
         credentials: "include",
       });
       const raw: unknown = await res.json().catch(() => null);
@@ -119,12 +123,13 @@ export function DialogLabaShopee({
 
   async function simpan() {
     if (!rows || !agregat) return;
+    if (!window.confirm(`Simpan ke preset "${preset.nama}" tanggal ${tanggal}?`)) return;
     setMengirim(true);
     try {
       const res = await fetch("/api/laba", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ aksi: "simpan", rows, file: file?.name ?? "", tanggal }),
+        body: JSON.stringify({ aksi: "simpan", presetId: preset.id, rows, file: file?.name ?? "", tanggal }),
         credentials: "include",
       });
       const raw: unknown = await res.json().catch(() => null);
@@ -150,10 +155,9 @@ export function DialogLabaShopee({
     <Dialog open={open} onOpenChange={tutup}>
       <DialogContent className="max-h-[90dvh] overflow-y-auto">
         <DialogHeader>
-          <DialogTitle>Hitung Laba Shopee</DialogTitle>
+          <DialogTitle>Hitung Laba — {preset.nama}</DialogTitle>
           <DialogDescription>
-            Upload file export Order.all Shopee (.xlsx, sheet &quot;orders&quot;) → preview estimasi → pilih tanggal
-            simpan → Simpan Perhitungan. Patokan harga = Subtotal Pesanan.
+            Upload file export Order.all Shopee (.xlsx, sheet &quot;orders&quot;) untuk preset &quot;{preset.nama}&quot; → preview estimasi → pilih tanggal simpan → Simpan Perhitungan. Patokan = dasar resmi (Harga Awal − diskon/voucher penjual).
           </DialogDescription>
         </DialogHeader>
         {!agregat ? (

@@ -34,15 +34,18 @@ export async function GET(request: Request) {
   if (scope === "stok") {
     const gudangFilter = url.searchParams.get("gudang_id");
     const onlineSaja = url.searchParams.get("is_online") !== "false";
-    let sql = `SELECT p.sku, p.nama_accurate, p.hpp, p.is_online_product, p.stok_min, b.warehouse_id, b.qty
+    let sql = `SELECT p.sku, p.nama_accurate, p.hpp, p.is_online_product, p.stok_min, p.kategori, p.tier_override, b.warehouse_id, b.qty
       FROM products p LEFT JOIN stock_by_bin b ON b.sku = p.sku`;
     const args: unknown[] = [];
     if (onlineSaja) sql += " WHERE p.is_online_product = 1";
     sql += " ORDER BY p.sku ASC LIMIT 2000";
     const { results } = await db.prepare(sql).bind(...args).all<{
       sku: string; nama_accurate: string; hpp: number | null; is_online_product: number; stok_min: number | null;
+      kategori: string | null; tier_override: string | null;
       warehouse_id: string | null; qty: number | null;
     }>();
+    const { results: paths } = await db.prepare("SELECT kategori_path FROM kategori_tarif").all<{ kategori_path: string }>();
+    const himpunan = new Set(paths.map((p) => p.kategori_path));
     const grup = new Map<string, { p: (typeof results)[number]; qtyMap: Record<string, number> }>();
     for (const r of results) {
       let g = grup.get(r.sku);
@@ -54,11 +57,13 @@ export async function GET(request: Request) {
       const nilai = gudangFilter ? (qtyMap[gudangFilter] ?? 0) : (qtyMap.ONLINE ?? 0);
       if (gudangFilter && !(gudangFilter in qtyMap)) continue;
       const status = nilai < 0 ? "minus" : p.stok_min != null && nilai < p.stok_min ? "menipis" : "aman";
+      const terpetakan = !!p.tier_override || (!!p.kategori && himpunan.has(p.kategori));
       baris.push({
         kode_barang: p.sku, nama_accurate: p.nama_accurate, hpp: p.hpp,
         stok_gudang_online: nilai, qty_per_gudang: qtyMap,
         is_online_product: p.is_online_product === 1, reorder_point: p.stok_min,
         status, kekurangan: status === "aman" ? 0 : (p.stok_min ?? 0) - nilai,
+        kategori: p.kategori, terpetakan,
       });
     }
     return json({ ok: true, rows: baris });
@@ -77,6 +82,8 @@ export async function GET(request: Request) {
         produk: {
           kode_barang: kode, nama_accurate: p.nama_accurate, hpp: p.hpp, hpp_baru: p.hpp_baru,
           is_online_product: p.is_online_product === 1,
+          kategori: p.kategori ?? null, tier_override: p.tier_override ?? null,
+          pre_order: p.pre_order === 1, ukuran_khusus: p.ukuran_khusus === 1,
           variants: varian.map((v) => ({ variasi: v.variasi })),
           search_keywords: kw.map((k) => k.keyword), updated_at: keIso(p.updated_at as number | null),
         },

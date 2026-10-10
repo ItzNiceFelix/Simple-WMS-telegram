@@ -1,50 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { alokasiLabaSku, ambilOrder, hitungLaba, imporPesanan, listOrder, porsiSku, transisiFulfill, transisiFulfillBatch, type BarisPesanan, type OrderItem } from "./order";
+import { ambilOrder, imporPesanan, listOrder, transisiFulfill, transisiFulfillBatch, type BarisPesanan } from "./order";
 import type { Hasil } from "./db";
-
-describe("hitungLaba", () => {
-  it("omzet-hpp-biaya-pph-ppn benar", () => {
-    const r = hitungLaba(
-      [{ sku: "A", qty: 2, harga_satuan: 100000, hpp_snapshot: 60000 }],
-      [{ jenis: "admin", basis: "persen", nilai: 4 }],
-      true, 0
-    );
-    assert.equal(r.omzet, 200000);
-    assert.equal(r.hpp, 120000);
-    assert.equal(r.biaya, 8000);
-    assert.equal(r.pph, 1000);
-    assert.equal(r.laba, 200000 - 120000 - 8000 - 1000);
-  });
-  it("tanpa pph + flat fee", () => {
-    const r = hitungLaba(
-      [{ sku: "A", qty: 1, harga_satuan: 50000, hpp_snapshot: 30000 }],
-      [{ jenis: "ongkir", basis: "flat", nilai: 10000 }],
-      false, 11
-    );
-    assert.equal(r.pph, 0);
-    assert.equal(r.ppn, 5500);
-    assert.equal(r.laba, 50000 - 30000 - 10000 - 5500);
-  });
-  it("persen desimal 3.5% dibulatkan per order", () => {
-    const r = hitungLaba(
-      [{ sku: "A", qty: 1, harga_satuan: 100000, hpp_snapshot: 60000 }],
-      [{ jenis: "admin", basis: "persen", nilai: 3.5 }],
-      false, 0
-    );
-    assert.equal(r.biaya, 3500);
-    assert.equal(r.laba, 100000 - 60000 - 3500);
-  });
-  it("alokasi per SKU jumlah = laba order", () => {
-    const items = [
-      { sku: "A", qty: 1, harga_satuan: 100000, hpp_snapshot: 60000 },
-      { sku: "B", qty: 1, harga_satuan: 100000, hpp_snapshot: 50000 },
-    ];
-    const r = hitungLaba(items, [{ jenis: "admin", basis: "persen", nilai: 10 }], true, 0);
-    const al = alokasiLabaSku(items, r);
-    assert.ok(Math.abs(al["A"] + al["B"] - r.laba) < 1);
-  });
-});
 
 type Row = Record<string, unknown>;
 const kunciOrder = (mp: string, no: string) => `${mp}|${no}`;
@@ -175,49 +132,6 @@ function statusGagal(r: Hasil<unknown>): number {
 
 const barisA = (no: string, qty: number): BarisPesanan => ({ marketplace: "shopee", no_pesanan: no, tanggal: 1728288000, buyer: "Budi", sku: "A", qty, harga_satuan: 100000 });
 
-describe("porsiSku (filter rekap per SKU)", () => {
-  it("order 2 SKU: porsi = omzet/HPP/laba SKU itu, bukan total order", () => {
-    const items: OrderItem[] = [
-      { sku: "A", qty: 1, harga_satuan: 100000, hpp_snapshot: 60000 },
-      { sku: "B", qty: 1, harga_satuan: 100000, hpp_snapshot: 50000 },
-    ];
-    const r = hitungLaba(items, [{ jenis: "admin", basis: "persen", nilai: 10 }], true, 0);
-    const a = porsiSku(items, r, "A");
-    assert.equal(a.omzet, 100000, "omzet = porsi SKU A, bukan 200000");
-    assert.equal(a.hpp, 60000);
-    assert.notEqual(a.laba, r.laba, "laba porsi bukan laba total order");
-    assert.equal(a.porsi_sku, true);
-    assert.equal(a.pph, 0);
-    assert.equal(a.ppn, 0);
-    // omzet - hpp - biaya = laba tetap konsisten dengan bentuk RincianOrder.
-    assert.equal(a.omzet - a.hpp - a.biaya, a.laba);
-    const b = porsiSku(items, r, "B");
-    assert.equal(a.laba + b.laba, r.laba, "jumlah porsi = laba order");
-    assert.equal(a.omzet + b.omzet, r.omzet);
-    assert.equal(a.hpp + b.hpp, r.hpp);
-  });
-
-  it("tanpa filter sku: angka baris tetap total order", () => {
-    const items: OrderItem[] = [
-      { sku: "A", qty: 1, harga_satuan: 100000, hpp_snapshot: 60000 },
-      { sku: "B", qty: 1, harga_satuan: 100000, hpp_snapshot: 50000 },
-    ];
-    const r = hitungLaba(items, [], false, 0);
-    assert.equal(r.omzet, 200000);
-    assert.equal(r.laba, 90000);
-  });
-
-  it("SKU tak ada di order → porsi nol (bukan total order)", () => {
-    const items: OrderItem[] = [{ sku: "A", qty: 2, harga_satuan: 50000, hpp_snapshot: 30000 }];
-    const r = hitungLaba(items, [], false, 0);
-    const c = porsiSku(items, r, "C");
-    assert.equal(c.omzet, 0);
-    assert.equal(c.hpp, 0);
-    assert.equal(c.laba, 0);
-    assert.equal(c.margin, 0);
-  });
-});
-
 describe("transisiFulfill", () => {
   it("pack kurangi stok + movement jual_mp", async () => {
     const db = buatDbOrder();
@@ -296,11 +210,11 @@ describe("transisiFulfillBatch", () => {
 });
 
 describe("imporPesanan", () => {
-  it("2 order: preset bila tanpa fee + snapshot beku", async () => {
+  it("2 order: snapshot hpp beku, tanpa fee", async () => {
     const db = buatDbOrder();
     const r = await imporPesanan(db, [
       { marketplace: "shopee", no_pesanan: "O-1", tanggal: 1728288000, buyer: "Budi", sku: "A", qty: 2, harga_satuan: 100000 },
-      { marketplace: "tokopedia", no_pesanan: "O-2", tanggal: 1728288000, buyer: "Sari", sku: "A", qty: 1, harga_satuan: 50000, fee_jenis: "ongkir", fee_basis: "flat", fee_nilai: 10000 },
+      { marketplace: "tokopedia", no_pesanan: "O-2", tanggal: 1728288000, buyer: "Sari", sku: "A", qty: 1, harga_satuan: 50000 },
     ], null);
     assert.equal(r.ok, true);
     if (r.ok) {
@@ -310,12 +224,7 @@ describe("imporPesanan", () => {
     const o1 = await ambilOrder(db, "shopee", "O-1");
     assert.ok(o1);
     assert.equal(o1?.items[0]?.hpp_snapshot, 60000);
-    assert.equal(o1?.fees.length, 1);
-    assert.equal(o1?.fees[0]?.jenis, "admin");
-    assert.equal(o1?.fees[0]?.amount, 8000);
-    const o2 = await ambilOrder(db, "tokopedia", "O-2");
-    assert.equal(o2?.fees.length, 1);
-    assert.equal(o2?.fees[0]?.jenis, "ongkir");
+    assert.equal(o1?.fees.length, 0);
     db.data.products["A"]["hpp"] = 99999;
     const o1b = await ambilOrder(db, "shopee", "O-1");
     assert.equal(o1b?.items[0]?.hpp_snapshot, 60000);
@@ -327,7 +236,6 @@ describe("imporPesanan", () => {
     await imporPesanan(db, [barisA("O-9", 1)], null);
     const o = await ambilOrder(db, "shopee", "O-9");
     assert.equal(o?.items.length, 1);
-    assert.equal(o?.fees.length, 1);
     assert.equal((await listOrder(db, {})).length, 1);
   });
 });

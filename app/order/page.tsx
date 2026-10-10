@@ -53,7 +53,7 @@ import { Spinner } from "@/components/ui/spinner";
 import { formatRupiah } from "@/lib/dashboard/format";
 import type { OrderDetail } from "@/lib/d1/order";
 
-type RincianOrder = OrderDetail & { laba: number; margin: number; omzet: number };
+type RincianOrder = OrderDetail;
 type Target = { mp: string; no: string; ke: string };
 
 // Cermin PETA_TRANSISI lib/d1/order.ts — tombol tampil sesuai status kini.
@@ -153,7 +153,7 @@ function DaftarOrder() {
     setError(null);
     setOrders(null);
     try {
-      const q = new URLSearchParams({ aksi: "rekap", limit: "200" });
+      const q = new URLSearchParams({ aksi: "daftar", limit: "200" });
       if (status !== "semua") q.set("status", status);
       if (mpTertunda) q.set("mp", mpTertunda);
       const res = await fetch(`/api/order?${q}`, { credentials: "include" });
@@ -334,8 +334,8 @@ function DaftarOrder() {
                   <TableHead>MP</TableHead>
                   <TableHead>Tanggal</TableHead>
                   <TableHead>Status</TableHead>
-                  <TableHead className="text-right">Omzet</TableHead>
-                  <TableHead className="text-right">Laba</TableHead>
+                  <TableHead className="text-right">Item</TableHead>
+                  <TableHead className="text-right">Total</TableHead>
                   <TableHead>Aksi</TableHead>
                 </TableRow>
               </TableHeader>
@@ -360,8 +360,8 @@ function DaftarOrder() {
                     <TableCell>
                       <Badge variant="outline">{o.status_fulfill}</Badge>
                     </TableCell>
-                    <TableCell className="text-right tabular-nums">{formatRupiah(o.omzet)}</TableCell>
-                    <TableCell className="text-right tabular-nums">{formatRupiah(o.laba)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{o.items.reduce((a, i) => a + i.qty, 0)}</TableCell>
+                    <TableCell className="text-right tabular-nums">{formatRupiah(o.items.reduce((a, i) => a + i.subtotal, 0))}</TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1.5">
                         {(TRANSISI[o.status_fulfill] ?? []).map((t) => (

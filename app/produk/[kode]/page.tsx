@@ -11,6 +11,7 @@ import { PageHeader } from "@/components/dashboard/page-header";
 import { ButuhAkses } from "@/components/dashboard/butuh-akses";
 import { DialogKoreksiStok } from "@/components/dashboard/dialog-koreksi-stok";
 import { DialogEditHpp } from "@/components/dashboard/dialog-edit-hpp";
+import { FormMasterProduk } from "@/components/dashboard/form-master-produk";
 import { DialogEditReorder } from "@/components/dashboard/dialog-edit-reorder";
 import { StatusBadge } from "@/components/dashboard/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -158,6 +159,9 @@ function DetailProduk() {
           bolehUbahHpp={bolehHpp}
           onEditHpp={() => setDialogHpp(true)}
         />
+        {role === "owner" ? (
+          <FormMasterProduk sku={produk.kode_barang} awal={produk} onSukses={() => void muat()} />
+        ) : null}
 
         <Card data-testid="kartu-stok-produk">
           <CardHeader>
