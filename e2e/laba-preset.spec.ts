@@ -28,7 +28,9 @@ const SNAPSHOT = {
   ok: true,
   snapshot: {
     tanggal: "2026-10-09", jml_order: 2, jml_baris: 3, omzet: 150000, hpp: 90000,
-    biaya: 15000, laba: 45000, tolak: [], rincian: [], peringatan: ["tanpa kategori: X"],
+    biaya: 15000, pajak: 750, laba: 44250, tolak: [],
+    rincian: [{ sku: "BRG-001", nama: "Piring Kupu", unit: 3, hppSatuan: 30000, hargaJual: 50000, marginSatuan: 15000, marginPersen: 30, kontribusi: 45000 }],
+    peringatan: ["tanpa kategori: X"],
     file: "Order.all.xlsx",
   },
 };
@@ -59,4 +61,17 @@ test("stok: badge kategori + filter belum terpetakan", async ({ page }) => {
   await expect(page.getByTestId("ringkasan-kategori-stok")).toBeVisible();
   await page.getByTestId("filter-belum-petakan").click();
   await expect(page.getByTestId("baris-BRG-004")).toBeVisible();
+});
+
+test("laba: kartu PPh + nama produk + tombol export + kolom GO stok", async ({ page }) => {
+  await pasang(page);
+  await page.goto("/laba?role=owner");
+  await page.getByTestId("tanggal-2026-10-09").click();
+  await expect(page.getByTestId("kartu-agregat-laba")).toContainText("Estimasi PPh terbayarkan");
+  await expect(page.getByTestId("rincian-BRG-001")).toContainText("Piring Kupu");
+  await expect(page.getByTestId("export-laba-pdf")).toBeVisible();
+  await expect(page.getByTestId("export-laba-jpg-ringkas")).toBeVisible();
+  await expect(page.getByTestId("export-laba-jpg-lengkap")).toBeVisible();
+  await page.goto("/stok?role=owner");
+  await expect(page.getByTestId("go-BRG-001")).toBeVisible();
 });

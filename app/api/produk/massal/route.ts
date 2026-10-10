@@ -70,5 +70,14 @@ export async function POST(request: Request) {
     }
     return json({ ok: true, count: daftar.length });
   }
+  if (aksi === "set-go") {
+    const g = teks(body.nilai).toUpperCase();
+    if (g && !/^[A-H]$/.test(g)) return json({ ok: false, error: "nilai harus A–H (kosong = ikut kategori)." }, 400);
+    for (let i = 0; i < daftar.length; i += 100) {
+      const chunk = daftar.slice(i, i + 100);
+      await db.batch(chunk.map((sku) => db.prepare("UPDATE products SET go_override = ? WHERE sku = ?").bind(g || null, sku)));
+    }
+    return json({ ok: true, count: daftar.length });
+  }
   return json({ ok: false, error: "Aksi tidak dikenal." }, 400);
 }

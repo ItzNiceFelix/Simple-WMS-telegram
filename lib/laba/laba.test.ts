@@ -117,9 +117,9 @@ describe("E2/E-R3 hitungLabaPreset", () => {
     "Paket Diskon (Diskon dari Penjual)": "0",
     ...o,
   });
-  const skuDB: Record<string, { hpp: number; kategori: string }> = {
-    A: { hpp: 4000, kategori: "Perlengkapan Rumah > Peralatan Makan" },
-    B: { hpp: 10000, kategori: "Perlengkapan Rumah > Peralatan Makan" },
+  const skuDB: Record<string, { hpp: number; nama: string; kategori: string }> = {
+    A: { hpp: 4000, nama: "Produk A", kategori: "Perlengkapan Rumah > Peralatan Makan" },
+    B: { hpp: 10000, nama: "Produk B", kategori: "Perlengkapan Rumah > Peralatan Makan" },
   };
   const opsi = (rules: Aturan[]): OpsiHitung => ({
     preset: { id: 1, status_toko: "non_star" },
@@ -129,7 +129,7 @@ describe("E2/E-R3 hitungLabaPreset", () => {
     kategoriTabel: new Map([["Perlengkapan Rumah > Peralatan Makan", "T10"]]),
     ambilSku: async (sku) => {
       const s = skuDB[sku];
-      return s ? { hpp: s.hpp, kategori: s.kategori, tierOverride: null, preOrder: false, ukuranKhusus: false, goOverride: null } : null;
+      return s ? { hpp: s.hpp, nama: s.nama, kategori: s.kategori, tierOverride: null, preOrder: false, ukuranKhusus: false, goOverride: null } : null;
     },
     konteks: { iklanPersen: null, pesananKumulatif: null, bergabungSejak: null, uploadPertama: null },
   });
@@ -159,11 +159,13 @@ describe("E2/E-R3 hitungLabaPreset", () => {
     assert.equal(a.omzet, 112000);
     assert.equal(a.hpp, 28000);
     assert.equal(a.biaya, 11200 + 560);
+    assert.equal(a.pajak, 560);
     assert.equal(a.laba, 112000 - 28000 - 11200 - 560);
+    assert.equal(a.rincian[0]?.nama, "Produk A");
     const tanpaPajak = await hitungLabaPreset([baris()], opsi([]));
     assert.equal(tanpaPajak.biaya, 11200);
+    assert.equal(tanpaPajak.pajak, 0);
   });
-
   it("proses per_order sekali per order multi-item; retur parsial", async () => {
     const rows = [
       baris({ "No. Pesanan": "M", "Nomor Referensi SKU": "A", Jumlah: "1", "Harga Awal": "23547", "Harga Setelah Diskon": "23547", "Subtotal Pesanan": "23547", "Diskon Dari Penjual": "0" }),
@@ -184,7 +186,7 @@ describe("E2/E-R3 hitungLabaPreset", () => {
       [baris({ "No. Pesanan": "U" })],
       {
         ...opsi([]),
-        ambilSku: async () => ({ hpp: 4000, kategori: "Kategori Aneh", tierOverride: null, preOrder: false, ukuranKhusus: false, goOverride: null }),
+        ambilSku: async () => ({ hpp: 4000, nama: "Produk Aneh", kategori: "Kategori Aneh", tierOverride: null, preOrder: false, ukuranKhusus: false, goOverride: null }),
       }
     );
     assert.equal(a.jml_order, 1);

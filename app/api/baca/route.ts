@@ -34,14 +34,14 @@ export async function GET(request: Request) {
   if (scope === "stok") {
     const gudangFilter = url.searchParams.get("gudang_id");
     const onlineSaja = url.searchParams.get("is_online") !== "false";
-    let sql = `SELECT p.sku, p.nama_accurate, p.hpp, p.is_online_product, p.stok_min, p.kategori, p.tier_override, b.warehouse_id, b.qty
+    let sql = `SELECT p.sku, p.nama_accurate, p.hpp, p.is_online_product, p.stok_min, p.kategori, p.tier_override, p.pre_order, p.ukuran_khusus, p.go_override, b.warehouse_id, b.qty
       FROM products p LEFT JOIN stock_by_bin b ON b.sku = p.sku`;
     const args: unknown[] = [];
     if (onlineSaja) sql += " WHERE p.is_online_product = 1";
     sql += " ORDER BY p.sku ASC LIMIT 2000";
     const { results } = await db.prepare(sql).bind(...args).all<{
       sku: string; nama_accurate: string; hpp: number | null; is_online_product: number; stok_min: number | null;
-      kategori: string | null; tier_override: string | null;
+      kategori: string | null; tier_override: string | null; pre_order: number; ukuran_khusus: number; go_override: string | null;
       warehouse_id: string | null; qty: number | null;
     }>();
     const { results: paths } = await db.prepare("SELECT kategori_path FROM kategori_tarif").all<{ kategori_path: string }>();
@@ -64,6 +64,7 @@ export async function GET(request: Request) {
         is_online_product: p.is_online_product === 1, reorder_point: p.stok_min,
         status, kekurangan: status === "aman" ? 0 : (p.stok_min ?? 0) - nilai,
         kategori: p.kategori, terpetakan,
+        pre_order: p.pre_order === 1, ukuran_khusus: p.ukuran_khusus === 1, go_override: p.go_override ?? null,
       });
     }
     return json({ ok: true, rows: baris });

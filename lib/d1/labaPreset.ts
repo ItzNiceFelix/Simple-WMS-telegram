@@ -93,14 +93,14 @@ export async function hitungDanSimpan(
     grupGo: siap.grupGo,
     ambilSku: async (sku) => {
       const p = await db.prepare(
-        "SELECT hpp, kategori, tier_override, pre_order, ukuran_khusus, go_override FROM products WHERE sku = ?"
+        "SELECT hpp, nama_accurate, kategori, tier_override, pre_order, ukuran_khusus, go_override FROM products WHERE sku = ?"
       ).bind(sku).first<{
-        hpp: number | null; kategori: string | null; tier_override: string | null;
+        hpp: number | null; nama_accurate: string | null; kategori: string | null; tier_override: string | null;
         pre_order: number; ukuran_khusus: number; go_override: string | null;
       }>();
       if (!p) return null;
       return {
-        hpp: p.hpp, kategori: p.kategori, tierOverride: p.tier_override,
+        hpp: p.hpp, nama: p.nama_accurate, kategori: p.kategori, tierOverride: p.tier_override,
         preOrder: p.pre_order === 1, ukuranKhusus: p.ukuran_khusus === 1, goOverride: p.go_override,
       };
     },
@@ -111,11 +111,11 @@ export async function hitungDanSimpan(
   });
   if (simpan) {
     await db.prepare(
-      "INSERT OR REPLACE INTO laba_snapshot (preset_id, tanggal, jml_order, jml_baris, omzet, hpp, biaya, laba, " +
-      "tolak_json, rincian_json, peringatan_json, file, at, by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      "INSERT OR REPLACE INTO laba_snapshot (preset_id, tanggal, jml_order, jml_baris, omzet, hpp, biaya, pajak, laba, " +
+      "tolak_json, rincian_json, peringatan_json, file, at, by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
     ).bind(
       siap.presetId, tanggal, agregat.jml_order, agregat.jml_baris, agregat.omzet, agregat.hpp,
-      agregat.biaya, agregat.laba, JSON.stringify(agregat.tolak), JSON.stringify(agregat.rincian),
+      agregat.biaya, agregat.pajak, agregat.laba, JSON.stringify(agregat.tolak), JSON.stringify(agregat.rincian),
       JSON.stringify(agregat.peringatan), file.slice(0, 120), Math.floor(Date.now() / 1000), oleh
     ).run();
     // Penghitung kumulatif: jumlah order snapshot (idempoten per tanggal via REPLACE).

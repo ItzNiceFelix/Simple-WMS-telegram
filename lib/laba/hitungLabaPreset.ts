@@ -11,17 +11,17 @@ export type BarisPreset = Record<string, unknown>;
 
 export type TolakPreset = { no_pesanan: string; alasan: string };
 export type RincianSkuPreset = {
-  sku: string; unit: number; hppSatuan: number; hargaJual: number;
+  sku: string; nama: string | null; unit: number; hppSatuan: number; hargaJual: number;
   marginSatuan: number; marginPersen: number; kontribusi: number;
 };
 export type AgregatPreset = {
   jml_order: number; jml_baris: number; omzet: number; hpp: number;
-  biaya: number; laba: number; tolak: TolakPreset[]; rincian: RincianSkuPreset[];
+  biaya: number; pajak: number; laba: number; tolak: TolakPreset[]; rincian: RincianSkuPreset[];
   peringatan: string[]; jml_baris_belum_terpetakan: number;
 };
 
 export type InfoSku = {
-  hpp: number | null; kategori: string | null; tierOverride: string | null;
+  hpp: number | null; nama: string | null; kategori: string | null; tierOverride: string | null;
   preOrder: boolean; ukuranKhusus: boolean; goOverride: string | null;
 };
 
@@ -83,11 +83,12 @@ export async function hitungLabaPreset(
   let omzet = 0;
   let hpp = 0;
   let biaya = 0;
+  let pajak = 0;
   let jml_baris_belum_terpetakan = 0;
   const tolak: TolakPreset[] = [];
   const peringatanSet = new Set<string>();
   const perSku = new Map<string, {
-    sku: string; unit: number; hppSatuan: number; harga: number;
+    sku: string; nama: string | null; unit: number; hppSatuan: number; harga: number;
     omzetSku: number; hppSku: number; biayaSku: number; kontribusi: number;
   }>();
   const cacheSku = new Map<string, InfoSku | null>();
@@ -133,6 +134,7 @@ export async function hitungLabaPreset(
     const omzetOrder = skuBaris.reduce((a, b) => a + b.dasar, 0);
     let biayaOrder = 0;
     const biayaPerBaris: number[] = skuBaris.map(() => 0);
+    const pajakPerBaris: number[] = skuBaris.map(() => 0);
 
     // Aturan per_baris (admin + program + pajak): cocok per baris.
     for (let i = 0; i < skuBaris.length; i++) {
@@ -169,14 +171,17 @@ export async function hitungLabaPreset(
         if (pr.ukuran === "biasa" && info.ukuranKhusus) continue;
         biayaPerBaris[i] += feePlafonQty(b.dasar, pr.nilai, pr.plafon_per_qty, b.qty);
       }
-      // Pajak per baris (pph/ppn dari fee_rules).
+      // Pajak per baris (pph/ppn dari fee_rules) — dicatat terpisah + masuk biaya.
       for (const pj of o.rules.filter((x) => (x.jenis === "pajak_pph" || x.jenis === "pajak_ppn") && x.unit === "per_baris")) {
         if (!cocok(pj, { jenis: pj.jenis, kategori: "*", status_toko: o.preset.status_toko, tanggal: o.tanggal })) continue;
-        biayaPerBaris[i] += feePersen(b.dasar, pj.nilai, pj.plafon);
+        const fee = feePersen(b.dasar, pj.nilai, pj.plafon);
+        biayaPerBaris[i] += fee;
+        pajakPerBaris[i] += fee;
       }
     }
-    // Aturan per_order (proses dsb): sekali per order.
+    // Aturan per_order (proses dsb): sekali per order. Pajak per_order ikut dicatat terpisah.
     let biayaPerOrder = 0;
+    let pajakPerOrder = 0;
     for (const pr of o.rules.filter((x) => x.unit === "per_order")) {
       if (!cocok(pr, { jenis: pr.jenis, kategori: "*", status_toko: o.preset.status_toko, tanggal: o.tanggal })) continue;
       const syarat = parseSyarat(pr.syarat_json);
@@ -184,16 +189,20 @@ export async function hitungLabaPreset(
         const h = evaluasiSyarat(syarat, ctx);
         if (!h.ok) { peringatanSet.add(h.alasan); continue; }
       }
-      biayaPerOrder += pr.basis === "flat" ? pr.nilai : feePersen(omzetOrder, pr.nilai, pr.plafon);
+      const fee = pr.basis === "flat" ? pr.nilai : feePersen(omzetOrder, pr.nilai, pr.plafon);
+      biayaPerOrder += fee;
+      if (pr.jenis === "pajak_pph" || pr.jenis === "pajak_ppn") pajakPerOrder += fee;
     }
 
     const biayaOrderTotal = biayaPerBaris.reduce((a, x) => a + x, 0) + biayaPerOrder;
     biayaOrder = biayaOrderTotal;
+    const pajakOrderTotal = pajakPerBaris.reduce((a, x) => a + x, 0) + pajakPerOrder;
     jml_order += 1;
     jml_baris += skuBaris.length;
     omzet += omzetOrder;
     hpp += hppOrder;
     biaya += biayaOrder;
+    pajak += pajakOrderTotal;
 
     for (let i = 0; i < skuBaris.length; i++) {
       const b = skuBaris[i];
@@ -210,9 +219,10 @@ export async function hitungLabaPreset(
         ada.biayaSku += biayaAlokasi;
         ada.kontribusi += b.dasar - b.qty * h - biayaAlokasi;
         if (b.harga > 0) ada.harga = b.harga;
+        if (!ada.nama && info.nama) ada.nama = info.nama;
       } else {
         perSku.set(b.sku, {
-          sku: b.sku, unit: b.qty, hppSatuan: h, harga: b.harga,
+          sku: b.sku, nama: info.nama ?? null, unit: b.qty, hppSatuan: h, harga: b.harga,
           omzetSku: b.dasar, hppSku: b.qty * h, biayaSku: biayaAlokasi,
           kontribusi: b.dasar - b.qty * h - biayaAlokasi,
         });
@@ -224,7 +234,7 @@ export async function hitungLabaPreset(
     .map((s) => {
       const marginSatuan = s.unit > 0 ? Math.round(s.kontribusi / s.unit) : 0;
       return {
-        sku: s.sku, unit: s.unit, hppSatuan: s.hppSatuan, hargaJual: s.harga,
+        sku: s.sku, nama: s.nama, unit: s.unit, hppSatuan: s.hppSatuan, hargaJual: s.harga,
         marginSatuan,
         marginPersen: s.omzetSku > 0 ? Math.round(((s.kontribusi / s.omzetSku) * 100) * 10) / 10 : 0,
         kontribusi: s.kontribusi,
@@ -233,7 +243,7 @@ export async function hitungLabaPreset(
     .sort((a, b) => b.kontribusi - a.kontribusi);
 
   return {
-    jml_order, jml_baris, omzet, hpp, biaya, laba: omzet - hpp - biaya,
+    jml_order, jml_baris, omzet, hpp, biaya, pajak, laba: omzet - hpp - biaya,
     tolak, rincian, peringatan: [...peringatanSet], jml_baris_belum_terpetakan,
   };
 }

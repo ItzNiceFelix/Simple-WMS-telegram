@@ -61,11 +61,10 @@ export function AksiMassalKategori({ sku, onSukses }: { sku: string[]; onSukses:
             <SelectValue>{aksi}</SelectValue>
           </SelectTrigger>
           <SelectContent>
-            <SelectGroup>
               <SelectItem value="set-kategori">Set kategori</SelectItem>
               <SelectItem value="set-pre-order">Set pre-order</SelectItem>
               <SelectItem value="set-ukuran">Set ukuran khusus</SelectItem>
-            </SelectGroup>
+              <SelectItem value="set-go">Set GO override</SelectItem>
           </SelectContent>
         </Select>
       </Field>
@@ -81,6 +80,23 @@ export function AksiMassalKategori({ sku, onSukses }: { sku: string[]; onSukses:
             placeholder="Perlengkapan Rumah > Peralatan Makan"
             disabled={mengirim}
           />
+        </Field>
+      ) : aksi === "set-go" ? (
+        <Field className="w-40">
+          <FieldLabel htmlFor="nilai-massal-go">Grup GO</FieldLabel>
+          <Select value={nilai || "__kosong__"} onValueChange={(v) => typeof v === "string" && setNilai(v === "__kosong__" ? "" : v)}>
+            <SelectTrigger id="nilai-massal-go" className="h-11 w-full md:h-8" data-testid="nilai-massal">
+              <SelectValue>{nilai || "ikut kategori"}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                <SelectItem value="__kosong__">ikut kategori</SelectItem>
+                {["A", "B", "C", "D", "E", "F", "G", "H"].map((g) => (
+                  <SelectItem key={g} value={g}>{g}</SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
         </Field>
       ) : (
         <Field className="w-32">

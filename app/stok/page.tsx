@@ -154,6 +154,23 @@ function DaftarStok() {
       setOnlineSedang(null);
     }
   }
+  /** GO override per baris (owner): kosong = ikut grup kategori. */
+  async function ubahGo(kode: string, nilai: string) {
+    try {
+      const res = await fetch(`/api/produk/${encodeURIComponent(kode)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ go_override: nilai || null }),
+      });
+      const data = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
+      if (!res.ok || !data?.ok) throw new Error(data?.error ?? `Gagal (${res.status}).`);
+      toast.success(`GO ${kode || ""} → ${nilai || "ikut kategori"}.`);
+      await muat();
+    } catch (e) {
+      tampilkanGagalTulis(e instanceof Error ? e.message : "Gagal menyimpan GO.");
+    }
+  }
 
   const hasil = useMemo(() => {
     if (!rows) return [];
@@ -447,6 +464,9 @@ function DaftarStok() {
                         <Badge variant={r.is_online_product ? "secondary" : "outline"}>
                           {r.is_online_product ? "Online" : "Non-online"}
                         </Badge>
+                        {r.go_override ? (
+                          <Badge variant="secondary" data-testid={`go-badge-${r.kode_barang}`}>GO {r.go_override}</Badge>
+                        ) : null}
                         {bolehUbahOnline ? (
                           <Button
                             variant="outline"
@@ -512,6 +532,7 @@ function DaftarStok() {
                     <TableHead>Kode</TableHead>
                     <TableHead>Nama</TableHead>
                     <TableHead>Kategori</TableHead>
+                    <TableHead>GO</TableHead>
                     <TableHead className="text-right">HPP</TableHead>
                     <TableHead className="text-right">Stok</TableHead>
                     {gudangId !== "SEMUA" ? (
@@ -559,6 +580,28 @@ function DaftarStok() {
                         {r.kategori && !r.terpetakan ? (
                           <Badge variant="outline" className="ml-1" data-testid={`kat-belum-${r.kode_barang}`}>Belum terpetakan</Badge>
                         ) : null}
+                      </TableCell>
+                      <TableCell data-testid={`go-${r.kode_barang}`}>
+                        {role === "owner" ? (
+                          <Select
+                            value={r.go_override ?? "__kosong__"}
+                            onValueChange={(v) => typeof v === "string" && void ubahGo(r.kode_barang, v === "__kosong__" ? "" : v)}
+                          >
+                            <SelectTrigger className="h-8 w-24" data-testid={`go-pilih-${r.kode_barang}`}>
+                              <SelectValue>{r.go_override ?? "—"}</SelectValue>
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectGroup>
+                                <SelectItem value="__kosong__">—</SelectItem>
+                                {["A", "B", "C", "D", "E", "F", "G", "H"].map((g) => (
+                                  <SelectItem key={g} value={g}>{g}</SelectItem>
+                                ))}
+                              </SelectGroup>
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <span className="text-sm">{r.go_override ?? "—"}</span>
+                        )}
                       </TableCell>
                       <TableCell className="text-right tabular-nums">
                         {formatRupiah(r.hpp)}

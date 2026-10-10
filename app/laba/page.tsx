@@ -7,6 +7,7 @@ import { Calculator, ChartColumn, RotateCcw } from "lucide-react";
 
 import { PageHeader } from "@/components/dashboard/page-header";
 import { DialogLabaShopee } from "@/components/dashboard/dialog-laba-shopee";
+import { ExportLabaGambar } from "@/components/dashboard/export-laba-gambar";
 import { ButuhAkses } from "@/components/dashboard/butuh-akses";
 import { tampilkanGagalTulis } from "@/components/dashboard/umpan-tulis";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -36,6 +37,7 @@ type Tolak = { no_pesanan: string; alasan: string };
 
 type Rincian = {
   sku: string;
+  nama: string | null;
   unit: number;
   hppSatuan: number;
   hargaJual: number;
@@ -51,6 +53,7 @@ type Snapshot = {
   omzet: number;
   hpp: number;
   biaya: number;
+  pajak: number;
   laba: number;
   tolak: Tolak[];
   rincian: Rincian[];
@@ -337,6 +340,7 @@ function LabaPreset() {
                   <Kartu label="Omzet" nilai={formatRupiah(snapshot.omzet)} />
                   <Kartu label="HPP" nilai={formatRupiah(snapshot.hpp)} />
                   <Kartu label="Biaya" nilai={formatRupiah(snapshot.biaya)} />
+                  <Kartu label="Estimasi PPh terbayarkan" nilai={formatRupiah(snapshot.pajak ?? 0)} />
                   <Kartu label="Estimasi Laba" nilai={formatRupiah(snapshot.laba)} />
                   <Kartu label="Margin" nilai={`${formatAngka(Math.round(margin * 10) / 10)}%`} />
                 </div>
@@ -351,9 +355,15 @@ function LabaPreset() {
                     </>
                   ) : null}
                 </p>
+                {presetId ? (
+                  <ExportLabaGambar
+                    snapshot={{ ...snapshot, presetNama: presetAktif?.nama ?? "" }}
+                    presetId={presetId}
+                    presetNama={presetAktif?.nama ?? ""}
+                  />
+                ) : null}
                 {snapshot.peringatan.length > 0 ? (
                   <Alert data-testid="peringatan-laba">
-                    <AlertTitle>Peringatan hitung</AlertTitle>
                     <AlertDescription>
                       <ul className="list-disc space-y-1 pl-4">
                         {snapshot.peringatan.map((w) => (
@@ -386,6 +396,7 @@ function LabaPreset() {
                         <thead>
                           <tr className="bg-muted text-left text-xs text-muted-foreground">
                             <th className="px-3 py-2 font-medium">SKU Master</th>
+                            <th className="px-3 py-2 font-medium">Nama Produk</th>
                             <th className="px-3 py-2 text-right font-medium">Unit Terjual</th>
                             <th className="px-3 py-2 text-right font-medium">HPP / Unit</th>
                             <th className="px-3 py-2 text-right font-medium">Harga Jual / Unit</th>
@@ -397,6 +408,7 @@ function LabaPreset() {
                           {snapshot.rincian.map((r) => (
                             <tr key={r.sku} className="border-t border-border tabular-nums" data-testid={`rincian-${r.sku}`}>
                               <td className="px-3 py-2 font-medium">{r.sku}</td>
+                              <td className="max-w-56 truncate px-3 py-2" title={r.nama ?? undefined}>{r.nama ?? "—"}</td>
                               <td className="px-3 py-2 text-right">{formatAngka(r.unit)}</td>
                               <td className="px-3 py-2 text-right">{formatRupiah(r.hppSatuan)}</td>
                               <td className="px-3 py-2 text-right">{r.hargaJual > 0 ? formatRupiah(r.hargaJual) : "—"}</td>

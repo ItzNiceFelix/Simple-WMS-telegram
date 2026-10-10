@@ -87,6 +87,9 @@ export interface StockRow {
   kategori?: string | null;
   /** True bila path ada di kategori_tarif atau tier_override terisi. */
   terpetakan?: boolean;
+  pre_order?: boolean;
+  ukuran_khusus?: boolean;
+  go_override?: string | null;
 }
 
 /** v5 (F9): filter listStock. Default is_online=true; gudang_id untuk scope. */

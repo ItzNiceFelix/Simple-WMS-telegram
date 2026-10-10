@@ -1,13 +1,11 @@
 // app/api/laba/route.ts — Hitung laba per preset (A3, mesin baru hitungLabaPreset).
 // POST { aksi:'hitung'|'simpan', presetId, rows, file?, tanggal? }.
-// GET ?aksi=muat&presetId=&tanggal= | ?aksi=list&presetId=&limit=.
+// GET ?aksi=muat&presetId=&tanggal= | ?aksi=list&presetId=&limit= | ?aksi=pdf&presetId=&tanggal=.
 import { getDb } from "@/lib/d1/db";
 import { hitungDanSimpan, siapkanHitung } from "@/lib/d1/labaPreset";
+import { bangunPdfLaba } from "@/lib/d1/labaPdf";
 import { tanggalJakarta } from "@/lib/d1/labaShopee";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
-
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
 
 const MAKS_BARIS = 10000;
 
@@ -37,7 +35,7 @@ export async function GET(request: Request) {
       ok: true,
       snapshot: {
         tanggal: snap["tanggal"], jml_order: snap["jml_order"], jml_baris: snap["jml_baris"],
-        omzet: snap["omzet"], hpp: snap["hpp"], biaya: snap["biaya"], laba: snap["laba"],
+        omzet: snap["omzet"], hpp: snap["hpp"], biaya: snap["biaya"], pajak: (snap["pajak"] as number) ?? 0, laba: snap["laba"],
         tolak: JSON.parse(String(snap["tolak_json"] ?? "[]")),
         rincian: JSON.parse(String(snap["rincian_json"] ?? "[]")),
         peringatan: JSON.parse(String(snap["peringatan_json"] ?? "[]")),
@@ -55,7 +53,35 @@ export async function GET(request: Request) {
     return json({ ok: true, daftar: results });
   }
 
-  return json({ ok: false, error: "Aksi tidak dikenal (muat/list)." }, 400);
+  if (aksi === "pdf") {
+    const tanggal = (url.searchParams.get("tanggal") ?? "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(tanggal)) return json({ ok: false, error: "Tanggal harus YYYY-MM-DD." }, 400);
+    const snap = await db.prepare("SELECT * FROM laba_snapshot WHERE preset_id = ? AND tanggal = ?")
+      .bind(presetId, tanggal).first<Record<string, unknown>>();
+    if (!snap) return json({ ok: false, error: "Snapshot tidak ditemukan." }, 404);
+    const preset = await db.prepare("SELECT nama, status_toko FROM seller_presets WHERE id = ?")
+      .bind(presetId).first<{ nama: string; status_toko: string }>();
+    const omzet = Number(snap["omzet"] ?? 0);
+    const laba = Number(snap["laba"] ?? 0);
+    const pdf = await bangunPdfLaba({
+      presetNama: preset?.nama ?? `#${presetId}`, statusToko: preset?.status_toko ?? "-",
+      tanggal: String(snap["tanggal"]), file: String(snap["file"] ?? ""),
+      jml_order: Number(snap["jml_order"] ?? 0), jml_baris: Number(snap["jml_baris"] ?? 0),
+      omzet, hpp: Number(snap["hpp"] ?? 0), biaya: Number(snap["biaya"] ?? 0),
+      pajak: Number(snap["pajak"] ?? 0), laba, margin: omzet > 0 ? (laba / omzet) * 100 : 0,
+      tolak: JSON.parse(String(snap["tolak_json"] ?? "[]")),
+      peringatan: JSON.parse(String(snap["peringatan_json"] ?? "[]")),
+      rincian: JSON.parse(String(snap["rincian_json"] ?? "[]")),
+    });
+    return new Response(pdf as unknown as BodyInit, {
+      headers: {
+        "content-type": "application/pdf",
+        "content-disposition": `attachment; filename="laba-${presetId}-${tanggal}.pdf"`,
+      },
+    });
+  }
+
+  return json({ ok: false, error: "Aksi tidak dikenal (muat/list/pdf)." }, 400);
 }
 
 export async function POST(request: Request) {
