@@ -5,18 +5,20 @@
 import XLSX from "xlsx";
 import { writeFileSync } from "node:fs";
 
-const HEADER = ["SKU*", "Nama*", "Kategori", "Satuan*", "StokAwal", "Gudang", "HPP", "HargaJual", "RakBin", "StokMin", "Barcode", "Expired(YYYY-MM-DD)", "Aktif"];
+const HEADER = ["SKU*", "Nama*", "Kategori", "Tier Override", "Pre-Order", "Ukuran Khusus", "Satuan*", "StokAwal", "Gudang", "HPP", "HargaJual", "RakBin", "StokMin", "Barcode", "Expired(YYYY-MM-DD)", "Aktif"];
 const CONTOH = [
-  ["BRG-001", "Kemeja Lengan Panjang", "Pakaian", "pcs", 100, "ONLINE", 75000, 129000, "A-01", 10, "8991234567890", "", "YA"],
-  ["BRG-001", "Kemeja Lengan Panjang", "Pakaian", "pcs", 20, "GUDANG-A", 75000, 129000, "A-01", 10, "8991234567890", "", "YA"],
-  ["BRG-002", "Celana Chino Slim", "Pakaian", "pcs", 50, "", 95000, 159000, "A-02", 5, "", "", "YA"],
-  ["BRG-003", "Kopi Bubuk 250g", "Makanan", "pcs", 200, "ONLINE", 28000, 45000, "B-01", 20, "", "2027-12-31", "YA"],
+  ["001916", "Lunch Box TRI J 4in1", "Perlengkapan Rumah > Peralatan Makan", "", "tidak", "tidak", "pcs", 100, "ONLINE", 15000, 18232, "A-01", 10, "", "", "YA"],
+  ["100289", "TATAKAN KOMPOR 007", "Elektronik > Perangkat Dapur", "", "tidak", "tidak", "pcs", 50, "ONLINE", 20000, 35000, "A-02", 5, "", "", "YA"],
+  ["100203", "Lemari Gantung", "Perlengkapan Rumah > Furniture", "", "tidak", "tidak", "pcs", 20, "ONLINE", 120000, 165000, "B-01", 5, "", "", "YA"],
 ];
 const PANDUAN = [
   ["Kolom", "Wajib", "Aturan"],
   ["SKU*", "Ya", "Unik, tanpa spasi. Contoh: BRG-001"],
   ["Nama*", "Ya", "Nama produk Accurate/master"],
-  ["Kategori", "Tidak", "Bebas, untuk filter"],
+  ["Kategori", "Tidak", "Path Shopee persis spt kategori_tarif (cth: Perlengkapan Rumah > Peralatan Makan). Salah = baris ditolak. Kosong = belum terpetakan + TIDAK menimpa lama."],
+  ["Tier Override", "Tidak", "Salah satu tier T10/T9_5/T9/T8_25/T6_75/T6_5/T5_25/T4_25/T2_5. Salah = baris ditolak. Kosong = tidak diubah."],
+  ["Pre-Order", "Tidak", "ya/tidak (default tidak). Kosong = tidak diubah."],
+  ["Ukuran Khusus", "Tidak", "ya/tidak (default tidak; plafon GO XTRA khusus 60rb). Kosong = tidak diubah."],
   ["Satuan*", "Ya", "pcs/dus/pak/dll"],
   ["StokAwal", "Tidak", "Bilangan bulat >= 0, default 0. Ditulis ke gudang kolom Gudang."],
   ["Gudang", "Tidak", "ID gudang terdaftar (huruf besar). Kosong = gudang pilihan saat import. Satu SKU boleh multi-baris untuk gudang berbeda. Gudang belum terdaftar = baris ditolak."],
