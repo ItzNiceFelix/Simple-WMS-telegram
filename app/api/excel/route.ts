@@ -92,21 +92,23 @@ export async function GET(request: Request) {
   const db = getDb();
   const HEADER = ["SKU*", "Nama*", "Kategori", "Tier Override", "Pre-Order", "Ukuran Khusus", "Satuan*", "StokAwal", "HPP", "HargaJual", "RakBin", "StokMin", "Barcode", "Expired(YYYY-MM-DD)", "Aktif"];
   let rows: (string | number | null)[][] = [HEADER];
+  // B5-A: cap export 1000 (ganti 5000) — hemat CPU XLSX.write di Worker.
+  const BATAS_EXPORT = 1000;
   if (tipe === "stok") {
     const { results } = await db.prepare(
       `SELECT p.sku, p.nama_accurate, b.qty FROM products p JOIN stock_by_bin b ON b.sku = p.sku
-       WHERE b.warehouse_id = ? ${q ? "AND (lower(p.sku) LIKE ? OR lower(p.nama_accurate) LIKE ?)" : ""} ORDER BY p.sku LIMIT 5000`
+       WHERE b.warehouse_id = ? ${q ? "AND (lower(p.sku) LIKE ? OR lower(p.nama_accurate) LIKE ?)" : ""} ORDER BY p.sku LIMIT ${BATAS_EXPORT}`
     ).bind(...(q ? [gudangId, `%${q}%`, `%${q}%`] : [gudangId])).all<{ sku: string; nama_accurate: string; qty: number }>();
     rows = [["SKU", "Nama", `Stok@${gudangId}`, "Status"], ...results.map((r) => [r.sku, r.nama_accurate, r.qty, r.qty < 0 ? "minus" : "ok"])];
   } else if (tipe === "hpp") {
     const { results } = await db.prepare(
-      `SELECT sku, nama_accurate, hpp, hpp_baru FROM products ${q ? "WHERE lower(sku) LIKE ? OR lower(nama_accurate) LIKE ?" : ""} ORDER BY sku LIMIT 5000`
+      `SELECT sku, nama_accurate, hpp, hpp_baru FROM products ${q ? "WHERE lower(sku) LIKE ? OR lower(nama_accurate) LIKE ?" : ""} ORDER BY sku LIMIT ${BATAS_EXPORT}`
     ).bind(...(q ? [`%${q}%`, `%${q}%`] : [])).all<{ sku: string; nama_accurate: string; hpp: number | null; hpp_baru: number | null }>();
     rows = [["SKU", "Nama", "HPP", "HPPBaru"], ...results.map((r) => [r.sku, r.nama_accurate, r.hpp, r.hpp_baru])];
   } else {
     const { results } = await db.prepare(
       `SELECT p.sku, p.nama_accurate, p.kategori, p.tier_override, p.pre_order, p.ukuran_khusus, p.hpp, p.stok_min, b.qty FROM products p LEFT JOIN stock_by_bin b ON b.sku = p.sku AND b.warehouse_id = ?
-       ${q ? "WHERE lower(p.sku) LIKE ? OR lower(p.nama_accurate) LIKE ?" : ""} ORDER BY p.sku LIMIT 5000`
+       ${q ? "WHERE lower(p.sku) LIKE ? OR lower(p.nama_accurate) LIKE ?" : ""} ORDER BY p.sku LIMIT ${BATAS_EXPORT}`
     ).bind(...(q ? [gudangId, `%${q}%`, `%${q}%`] : [gudangId])).all<{ sku: string; nama_accurate: string; kategori: string | null; tier_override: string | null; pre_order: number; ukuran_khusus: number; hpp: number | null; stok_min: number | null; qty: number | null }>();
     rows = [HEADER, ...results.map((r) => [r.sku, r.nama_accurate, r.kategori ?? "", r.tier_override ?? "", r.pre_order ? "ya" : "tidak", r.ukuran_khusus ? "ya" : "tidak", "pcs", r.qty ?? 0, r.hpp, "", "", r.stok_min, "", "", "YA"])];
   }
@@ -225,8 +227,11 @@ export async function POST(request: Request) {
   if (!ws) return json({ ok: false, error: `Sheet ${sheetName} tidak ditemukan.` }, 400);
   const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: "" });
   if (rows.length === 0) return json({ ok: false, error: "Sheet kosong." }, 400);
-  if (rows.length > 5000) return json({ ok: false, error: "Maksimal 5000 baris per import." }, 400);
+  if (rows.length > 500) return json({ ok: false, error: "Maksimal 500 baris per import." }, 400);
   const gudangDefault = typeof form.get("gudang_id") === "string" && form.get("gudang_id") ? String(form.get("gudang_id")).trim().toUpperCase() : "ONLINE";
+  // B4-A: 1 SELECT gudang aktif -> Set memori (ganti N SELECT per baris).
+  const { results: gudangAktif } = await db.prepare("SELECT id FROM warehouses WHERE aktif = 1").all<{ id: string }>();
+  const himpunanGudang = new Set(gudangAktif.map((g) => g.id.toUpperCase()));
 
   const sukses: BarisValid[] = [];
   const gagal: { baris: number; pesan: string }[] = [];
@@ -239,8 +244,7 @@ export async function POST(request: Request) {
       continue;
     }
     const gudang = v.data.gudang ?? gudangDefault;
-    const ada = await db.prepare("SELECT id FROM warehouses WHERE id = ? AND aktif = 1").bind(gudang).first<{ id: string }>();
-    if (!ada) {
+    if (!himpunanGudang.has(gudang.toUpperCase())) {
       gagal.push({ baris: noBaris, pesan: `Baris ${noBaris}: Gudang ${gudang} belum terdaftar — buat dulu di /gudang.` });
       continue;
     }

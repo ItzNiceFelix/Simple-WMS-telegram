@@ -512,13 +512,47 @@ export async function listTransfer(
     sql += " AND id IN (SELECT transfer_id FROM transfer_destinations WHERE dest_warehouse_id = ?)";
     args.push(filter.tujuan_id);
   }
+  // B3-A: default 20 (cap 200). Hidrasi batch 3 query (header + tujuan + items)
+  // ganti N+1 loop ambilTransfer; bentuk TransferDoc tetap sama (items penuh).
   sql += " ORDER BY created_at DESC LIMIT ?";
-  args.push(Math.min(filter.limit ?? 50, 200));
-  const { results } = await db.prepare(sql).bind(...args).all<{ id: string }>();
-  const keluar: TransferDoc[] = [];
-  for (const r of results) {
-    const t = await ambilTransfer(db, r.id);
-    if (t) keluar.push(t);
+  args.push(Math.min(filter.limit ?? 20, 200));
+  const { results: ids } = await db.prepare(sql).bind(...args).all<{ id: string }>();
+  if (ids.length === 0) return [];
+  const tanda = ids.map(() => "?").join(",");
+  const idList = ids.map((r) => r.id);
+  const { results: headers } = await db.prepare(
+    `SELECT * FROM transfers WHERE id IN (${tanda})`
+  ).bind(...idList).all<{ id: string; dari_warehouse_id: string; status: string; created_at: number; created_by: string | null }>();
+  const { results: dests } = await db.prepare(
+    `SELECT id, transfer_id, idx_tujuan, dest_warehouse_id, nama_snapshot, status, status_kirim, user_penerima_id, user_penerima_nama
+     FROM transfer_destinations WHERE transfer_id IN (${tanda}) ORDER BY transfer_id ASC, idx_tujuan ASC`
+  ).bind(...idList).all<{ id: number; transfer_id: string; idx_tujuan: number; dest_warehouse_id: string | null; nama_snapshot: string | null; status: string; status_kirim: string; user_penerima_id: string | null; user_penerima_nama: string | null }>();
+  const destIds = dests.map((d) => d.id);
+  const itemsPerDest = new Map<number, { sku: string; nama: string | null; qty: number }[]>();
+  if (destIds.length > 0) {
+    const tandaDest = destIds.map(() => "?").join(",");
+    const { results: items } = await db.prepare(
+      `SELECT destination_id, sku, nama, qty FROM transfer_items WHERE destination_id IN (${tandaDest})`
+    ).bind(...destIds).all<{ destination_id: number; sku: string; nama: string | null; qty: number }>();
+    for (const it of items) {
+      const arr = itemsPerDest.get(it.destination_id) ?? [];
+      arr.push({ sku: it.sku, nama: it.nama, qty: it.qty });
+      itemsPerDest.set(it.destination_id, arr);
+    }
   }
-  return keluar;
+  const destPerTransfer = new Map<string, TujuanDoc[]>();
+  for (const d of dests) {
+    const arr = destPerTransfer.get(d.transfer_id) ?? [];
+    arr.push({
+      db_id: d.id, idx: d.idx_tujuan, dest_warehouse_id: d.dest_warehouse_id,
+      nama_snapshot: d.nama_snapshot, status: d.status, status_kirim: d.status_kirim,
+      user_penerima_id: d.user_penerima_id, user_penerima_nama: d.user_penerima_nama,
+      items: itemsPerDest.get(d.id) ?? [],
+    });
+    destPerTransfer.set(d.transfer_id, arr);
+  }
+  const urutan = new Map(ids.map((r, i) => [r.id, i]));
+  return headers
+    .map((h) => ({ ...h, tujuan: destPerTransfer.get(h.id) ?? [] }))
+    .sort((a, b) => (urutan.get(a.id) ?? 0) - (urutan.get(b.id) ?? 0));
 }

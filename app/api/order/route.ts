@@ -20,8 +20,8 @@ export const dynamic = "force-dynamic";
 const HEADER_PESANAN = ["NoPesanan*", "Marketplace*", "Tanggal*", "SKU*", "Qty*", "HargaSatuan*", "Buyer"];
 
 const KE_VALID = ["pack", "kirim", "selesai", "batal"];
-const MAKS_BARIS = 5000;
-
+// B5-A: cap 500 baris (konsisten excel produk); konfirmasi batch 50 tetap.
+const MAKS_BARIS = 500;
 type BarisGagal = { baris: number; pesan: string };
 function teks(v: unknown): string {
   return typeof v === "string" ? v.trim() : v == null ? "" : String(v).trim();

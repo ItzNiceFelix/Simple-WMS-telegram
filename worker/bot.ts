@@ -56,7 +56,14 @@ export async function kirimPesanBot(env: Env, chatId: number | string, teks: str
     sisa = sisa.slice(potong);
   }
   potongan.push(sisa);
+  // B6-A: gabung potongan pendek yang berdekatan (hemat subrequest Telegram).
+  const gabung: string[] = [];
   for (const p of potongan) {
+    const akhir = gabung[gabung.length - 1];
+    if (akhir !== undefined && akhir.length + p.length <= 3900) gabung[gabung.length - 1] = akhir + p;
+    else gabung.push(p);
+  }
+  for (const p of gabung) {
     const body: Record<string, unknown> = { chat_id: chatId, text: p, parse_mode: "HTML", disable_web_page_preview: true };
     if (replyTo) body.reply_to_message_id = replyTo;
     const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {

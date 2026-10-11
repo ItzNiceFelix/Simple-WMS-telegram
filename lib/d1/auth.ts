@@ -25,26 +25,26 @@ export async function requireSession(
   const token = bacaCookie(cookie, "swt_sesi");
   if (!token) return gagal(401, "Belum login.");
   const tokenHash = await sha256Hex(token);
-  const sesi = await db
-    .prepare("SELECT user_id, expires_at FROM sessions WHERE token_hash = ? AND revoked_at IS NULL")
+  // B8-A: 1 JOIN sesi+user (ganti 2 query sekuensial) + 1 query scope.
+  const baris = await db
+    .prepare(
+      `SELECT s.user_id AS user_id, s.expires_at AS expires_at, u.id AS id, u.tg_id AS tg_id, u.role AS role
+       FROM sessions s JOIN users u ON u.id = s.user_id AND u.active = 1
+       WHERE s.token_hash = ? AND s.revoked_at IS NULL`
+    )
     .bind(tokenHash)
-    .first<{ user_id: number; expires_at: number }>();
-  if (!sesi || sesi.expires_at * 1000 <= Date.now()) return gagal(401, "Sesi kedaluwarsa.");
-  const user = await db
-    .prepare("SELECT id, tg_id, role FROM users WHERE id = ? AND active = 1")
-    .bind(sesi.user_id)
-    .first<{ id: number; tg_id: string; role: string }>();
-  if (!user) return gagal(401, "Belum login.");
+    .first<{ user_id: number; expires_at: number; id: number; tg_id: string; role: string }>();
+  if (!baris || baris.expires_at * 1000 <= Date.now()) return gagal(401, "Sesi kedaluwarsa.");
   const { results } = await db
     .prepare("SELECT warehouse_id FROM user_warehouses WHERE user_id = ?")
-    .bind(user.id)
+    .bind(baris.id)
     .all<{ warehouse_id: string }>();
-  const role = ["owner", "admin", "guest"].includes(user.role) ? user.role : "guest";
+  const role = ["owner", "admin", "guest"].includes(baris.role) ? baris.role : "guest";
   return {
     ok: true,
     user: {
-      id: user.id,
-      tg_id: String(user.tg_id),
+      id: baris.id,
+      tg_id: String(baris.tg_id),
       role,
       scope_gudang: results.map((r) => r.warehouse_id),
       is_owner: role === "owner",

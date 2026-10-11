@@ -118,7 +118,7 @@ export async function tolakOpname(
   return { ok: true, opname: segar };
 }
 
-export async function listOpname(db: D1Database, status?: string, gudangId?: string, limit = 50): Promise<OpnameDoc[]> {
+export async function listOpname(db: D1Database, status?: string, gudangId?: string, limit = 20): Promise<OpnameDoc[]> {
   let sql = "SELECT id FROM stock_counts WHERE 1=1";
   const args: unknown[] = [];
   if (status) {
@@ -129,13 +129,28 @@ export async function listOpname(db: D1Database, status?: string, gudangId?: str
     sql += " AND warehouse_id = ?";
     args.push(gudangId);
   }
+  // B3-A: default 20 (cap 200). Hidrasi batch 3 query (header + lines)
+  // ganti N+1 loop ambilOpname; bentuk OpnameDoc tetap sama (items penuh).
   sql += " ORDER BY created_at DESC LIMIT ?";
   args.push(Math.min(limit, 200));
-  const { results } = await db.prepare(sql).bind(...args).all<{ id: string }>();
-  const keluar: OpnameDoc[] = [];
-  for (const r of results) {
-    const o = await ambilOpname(db, r.id);
-    if (o) keluar.push(o);
+  const { results: ids } = await db.prepare(sql).bind(...args).all<{ id: string }>();
+  if (ids.length === 0) return [];
+  const tanda = ids.map(() => "?").join(",");
+  const idList = ids.map((r) => r.id);
+  const { results: headers } = await db.prepare(
+    `SELECT * FROM stock_counts WHERE id IN (${tanda})`
+  ).bind(...idList).all<{ id: string; warehouse_id: string; status: string; created_at: number; created_by: string | null }>();
+  const { results: lines } = await db.prepare(
+    `SELECT count_id, sku, qty_sistem, qty_fisik, selisih, belum_terdaftar FROM count_lines WHERE count_id IN (${tanda})`
+  ).bind(...idList).all<{ count_id: string; sku: string; qty_sistem: number | null; qty_fisik: number; selisih: number; belum_terdaftar: number }>();
+  const linesPerId = new Map<string, OpnameDoc["items"]>();
+  for (const l of lines) {
+    const arr = linesPerId.get(l.count_id) ?? [];
+    arr.push({ sku: l.sku, qty_sistem: l.qty_sistem, qty_fisik: l.qty_fisik, selisih: l.selisih, belum_terdaftar: l.belum_terdaftar });
+    linesPerId.set(l.count_id, arr);
   }
-  return keluar;
+  const urutan = new Map(ids.map((r, i) => [r.id, i]));
+  return headers
+    .map((h) => ({ ...h, items: linesPerId.get(h.id) ?? [] }))
+    .sort((a, b) => (urutan.get(a.id) ?? 0) - (urutan.get(b.id) ?? 0));
 }

@@ -23,9 +23,10 @@ export default {
   },
 
   async scheduled(controller: ScheduledController, env: CloudflareEnv, ctx: ExecutionContext) {
-    // Cron notify queue (Fase 2): drain antrean Telegram tiap tick.
+    // Cron drain tiap 15 mnt + laporan harian 00:05 UTC (B1-A): drainTick
+    // memilih cabang laporan dari string cron controller.
     ctx.waitUntil(
-      drainTick(env as Env).catch((err) => console.error("[cron]", err instanceof Error ? err.message : err))
+      drainTick(env as Env, controller.cron).catch((err) => console.error("[cron]", err instanceof Error ? err.message : err))
     );
     console.log(`[scheduled] ${new Date(controller.scheduledTime).toISOString()} (${controller.cron})`);
   },

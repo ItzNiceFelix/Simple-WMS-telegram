@@ -34,12 +34,19 @@ export async function imporPesanan(db: D1Database, daftar: BarisPesanan[], oleh:
     }
     g.items.push({ sku: b.sku, qty: b.qty, harga: b.harga_satuan, hpp: 0 });
   }
+  const hppCache = new Map<string, number>();
   for (const k of urutan) {
     const g = grup[k];
     for (const it of g.items) {
-      const p = await ambilProduk(db, it.sku);
-      if (!p) return gagal(400, `SKU ${it.sku} tidak dikenal (order ${g.no}).`);
-      it.hpp = p.hpp ?? 0;
+      // B5-A: cache HPP per SKU unik (ganti N SELECT products per baris).
+      let hpp = hppCache.get(it.sku);
+      if (hpp === undefined) {
+        const p = await ambilProduk(db, it.sku);
+        if (!p) return gagal(400, `SKU ${it.sku} tidak dikenal (order ${g.no}).`);
+        hpp = p.hpp ?? 0;
+        hppCache.set(it.sku, hpp);
+      }
+      it.hpp = hpp;
     }
   }
   const stmts: D1PreparedStatement[] = [];

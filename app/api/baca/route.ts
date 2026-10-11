@@ -34,10 +34,18 @@ export async function GET(request: Request) {
   if (scope === "stok") {
     const gudangFilter = url.searchParams.get("gudang_id");
     const onlineSaja = url.searchParams.get("is_online") !== "false";
+    // B5-A: cari server-side (hemat rows-read); tanpa q = perilaku lama (cap 2000).
+    const q = (url.searchParams.get("q") ?? "").trim().toLowerCase();
     let sql = `SELECT p.sku, p.nama_accurate, p.hpp, p.is_online_product, p.stok_min, p.kategori, p.tier_override, p.pre_order, p.ukuran_khusus, p.go_override, b.warehouse_id, b.qty
       FROM products p LEFT JOIN stock_by_bin b ON b.sku = p.sku`;
     const args: unknown[] = [];
-    if (onlineSaja) sql += " WHERE p.is_online_product = 1";
+    const syarat: string[] = [];
+    if (onlineSaja) syarat.push("p.is_online_product = 1");
+    if (q) {
+      syarat.push("(lower(p.sku) LIKE ? OR lower(p.nama_accurate) LIKE ?)");
+      args.push(`%${q}%`, `%${q}%`);
+    }
+    if (syarat.length > 0) sql += ` WHERE ${syarat.join(" AND ")}`;
     sql += " ORDER BY p.sku ASC LIMIT 2000";
     const { results } = await db.prepare(sql).bind(...args).all<{
       sku: string; nama_accurate: string; hpp: number | null; is_online_product: number; stok_min: number | null;
@@ -226,14 +234,15 @@ export async function GET(request: Request) {
   }
 
   if (scope === "ringkasan") {
-    const stokRes = await db.prepare("SELECT p.sku, p.stok_min, b.qty FROM products p JOIN stock_by_bin b ON b.sku = p.sku WHERE p.is_online_product = 1 AND b.warehouse_id = 'ONLINE' LIMIT 2000").all<{ sku: string; stok_min: number | null; qty: number }>();
-    let menipis = 0;
-    let minus = 0;
-    for (const r of stokRes.results) {
-      if (r.qty < 0) minus++;
-      else if (r.stok_min != null && r.qty < r.stok_min) menipis++;
-    }
-    return json({ ok: true, ringkasan: { totalProdukOnline: stokRes.results.length, itemMenipis: menipis, itemMinus: minus } });
+    // B7-A: agregat di SQL (1 baris), bukan tarik 2000 baris lalu hitung di JS.
+    const agg = await db.prepare(
+      `SELECT COUNT(*) AS total,
+        SUM(CASE WHEN b.qty < 0 THEN 1 ELSE 0 END) AS minus,
+        SUM(CASE WHEN b.qty >= 0 AND p.stok_min IS NOT NULL AND b.qty < p.stok_min THEN 1 ELSE 0 END) AS menipis
+       FROM products p JOIN stock_by_bin b ON b.sku = p.sku
+       WHERE p.is_online_product = 1 AND b.warehouse_id = 'ONLINE'`
+    ).bind().first<{ total: number; minus: number | null; menipis: number | null }>();
+    return json({ ok: true, ringkasan: { totalProdukOnline: agg?.total ?? 0, itemMenipis: agg?.menipis ?? 0, itemMinus: agg?.minus ?? 0 } });
   }
 
   return json({ ok: false, error: "Scope tidak dikenal." }, 400);
