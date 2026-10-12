@@ -14,10 +14,14 @@ export type RincianSkuPreset = {
   sku: string; nama: string | null; unit: number; hppSatuan: number; hargaJual: number;
   marginSatuan: number; marginPersen: number; kontribusi: number;
 };
+export type OrderPreset = {
+  no_pesanan: string; status_pesanan: string; tanggal_pesanan: string | null;
+  omzet: number; hpp: number; biaya: number; pajak: number; laba: number; hash_baris: string;
+};
 export type AgregatPreset = {
   jml_order: number; jml_baris: number; omzet: number; hpp: number;
   biaya: number; pajak: number; laba: number; tolak: TolakPreset[]; rincian: RincianSkuPreset[];
-  peringatan: string[]; jml_baris_belum_terpetakan: number;
+  peringatan: string[]; jml_baris_belum_terpetakan: number; orders: OrderPreset[];
 };
 
 export type InfoSku = {
@@ -87,6 +91,7 @@ export async function hitungLabaPreset(
   let jml_baris_belum_terpetakan = 0;
   const tolak: TolakPreset[] = [];
   const peringatanSet = new Set<string>();
+  const orders: OrderPreset[] = [];
   const perSku = new Map<string, {
     sku: string; nama: string | null; unit: number; hppSatuan: number; harga: number;
     omzetSku: number; hppSku: number; biayaSku: number; kontribusi: number;
@@ -203,6 +208,13 @@ export async function hitungLabaPreset(
     hpp += hppOrder;
     biaya += biayaOrder;
     pajak += pajakOrderTotal;
+    orders.push({
+      no_pesanan: no, status_pesanan: teks(daftar[0]["Status Pesanan"]),
+      tanggal_pesanan: teks(daftar[0]["Waktu Pesanan Dibuat"]) || null,
+      omzet: omzetOrder, hpp: hppOrder, biaya: biayaOrderTotal, pajak: pajakOrderTotal,
+      laba: omzetOrder - hppOrder - biayaOrderTotal,
+      hash_baris: skuBaris.map((b) => `${b.sku}x${b.qty}@${b.dasar}`).join("|"),
+    });
 
     for (let i = 0; i < skuBaris.length; i++) {
       const b = skuBaris[i];
@@ -244,6 +256,6 @@ export async function hitungLabaPreset(
 
   return {
     jml_order, jml_baris, omzet, hpp, biaya, pajak, laba: omzet - hpp - biaya,
-    tolak, rincian, peringatan: [...peringatanSet], jml_baris_belum_terpetakan,
+    tolak, rincian, peringatan: [...peringatanSet], jml_baris_belum_terpetakan, orders,
   };
 }

@@ -192,22 +192,27 @@ async function tanganiCommand(env: Env, tgId: string, chatId: number, msgId: num
     return;
   }
   if (cmd === "laba") {
-    // Agregat snapshot laba_snapshot per preset (7/30 hari). Laba hanya dihitung di /laba (A4).
+    // Agregat registry laba_order per preset (7/30 hari, distinct No). Laba hanya dihitung di /laba (A4).
     const arg = (args[0] || "7h").toLowerCase();
     const hari = arg === "30h" ? 30 : 7;
     const { results } = await env.DB.prepare(
+      "SELECT s.preset_id, p.nama, COUNT(*) AS order_no, COALESCE(SUM(s.omzet), 0) AS omzet, COALESCE(SUM(s.laba), 0) AS laba " +
+      "FROM laba_order s JOIN seller_presets p ON p.id = s.preset_id " +
+      "WHERE s.tanggal_snapshot >= date('now', ?) GROUP BY s.preset_id, p.nama ORDER BY laba DESC"
+    ).bind(`-${hari} days`).all<{ preset_id: number; nama: string; order_no: number; omzet: number; laba: number }>();
+    const hasil = results.length > 0 ? results : (await env.DB.prepare(
       "SELECT s.preset_id, p.nama, SUM(s.jml_order) AS order_no, SUM(s.omzet) AS omzet, SUM(s.laba) AS laba " +
       "FROM laba_snapshot s JOIN seller_presets p ON p.id = s.preset_id " +
       "WHERE s.tanggal >= date('now', ?) GROUP BY s.preset_id, p.nama ORDER BY laba DESC"
-    ).bind(`-${hari} days`).all<{ preset_id: number; nama: string; order_no: number; omzet: number; laba: number }>();
-    if (results.length === 0) {
+    ).bind(`-${hari} days`).all<{ preset_id: number; nama: string; order_no: number; omzet: number; laba: number }>()).results;
+    if (hasil.length === 0) {
       await kirimPesanBot(env, chatId, `Belum ada snapshot laba ${hari} hari terakhir. Hitung dulu di /laba.`, msgId);
       return;
     }
     const baris = [`<b>Laba ${hari}h per preset</b>`];
     let totalOmzet = 0;
     let totalLaba = 0;
-    for (const r of results) {
+    for (const r of hasil) {
       baris.push(`${esc(r.nama)}: ${r.order_no} order, omzet <b>${r.omzet}</b>, laba <b>${r.laba}</b>`);
       totalOmzet += r.omzet;
       totalLaba += r.laba;

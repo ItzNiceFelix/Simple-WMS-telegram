@@ -1,6 +1,8 @@
 // lib/d1/labaPreset.ts — Adapter D1 untuk mesin laba murni (A3).
 // Muat preset + rules aktif + tier + kategori + SKU → hitungLabaPreset → simpan laba_snapshot.
-import { hitungLabaPreset, type AgregatPreset, type BarisPreset } from "@/lib/laba/hitungLabaPreset";
+// Lapis 1 anti-dobel: registry laba_order per (preset_id, no_pesanan); klasifikasi
+// baru/sama/berubah saat preview; simpan default tambah_baru (hanya No baru ditulis).
+import { hitungLabaPreset, type AgregatPreset, type BarisPreset, type OrderPreset } from "@/lib/laba/hitungLabaPreset";
 import { tanggalJakarta } from "./labaShopee";
 
 export type SiapHitung = {
@@ -20,7 +22,10 @@ export type SiapHitung = {
   bergabungSejak: string | null;
   uploadPertama: string | null;
 };
-
+export type StatusKlas = "baru" | "sama" | "berubah";
+export type KlasOrder = { no_pesanan: string; status: StatusKlas; tanggal_lama: string | null; order: OrderPreset };
+export type Klasifikasi = { baru: number; sama: number; berubah: number; contoh: KlasOrder[] };
+export type ModeSimpan = "tambah_baru" | "timpa_semua";
 /** Muat semua data hitung untuk satu preset. Null bila preset tak ada/terhapus. */
 export async function siapkanHitung(db: D1Database, presetId: number): Promise<SiapHitung | null> {
   const preset = await db.prepare(
@@ -55,13 +60,13 @@ export async function siapkanHitung(db: D1Database, presetId: number): Promise<S
     pesanan_selesai_kumulatif: number; bergabung_sejak: string | null; upload_produk_pertama: string | null;
   }>();
 
-  // Rasio iklan bulan berjalan: ads_harian ÷ omzet snapshot (null bila tak ada data).
+  // Rasio iklan bulan berjalan: ads_harian ÷ omzet registry (null bila tak ada data).
   const bulan = tanggalJakarta().slice(0, 7);
   const ads = await db.prepare(
     "SELECT COALESCE(SUM(biaya_iklan_bersih), 0) AS total FROM ads_harian WHERE preset_id = ? AND tanggal LIKE ?"
   ).bind(presetId, `${bulan}%`).first<{ total: number }>();
   const jual = await db.prepare(
-    "SELECT COALESCE(SUM(omzet), 0) AS total FROM laba_snapshot WHERE preset_id = ? AND tanggal LIKE ?"
+    "SELECT COALESCE(SUM(omzet), 0) AS total FROM laba_order WHERE preset_id = ? AND tanggal_snapshot LIKE ?"
   ).bind(presetId, `${bulan}%`).first<{ total: number }>();
   const iklanPersen = ads && jual && jual.total > 0 && ads.total > 0
     ? Math.round((ads.total / jual.total) * 1000) / 10
@@ -82,8 +87,8 @@ export async function siapkanHitung(db: D1Database, presetId: number): Promise<S
 /** Hitung + (opsional) simpan snapshot per (preset_id, tanggal). */
 export async function hitungDanSimpan(
   db: D1Database, siap: SiapHitung, rows: BarisPreset[], file: string,
-  tanggal: string, oleh: string | null, simpan: boolean
-): Promise<{ tanggal: string; agregat: AgregatPreset }> {
+  tanggal: string, oleh: string | null, simpan: boolean, mode: ModeSimpan = "tambah_baru"
+): Promise<{ tanggal: string; agregat: AgregatPreset; klasifikasi: Klasifikasi }> {
   const agregat = await hitungLabaPreset(rows, {
     preset: { id: siap.presetId, status_toko: siap.statusToko },
     tanggal,
@@ -109,21 +114,67 @@ export async function hitungDanSimpan(
       bergabungSejak: siap.bergabungSejak, uploadPertama: siap.uploadPertama,
     },
   });
+  const klasifikasi = await klasifikasikan(db, siap.presetId, agregat.orders);
   if (simpan) {
-    await db.prepare(
-      "INSERT OR REPLACE INTO laba_snapshot (preset_id, tanggal, jml_order, jml_baris, omzet, hpp, biaya, pajak, laba, " +
-      "tolak_json, rincian_json, peringatan_json, file, at, by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-    ).bind(
-      siap.presetId, tanggal, agregat.jml_order, agregat.jml_baris, agregat.omzet, agregat.hpp,
-      agregat.biaya, agregat.pajak, agregat.laba, JSON.stringify(agregat.tolak), JSON.stringify(agregat.rincian),
-      JSON.stringify(agregat.peringatan), file.slice(0, 120), Math.floor(Date.now() / 1000), oleh
-    ).run();
-    // Penghitung kumulatif: jumlah order snapshot (idempoten per tanggal via REPLACE).
+    const at = Math.floor(Date.now() / 1000);
+    const abaikanLama = mode !== "timpa_semua";
+    const stmts: D1PreparedStatement[] = [
+      db.prepare(
+        "INSERT OR REPLACE INTO laba_snapshot (preset_id, tanggal, jml_order, jml_baris, omzet, hpp, biaya, pajak, laba, " +
+        "tolak_json, rincian_json, peringatan_json, file, at, by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      ).bind(
+        siap.presetId, tanggal, agregat.jml_order, agregat.jml_baris, agregat.omzet, agregat.hpp,
+        agregat.biaya, agregat.pajak, agregat.laba, JSON.stringify(agregat.tolak), JSON.stringify(agregat.rincian),
+        JSON.stringify(agregat.peringatan), file.slice(0, 120), at, oleh
+      ),
+    ];
+    for (const x of agregat.orders) {
+      const sql = abaikanLama
+        ? "INSERT OR IGNORE INTO laba_order (preset_id, no_pesanan, tanggal_snapshot, tanggal_pesanan, status_pesanan, omzet, hpp, biaya, pajak, laba, hash_baris, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        : "INSERT INTO laba_order (preset_id, no_pesanan, tanggal_snapshot, tanggal_pesanan, status_pesanan, omzet, hpp, biaya, pajak, laba, hash_baris, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+          "ON CONFLICT(preset_id, no_pesanan) DO UPDATE SET tanggal_snapshot = excluded.tanggal_snapshot, tanggal_pesanan = excluded.tanggal_pesanan, " +
+          "status_pesanan = excluded.status_pesanan, omzet = excluded.omzet, hpp = excluded.hpp, biaya = excluded.biaya, " +
+          "pajak = excluded.pajak, laba = excluded.laba, hash_baris = excluded.hash_baris, at = excluded.at";
+      stmts.push(db.prepare(sql).bind(siap.presetId, x.no_pesanan, tanggal, x.tanggal_pesanan, x.status_pesanan, x.omzet, x.hpp, x.biaya, x.pajak, x.laba, x.hash_baris, at));
+    }
+    for (let i = 0; i < stmts.length; i += 50) await db.batch(stmts.slice(i, i + 50));
     await db.prepare(
       "INSERT INTO preset_penghitung (preset_id, pesanan_selesai_kumulatif) VALUES (?, ?) " +
       "ON CONFLICT(preset_id) DO UPDATE SET pesanan_selesai_kumulatif = " +
-      "(SELECT COALESCE(SUM(jml_order), 0) FROM laba_snapshot WHERE preset_id = excluded.preset_id)"
-    ).bind(siap.presetId, agregat.jml_order).run();
+      "(SELECT COUNT(*) FROM laba_order WHERE preset_id = excluded.preset_id)"
+    ).bind(siap.presetId, 0).run();
   }
-  return { tanggal, agregat };
+  return { tanggal, agregat, klasifikasi };
+}
+/** Klasifikasi tiap No terhadap registry: baru (belum ada), sama (hash cocok), berubah (hash beda). */
+export async function klasifikasikan(db: D1Database, presetId: number, orders: OrderPreset[]): Promise<Klasifikasi> {
+  const lihat = new Map(orders.map((x) => [x.no_pesanan, x]));
+  const lama = new Map<string, { tanggal_snapshot: string; hash_baris: string }>();
+  const kunci = [...lihat.keys()];
+  for (let i = 0; i < kunci.length; i += 50) {
+    const potong = kunci.slice(i, i + 50);
+    const tanda = potong.map(() => "?").join(",");
+    const { results } = await db.prepare(
+      `SELECT no_pesanan, tanggal_snapshot, hash_baris FROM laba_order WHERE preset_id = ? AND no_pesanan IN (${tanda})`
+    ).bind(presetId, ...potong).all<{ no_pesanan: string; tanggal_snapshot: string; hash_baris: string }>();
+    for (const r of results) lama.set(r.no_pesanan, r);
+  }
+  let baru = 0; let sama = 0; let berubah = 0;
+  const contoh: KlasOrder[] = [];
+  for (const x of lihat.values()) {
+    const l = lama.get(x.no_pesanan);
+    const status: StatusKlas = !l ? "baru" : l.hash_baris === x.hash_baris ? "sama" : "berubah";
+    if (status === "baru") baru += 1; else if (status === "sama") sama += 1; else berubah += 1;
+    if (contoh.length < 50 && status !== "baru") contoh.push({ no_pesanan: x.no_pesanan, status, tanggal_lama: l?.tanggal_snapshot ?? null, order: x });
+  }
+  return { baru, sama, berubah, contoh };
+}
+/** Total periode dari registry (distinct No), bukan SUM snapshot — anti dobel overlap. */
+export async function totalRegistry(db: D1Database, presetId: number, dari: string, sampai: string): Promise<{ jml_order: number; omzet: number; hpp: number; biaya: number; pajak: number; laba: number }> {
+  const r = await db.prepare(
+    "SELECT COUNT(*) AS jml_order, COALESCE(SUM(omzet), 0) AS omzet, COALESCE(SUM(hpp), 0) AS hpp, " +
+    "COALESCE(SUM(biaya), 0) AS biaya, COALESCE(SUM(pajak), 0) AS pajak, COALESCE(SUM(laba), 0) AS laba " +
+    "FROM laba_order WHERE preset_id = ? AND tanggal_snapshot >= ? AND tanggal_snapshot <= ?"
+  ).bind(presetId, dari, sampai).first<{ jml_order: number; omzet: number; hpp: number; biaya: number; pajak: number; laba: number }>();
+  return { jml_order: r?.jml_order ?? 0, omzet: r?.omzet ?? 0, hpp: r?.hpp ?? 0, biaya: r?.biaya ?? 0, pajak: r?.pajak ?? 0, laba: r?.laba ?? 0 };
 }

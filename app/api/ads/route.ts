@@ -29,7 +29,7 @@ export async function GET(request: Request) {
   ).bind(presetId, `${bulan}%`).all<{ tanggal: string; biaya_iklan_bersih: number }>();
   const totalIklan = harian.reduce((a, h) => a + h.biaya_iklan_bersih, 0);
   const jual = await db.prepare(
-    "SELECT COALESCE(SUM(omzet), 0) AS omzet FROM laba_snapshot WHERE preset_id = ? AND tanggal LIKE ?"
+    "SELECT COALESCE(SUM(omzet), 0) AS omzet FROM laba_order WHERE preset_id = ? AND tanggal_snapshot LIKE ?"
   ).bind(presetId, `${bulan}%`).first<{ omzet: number }>();
   const omzet = jual?.omzet ?? 0;
   return json({

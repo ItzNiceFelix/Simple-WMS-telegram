@@ -22,7 +22,8 @@ import { tampilkanGagalTulis } from "@/components/dashboard/umpan-tulis";
 import { formatRupiah } from "@/lib/dashboard/format";
 
 type Tolak = { no_pesanan: string; alasan: string };
-
+type KlasContoh = { no_pesanan: string; status: string; tanggal_lama: string | null };
+type Klasifikasi = { baru: number; sama: number; berubah: number; contoh: KlasContoh[] };
 type Agregat = {
   jml_order: number;
   jml_baris: number;
@@ -32,8 +33,7 @@ type Agregat = {
   laba: number;
   tolak: Tolak[];
 };
-
-function isAgregatOk(v: unknown): v is { ok: true; agregat: Agregat; tanggal?: string } {
+function isAgregatOk(v: unknown): v is { ok: true; agregat: Agregat; klasifikasi?: Klasifikasi; tanggal?: string } {
   return (
     !!v &&
     typeof v === "object" &&
@@ -43,7 +43,7 @@ function isAgregatOk(v: unknown): v is { ok: true; agregat: Agregat; tanggal?: s
     !!v.agregat &&
     typeof v.agregat === "object"
   );
-}
+};
 
 export function DialogLabaShopee({
   open,
@@ -59,6 +59,8 @@ export function DialogLabaShopee({
   const [file, setFile] = useState<File | null>(null);
   const [rows, setRows] = useState<Record<string, unknown>[] | null>(null);
   const [agregat, setAgregat] = useState<Agregat | null>(null);
+  const [klas, setKlas] = useState<Klasifikasi | null>(null);
+  const [timpa, setTimpa] = useState(false);
   const [mengirim, setMengirim] = useState(false);
   const [tanggal, setTanggal] = useState(() =>
     new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jakarta", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date())
@@ -70,6 +72,8 @@ export function DialogLabaShopee({
       setFile(null);
       setRows(null);
       setAgregat(null);
+      setKlas(null);
+      setTimpa(false);
     }
     onOpenChange(v);
   }
@@ -114,6 +118,7 @@ export function DialogLabaShopee({
         return;
       }
       setAgregat(raw.agregat);
+      setKlas(raw.klasifikasi ?? null);
     } catch {
       tampilkanGagalTulis("Jaringan gagal. Coba lagi.");
     } finally {
@@ -123,13 +128,17 @@ export function DialogLabaShopee({
 
   async function simpan() {
     if (!rows || !agregat) return;
-    if (!window.confirm(`Simpan ke preset "${preset.nama}" tanggal ${tanggal}?`)) return;
+    const sdh = klas ? klas.sama + klas.berubah : 0;
+    const pesan = timpa
+      ? `Simpan ke preset "${preset.nama}" tanggal ${tanggal} + TIMPA ${sdh} order lama?`
+      : `Simpan ke preset "${preset.nama}" tanggal ${tanggal}? (${klas?.baru ?? agregat.jml_order} baru, ${sdh} sudah tersimpan dilewati)`;
+    if (!window.confirm(pesan)) return;
     setMengirim(true);
     try {
       const res = await fetch("/api/laba", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ aksi: "simpan", presetId: preset.id, rows, file: file?.name ?? "", tanggal }),
+        body: JSON.stringify({ aksi: "simpan", presetId: preset.id, rows, file: file?.name ?? "", tanggal, mode: timpa ? "timpa_semua" : "tambah_baru" }),
         credentials: "include",
       });
       const raw: unknown = await res.json().catch(() => null);
@@ -202,6 +211,27 @@ export function DialogLabaShopee({
                 <dd className="font-semibold tabular-nums">{formatRupiah(agregat.laba)}</dd>
               </div>
             </dl>
+            {klas ? (
+              <div className="rounded-lg border border-border p-3 text-sm" data-testid="klas-laba-shopee">
+                <p className="font-medium">Cek dobel No. Pesanan</p>
+                <p className="text-muted-foreground">
+                  {klas.baru} baru · {klas.sama} sudah sama · {klas.berubah} berubah
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  Default simpan hanya No baru (tambah_baru). Centang timpa untuk tulis ulang No lama.
+                </p>
+                {klas.contoh.length > 0 ? (
+                  <ul className="mt-2 max-h-32 space-y-1 overflow-y-auto rounded-lg bg-muted p-2 text-xs">
+                    {klas.contoh.slice(0, 20).map((k) => (
+                      <li key={k.no_pesanan}>
+                        {k.no_pesanan}: {k.status}
+                        {k.tanggal_lama ? ` (tersimpan ${k.tanggal_lama})` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+              </div>
+            ) : null}
             {agregat.tolak.length > 0 && (
               <div data-testid="tolak-laba-shopee">
                 <p className="text-sm font-medium">
@@ -232,11 +262,23 @@ export function DialogLabaShopee({
                 onClick={() => {
                   setRows(null);
                   setAgregat(null);
+                  setKlas(null);
+                  setTimpa(false);
                 }}
                 disabled={mengirim}
               >
                 Ganti file
               </Button>
+              <label className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={timpa}
+                  onChange={(e) => setTimpa(e.target.checked)}
+                  disabled={mengirim}
+                  data-testid="timpa-laba-shopee"
+                />
+                Timpa order lama
+              </label>
               <Input
                 type="date"
                 className="h-11 md:h-8"

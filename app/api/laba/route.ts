@@ -1,8 +1,8 @@
 // app/api/laba/route.ts — Hitung laba per preset (A3, mesin baru hitungLabaPreset).
-// POST { aksi:'hitung'|'simpan', presetId, rows, file?, tanggal? }.
-// GET ?aksi=muat&presetId=&tanggal= | ?aksi=list&presetId=&limit= | ?aksi=pdf&presetId=&tanggal=.
+// POST { aksi:'hitung'|'simpan', presetId, rows, file?, tanggal?, mode? }.
+// GET ?aksi=muat&presetId=&tanggal= | ?aksi=list&presetId=&limit= | ?aksi=pdf&presetId=&tanggal= | ?aksi=total&presetId=&dari=&sampai=.
 import { getDb } from "@/lib/d1/db";
-import { hitungDanSimpan, siapkanHitung } from "@/lib/d1/labaPreset";
+import { hitungDanSimpan, siapkanHitung, totalRegistry } from "@/lib/d1/labaPreset";
 import { bangunPdfLaba } from "@/lib/d1/labaPdf";
 import { tanggalJakarta } from "@/lib/d1/labaShopee";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
@@ -80,8 +80,13 @@ export async function GET(request: Request) {
       },
     });
   }
-
-  return json({ ok: false, error: "Aksi tidak dikenal (muat/list/pdf)." }, 400);
+  if (aksi === "total") {
+    const dari = (url.searchParams.get("dari") ?? "").trim();
+    const sampai = (url.searchParams.get("sampai") ?? "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dari) || !/^\d{4}-\d{2}-\d{2}$/.test(sampai)) return json({ ok: false, error: "dari/sampai harus YYYY-MM-DD." }, 400);
+    return json({ ok: true, total: await totalRegistry(db, presetId, dari, sampai) });
+  }
+  return json({ ok: false, error: "Aksi tidak dikenal (muat/list/pdf/total)." }, 400);
 }
 
 export async function POST(request: Request) {
@@ -106,9 +111,10 @@ export async function POST(request: Request) {
 
   const tanggalRaw = typeof body.tanggal === "string" ? body.tanggal.trim() : "";
   const tanggal = /^\d{4}-\d{2}-\d{2}$/.test(tanggalRaw) ? tanggalRaw : tanggalJakarta();
-  const { agregat } = await hitungDanSimpan(
-    db, siap, rows as Record<string, unknown>[], file, tanggal, user.tg_id, aksi === "simpan"
+  const mode = body.mode === "timpa_semua" ? "timpa_semua" : "tambah_baru";
+  const { agregat, klasifikasi } = await hitungDanSimpan(
+    db, siap, rows as Record<string, unknown>[], file, tanggal, user.tg_id, aksi === "simpan", mode
   );
-  if (aksi === "hitung") return json({ ok: true, agregat });
-  return json({ ok: true, tanggal, agregat });
+  if (aksi === "hitung") return json({ ok: true, agregat, klasifikasi });
+  return json({ ok: true, tanggal, agregat, klasifikasi });
 }
