@@ -32,6 +32,10 @@ type Agregat = {
   biaya: number;
   laba: number;
   tolak: Tolak[];
+  peringatan?: string[];
+  jml_baris_belum_terpetakan?: number;
+  sku_belum_terpetakan?: string[];
+  estimasi_kasar?: boolean;
 };
 function isAgregatOk(v: unknown): v is { ok: true; agregat: Agregat; klasifikasi?: Klasifikasi; tanggal?: string } {
   return (
@@ -230,6 +234,34 @@ export function DialogLabaShopee({
                     ))}
                   </ul>
                 ) : null}
+              </div>
+            ) : null}
+            {agregat.estimasi_kasar ? (
+              <div className="rounded-lg border border-amber-500/50 bg-amber-500/10 p-3 text-sm" data-testid="estimasi-kasar-laba">
+                <p className="font-medium">Estimasi kasar</p>
+                <p className="text-muted-foreground">
+                  Ada aturan admin belum terverifikasi yang terpakai — laba bisa berbeda dari tarif resmi Shopee.
+                </p>
+              </div>
+            ) : null}
+            {(agregat.jml_baris_belum_terpetakan ?? 0) > 0 ? (
+              <div className="rounded-lg border border-red-500/50 bg-red-500/10 p-3 text-sm" data-testid="belum-terpetakan-laba">
+                <p className="font-medium">
+                  Simpan diblokir: {agregat.jml_baris_belum_terpetakan} baris SKU belum punya kategori tarif
+                </p>
+                <p className="text-muted-foreground">
+                  Contoh: {(agregat.sku_belum_terpetakan ?? []).slice(0, 10).join(", ")}. Lengkapi kategori produk di master stok.
+                </p>
+              </div>
+            ) : null}
+            {(agregat.peringatan?.length ?? 0) > 0 ? (
+              <div className="rounded-lg border border-border p-3" data-testid="peringatan-laba-shopee">
+                <p className="text-sm font-medium">Peringatan akurasi ({agregat.peringatan?.length})</p>
+                <ul className="mt-1 max-h-40 space-y-1 overflow-y-auto rounded-lg bg-muted p-2 text-xs">
+                  {agregat.peringatan?.slice(0, 50).map((p) => (
+                    <li key={p}>{p}</li>
+                  ))}
+                </ul>
               </div>
             ) : null}
             {agregat.tolak.length > 0 && (

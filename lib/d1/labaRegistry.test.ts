@@ -6,13 +6,14 @@ import { hitungDanSimpan, klasifikasikan, totalRegistry, type SiapHitung } from 
 type Row = Record<string, unknown>;
 
 const SIAP: SiapHitung = {
-  presetId: 1, statusToko: "non_star", rules: [], tierAdmin: new Map(), kategoriTabel: new Map(),
+  presetId: 1, statusToko: "non_star", rules: [], tierAdmin: new Map([["T10", 10]]),
+  kategoriTabel: new Map([["Perlengkapan Rumah", "T10"]]),
   grupGo: new Map(), iklanPersen: null, pesananKumulatif: null, bergabungSejak: null, uploadPertama: null,
 };
 
-function buatDb(registry: Row[]) {
+function buatDb(registry: Row[], kategoriProduk = "Perlengkapan Rumah") {
   const produk: Row[] = [
-    { sku: "A1", hpp: 10000, nama_accurate: "A1", kategori: null, tier_override: null, pre_order: 0, ukuran_khusus: 0, go_override: null },
+    { sku: "A1", hpp: 10000, nama_accurate: "A1", kategori: kategoriProduk, tier_override: null, pre_order: 0, ukuran_khusus: 0, go_override: null, updated_at: null },
   ];
   const db = {
     prepare(sql: string) {
@@ -41,6 +42,9 @@ function buatDb(registry: Row[]) {
         async run() { return { meta: {} }; },
         async all(): Promise<{ results: unknown[] }> {
           if (sql.includes("no_pesanan IN (")) {
+            return { results: registry.filter((x) => x["preset_id"] === st._args[0]) };
+          }
+          if (sql.includes("FROM laba_order WHERE preset_id = ?")) {
             return { results: registry.filter((x) => x["preset_id"] === st._args[0]) };
           }
           return { results: [] };
@@ -113,9 +117,36 @@ describe("labaRegistry (Lapis 1)", () => {
     assert.equal(total.jml_order, 3);
   });
 
+  it("blokir simpan saat SKU belum terpetakan (TIER_UNKNOWN)", async () => {
+    const registry: Row[] = [];
+    const db = buatDb(registry, null); // produk tanpa kategori → T_UNKNOWN
+    await assert.rejects(
+      () => hitungDanSimpan(db as unknown as D1Database, SIAP, [barisNo("O-9")], "f.xlsx", "2026-10-12", "t1", true),
+      /Simpan dibatalkan: 1 baris SKU belum punya kategori tarif.*contoh: A1/
+    );
+    assert.equal(registry.length, 0, "registry tidak boleh ditulis saat simpan diblokir");
+    // Preview (simpan=false) tetap jalan tanpa melempar + menandai SKU.
+    const preview = await hitungDanSimpan(db as unknown as D1Database, SIAP, [barisNo("O-9")], "f.xlsx", "2026-10-12", "t1", false);
+    assert.equal(preview.agregat.jml_baris_belum_terpetakan, 1);
+    assert.deepEqual(preview.agregat.sku_belum_terpetakan, ["A1"]);
+  });
+
+  it("simpan lolos setelah kategori SKU dipetakan", async () => {
+    const registry: Row[] = [];
+    const db = buatDb(registry); // produk berkategori "Perlengkapan Rumah"
+    const siapPeta: SiapHitung = {
+      ...SIAP,
+      kategoriTabel: new Map([["Perlengkapan Rumah", "T10"]]),
+      tierAdmin: new Map([["T10", 10]]),
+    };
+    const ok = await hitungDanSimpan(db as unknown as D1Database, siapPeta, [barisNo("O-9")], "f.xlsx", "2026-10-12", "t1", true);
+    assert.equal(ok.agregat.jml_baris_belum_terpetakan, 0);
+    assert.equal(registry.length, 1);
+  });
+
   it("timpa_semua tulis ulang No lama", async () => {
     const registry: Row[] = [
-      { preset_id: 1, no_pesanan: "O-2", tanggal_snapshot: "2026-10-10", hash_baris: "LAMA", omzet: 1, hpp: 1, biaya: 1, pajak: 0, laba: 0 },
+      { preset_id: 1, no_pesanan: "O-2", tanggal_snapshot: "2026-10-10", status_pesanan: "Selesai", hash_baris: "LAMA", omzet: 1, hpp: 1, biaya: 1, pajak: 0, laba: 0 },
     ];
     const db = buatDb(registry);
     await hitungDanSimpan(db as unknown as D1Database, SIAP, [barisNo("O-2")], "f2.xlsx", "2026-10-11", "t1", true, "timpa_semua");

@@ -22,11 +22,17 @@ export type AgregatPreset = {
   jml_order: number; jml_baris: number; omzet: number; hpp: number;
   biaya: number; pajak: number; laba: number; tolak: TolakPreset[]; rincian: RincianSkuPreset[];
   peringatan: string[]; jml_baris_belum_terpetakan: number; orders: OrderPreset[];
+  /** Lapis 2: SKU belum dipetakan ke tier (preview boleh; simpan diblokir). */
+  sku_belum_terpetakan: string[];
+  /** Lapis 2: ada aturan admin terpakai yang belum terverifikasi → laba kasar. */
+  estimasi_kasar: boolean;
 };
 
 export type InfoSku = {
   hpp: number | null; nama: string | null; kategori: string | null; tierOverride: string | null;
   preOrder: boolean; ukuranKhusus: boolean; goOverride: string | null;
+  /** products.updated_at (unix detik); null bila kolom tak ada/kosong (Lapis 2 D-2). */
+  updatedAt?: number | null;
 };
 
 export type OpsiHitung = {
@@ -38,9 +44,17 @@ export type OpsiHitung = {
   ambilSku: (sku: string) => Promise<InfoSku | null>;
   konteks: Omit<KonteksSyarat, "tanggal">;
   grupGo?: Map<string, string>;
+  /** Lapis 2 D-2: ambang HPP basi (hari). 0/undefined = matikan. */
+  hppBasiHari?: number;
+  /** Lapis 2 D-5: data lama registry (No → {status, tanggal_snapshot}) untuk deteksi batal. */
+  dataLama?: Map<string, { status_pesanan: string; tanggal_snapshot: string }>;
 };
 
 const STATUS_HITUNG = ["perlu dikirim", "telah dikirim", "sedang dikirim", "selesai"];
+/** Lapis 2 D-2: default ambang HPP basi. */
+const HPP_BASI_HARI_DEFAULT = 30;
+/** Lapis 2 D-4: kunci syarat yang wajib data iklan harian. */
+const SYARAT_IKLAN = ["min_iklan_bersih_persen", "min_iklan_bersenih_persen"];
 
 function teks(v: unknown): string {
   return typeof v === "string" ? v.trim() : v == null ? "" : String(v).trim();
@@ -89,6 +103,8 @@ export async function hitungLabaPreset(
   let biaya = 0;
   let pajak = 0;
   let jml_baris_belum_terpetakan = 0;
+  let estimasi_kasar = false;
+  const skuBelum = new Set<string>();
   const tolak: TolakPreset[] = [];
   const peringatanSet = new Set<string>();
   const orders: OrderPreset[] = [];
@@ -103,6 +119,31 @@ export async function hitungLabaPreset(
   };
 
   const ctx: KonteksSyarat = { ...o.konteks, tanggal: o.tanggal };
+
+  /** Lapis 2 D-3: satu peringatan per kombinasi jenis/kategori aturan belum verifikasi. */
+  const cekVerifikasi = (r: Aturan): void => {
+    if ((r.status_verifikasi ?? "belum_diverifikasi") === "terverifikasi") return;
+    peringatanSet.add(`aturan belum terverifikasi: ${r.jenis}/${r.kategori}`);
+    if (r.jenis === "admin") estimasi_kasar = true;
+  };
+  /** Lapis 2 D-4: syarat iklan menuntut data iklan harian; null = belum diisi. */
+  const cekIklan = (r: Aturan): void => {
+    const syarat = parseSyarat(r.syarat_json);
+    if (!syarat || o.konteks.iklanPersen != null) return;
+    if (SYARAT_IKLAN.some((k) => k in syarat)) {
+      peringatanSet.add(
+        `iklan harian belum diisi — syarat ${r.jenis}${r.kode_program ? ` ${r.kode_program}` : ""}/${r.kategori} tak dapat dihitung, aturan dilewati`
+      );
+    }
+  };
+  /** Lapis 2 D-2: peringatan HPP basi, sekali per SKU; lewati bila updatedAt tak tersedia. */
+  const cekBasiSku = (sku: string, info: InfoSku): void => {
+    const hari = o.hppBasiHari ?? HPP_BASI_HARI_DEFAULT;
+    const at = info.updatedAt ?? null;
+    if (!hari || at == null) return;
+    const umur = Math.floor((Date.now() / 1000 - at) / 86400);
+    if (umur > hari) peringatanSet.add(`HPP basi >${hari} hari: SKU ${sku} (${umur} hari)`);
+  };
 
   for (const [no, daftar] of grup) {
     if (!statusDihitung(teks(daftar[0]["Status Pesanan"]))) continue;
@@ -129,8 +170,10 @@ export async function hitungLabaPreset(
       const { tier } = resolveTier(info.kategori, info.tierOverride, o.kategoriTabel);
       if (tier === TIER_UNKNOWN) {
         jml_baris_belum_terpetakan += 1;
+        skuBelum.add(b.sku);
         peringatanSet.add(`tanpa kategori: ${b.sku}`);
       }
+      cekBasiSku(b.sku, info);
       infoBaris.push({ ...info, tier });
       hppOrder += b.qty * info.hpp;
     }
@@ -153,6 +196,8 @@ export async function hitungLabaPreset(
         });
         let adminOk = true;
         if (ruleAdmin) {
+          cekVerifikasi(ruleAdmin);
+          cekIklan(ruleAdmin);
           const syarat = parseSyarat(ruleAdmin.syarat_json);
           if (syarat) {
             const h = evaluasiSyarat(syarat, ctx);
@@ -167,6 +212,8 @@ export async function hitungLabaPreset(
       for (const pr of o.rules.filter((x) => x.unit === "per_baris" && x.kode_program)) {
         const katCocok = pr.kategori === "*" ? "*" : (grupBaris === pr.kategori ? pr.kategori : "__tak_cocok__");
         if (!cocok(pr, { jenis: pr.jenis, kategori: katCocok, status_toko: o.preset.status_toko, tanggal: o.tanggal })) continue;
+        cekVerifikasi(pr);
+        cekIklan(pr);
         const syarat = parseSyarat(pr.syarat_json);
         if (syarat) {
           const h = evaluasiSyarat(syarat, ctx);
@@ -189,6 +236,8 @@ export async function hitungLabaPreset(
     let pajakPerOrder = 0;
     for (const pr of o.rules.filter((x) => x.unit === "per_order")) {
       if (!cocok(pr, { jenis: pr.jenis, kategori: "*", status_toko: o.preset.status_toko, tanggal: o.tanggal })) continue;
+      cekVerifikasi(pr);
+      cekIklan(pr);
       const syarat = parseSyarat(pr.syarat_json);
       if (syarat) {
         const h = evaluasiSyarat(syarat, ctx);
@@ -242,6 +291,14 @@ export async function hitungLabaPreset(
     }
   }
 
+  // Lapis 2 D-5: No yang dulu dihitung tapi kini hilang dari file (Batal/Belum Bayar) — jangan double-hitung.
+  for (const [no, lama] of o.dataLama ?? []) {
+    if (!lama?.status_pesanan || !statusDihitung(lama.status_pesanan) || grup.has(no)) continue;
+    peringatanSet.add(
+      `No ${no} dulu dihitung (${lama.status_pesanan}, ${lama.tanggal_snapshot}) tapi hilang dari file = Batal/Belum Bayar; masih tersimpan di registry (pakai timpa_semua bila perlu)`
+    );
+  }
+
   const rincian = [...perSku.values()]
     .map((s) => {
       const marginSatuan = s.unit > 0 ? Math.round(s.kontribusi / s.unit) : 0;
@@ -257,5 +314,6 @@ export async function hitungLabaPreset(
   return {
     jml_order, jml_baris, omzet, hpp, biaya, pajak, laba: omzet - hpp - biaya,
     tolak, rincian, peringatan: [...peringatanSet], jml_baris_belum_terpetakan, orders,
+    sku_belum_terpetakan: [...skuBelum], estimasi_kasar,
   };
 }

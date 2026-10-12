@@ -209,11 +209,11 @@ describe("E2/E-R3 hitungLabaPreset", () => {
   it("go_override menang atas grup kategori; ukuran biasa vs khusus eksklusif", async () => {
     const goD = (ukuran: string | null, nilai: number) => A({
       id: 6, jenis: "program", kode_program: "gratis_ongkir_xtra", kategori: "D",
-      ukuran, nilai, plafon_per_qty: 40000,
+      ukuran, nilai, plafon_per_qty: 40000, status_verifikasi: "terverifikasi",
     });
     const goH = A({
       id: 7, jenis: "program", kode_program: "gratis_ongkir_xtra", kategori: "H",
-      ukuran: "khusus", nilai: 9.5, plafon_per_qty: 60000,
+      ukuran: "khusus", nilai: 9.5, plafon_per_qty: 60000, status_verifikasi: "terverifikasi",
     });
     const o = (over: string | null, khusus: boolean) => ({
       ...opsi([goD("biasa", 5.5), goD("khusus", 7), goH]),
@@ -240,5 +240,98 @@ describe("E2/E-R3 hitungLabaPreset", () => {
       pilihAturan([A({ jenis: "komisi" })], { jenis: "admin", kategori: "*", status_toko: "x", tanggal: "2026-01-01" }),
       null
     );
+  });
+});
+
+describe("Lapis 2 akurasi input laba", () => {
+  const baris = (o: Record<string, unknown> = {}) => ({
+    "No. Pesanan": "X", "Status Pesanan": "Telah Dikirim", "Waktu Pesanan Dibuat": "2026-06-01 09:00",
+    "Nomor Referensi SKU": "A", "SKU Induk": "",
+    "Harga Awal": "18000", "Harga Setelah Diskon": "16000",
+    Jumlah: "7", "Returned quantity": "0", "Subtotal Pesanan": "112000",
+    "Diskon Dari Penjual": "14000", "Voucher Ditanggung Penjual": "0",
+    "Paket Diskon (Diskon dari Penjual)": "0",
+    ...o,
+  });
+  const opsi = (over: Partial<OpsiHitung> = {}): OpsiHitung => ({
+    preset: { id: 1, status_toko: "non_star" },
+    tanggal: "2026-06-01",
+    rules: [],
+    tierAdmin: new Map([["T10", 10]]),
+    kategoriTabel: new Map([["Perlengkapan Rumah > Peralatan Makan", "T10"]]),
+    ambilSku: async () => ({
+      hpp: 4000, nama: "Produk A", kategori: "Perlengkapan Rumah > Peralatan Makan",
+      tierOverride: null, preOrder: false, ukuranKhusus: false, goOverride: null,
+    }),
+    konteks: { iklanPersen: null, pesananKumulatif: null, bergabungSejak: null, uploadPertama: null },
+    ...over,
+  });
+
+  it("TIER_UNKNOWN: tetap hitung preview + daftar SKU belum terpetakan", async () => {
+    const a = await hitungLabaPreset([baris()], opsi({
+      ambilSku: async () => ({
+        hpp: 4000, nama: "Aneh", kategori: "Kategori Aneh", tierOverride: null,
+        preOrder: false, ukuranKhusus: false, goOverride: null,
+      }),
+    }));
+    assert.equal(a.jml_order, 1);
+    assert.equal(a.jml_baris_belum_terpetakan, 1);
+    assert.deepEqual(a.sku_belum_terpetakan, ["A"]);
+  });
+
+  it("badge umur HPP: updated_at >30 hari → peringatan; tanpa updated_at → senyap", async () => {
+    const tua = Math.floor(Date.now() / 1000) - 40 * 86400;
+    const a = await hitungLabaPreset([baris()], opsi({
+      ambilSku: async () => ({
+        hpp: 4000, nama: "Produk A", kategori: "Perlengkapan Rumah > Peralatan Makan",
+        tierOverride: null, preOrder: false, ukuranKhusus: false, goOverride: null, updatedAt: tua,
+      }),
+    }));
+    assert.ok(a.peringatan.some((p) => p.includes("HPP basi") && p.includes("SKU A")), JSON.stringify(a.peringatan));
+    const tanpa = await hitungLabaPreset([baris()], opsi());
+    assert.equal(tanpa.peringatan.filter((p) => p.includes("HPP basi")).length, 0);
+  });
+
+  it("badge verifikasi: peringatan sekali + estimasi_kasar saat admin belum terverifikasi", async () => {
+    const adminRule = A({ id: 1, jenis: "admin", kategori: "*", nilai: 10, status_verifikasi: "belum_diverifikasi" });
+    const a = await hitungLabaPreset([baris()], opsi({ rules: [adminRule] }));
+    const pv = a.peringatan.filter((p) => p.includes("aturan belum terverifikasi: admin/*"));
+    assert.equal(pv.length, 1);
+    assert.equal(a.estimasi_kasar, true);
+    const terverif = await hitungLabaPreset([baris()], opsi({
+      rules: [A({ id: 1, jenis: "admin", kategori: "*", nilai: 10, status_verifikasi: "terverifikasi" })],
+    }));
+    assert.equal(terverif.peringatan.some((p) => p.includes("belum terverifikasi")), false);
+    assert.equal(terverif.estimasi_kasar, false);
+  });
+
+  it("program belum verifikasi: peringatan tanpa estimasi_kasar", async () => {
+    const prog = A({ id: 5, jenis: "program", kode_program: "gratis_ongkir_xtra", kategori: "T10", nilai: 3, status_verifikasi: "belum_diverifikasi" });
+    const a = await hitungLabaPreset([baris()], opsi({ rules: [prog] }));
+    assert.ok(a.peringatan.some((p) => p.includes("aturan belum terverifikasi: program/T10")));
+    assert.equal(a.estimasi_kasar, false);
+  });
+
+  it("ads_harian wajib: syarat iklan aktif + iklanPersen null → peringatan tegas", async () => {
+    const prog = A({ id: 5, jenis: "program", kode_program: "gratis_ongkir_xtra", kategori: "T10", nilai: 3.0, plafon_per_qty: 40000 });
+    prog.syarat_json = JSON.stringify({ min_iklan_bersih_persen: 3 });
+    const kosong = await hitungLabaPreset([baris()], opsi({ rules: [prog] }));
+    assert.ok(kosong.peringatan.some((p) => p.includes("iklan harian belum diisi")), JSON.stringify(kosong.peringatan));
+    const terisi = await hitungLabaPreset([baris()], opsi({
+      rules: [prog],
+      konteks: { iklanPersen: 4, pesananKumulatif: null, bergabungSejak: null, uploadPertama: null },
+    }));
+    assert.equal(terisi.peringatan.some((p) => p.includes("iklan harian belum diisi")), false);
+  });
+
+  it("status Batal: No lama dihitung tapi hilang dari file → ditandai di peringatan", async () => {
+    const a = await hitungLabaPreset([baris({ "No. Pesanan": "BARU" })], opsi({
+      dataLama: new Map([["LAMA", { status_pesanan: "Selesai", tanggal_snapshot: "2026-05-01" }]]),
+    }));
+    assert.ok(a.peringatan.some((p) => p.includes("No LAMA dulu dihitung")), JSON.stringify(a.peringatan));
+    const sama = await hitungLabaPreset([baris({ "No. Pesanan": "LAMA" })], opsi({
+      dataLama: new Map([["LAMA", { status_pesanan: "Selesai", tanggal_snapshot: "2026-05-01" }]]),
+    }));
+    assert.equal(sama.peringatan.some((p) => p.includes("hilang dari file")), false);
   });
 });

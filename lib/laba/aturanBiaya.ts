@@ -8,6 +8,8 @@ export type Aturan = {
   plafon: number | null; plafon_per_qty: number | null;
   priority: number; valid_from: string; valid_to: string | null; aktif: number;
   kode_program: string | null; ukuran: string | null; syarat_json: string | null;
+  /** Lapis 2 badge verifikasi: 'terverifikasi' | 'belum_diverifikasi' (default belum). */
+  status_verifikasi?: string | null;
 };
 
 export type KriteriaAturan = {

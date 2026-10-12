@@ -1,8 +1,10 @@
 // app/api/laba/route.ts — Hitung laba per preset (A3, mesin baru hitungLabaPreset).
 // POST { aksi:'hitung'|'simpan', presetId, rows, file?, tanggal?, mode? }.
-// GET ?aksi=muat&presetId=&tanggal= | ?aksi=list&presetId=&limit= | ?aksi=pdf&presetId=&tanggal= | ?aksi=total&presetId=&dari=&sampai=.
+// GET ?aksi=muat&presetId=&tanggal= | ?aksi=list&presetId=&limit= | ?aksi=pdf&presetId=&tanggal= | ?aksi=total&presetId=&dari=&sampai=
+//     | ?aksi=overlap&presetId=&dari=&sampai= | ?aksi=export-csv&presetId=&dari=&sampai=.
 import { getDb } from "@/lib/d1/db";
 import { hitungDanSimpan, siapkanHitung, totalRegistry } from "@/lib/d1/labaPreset";
+import { barisCsv, cariOverlap, daftarPerNo } from "@/lib/d1/labaLaporan";
 import { bangunPdfLaba } from "@/lib/d1/labaPdf";
 import { tanggalJakarta } from "@/lib/d1/labaShopee";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
@@ -86,7 +88,27 @@ export async function GET(request: Request) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(dari) || !/^\d{4}-\d{2}-\d{2}$/.test(sampai)) return json({ ok: false, error: "dari/sampai harus YYYY-MM-DD." }, 400);
     return json({ ok: true, total: await totalRegistry(db, presetId, dari, sampai) });
   }
-  return json({ ok: false, error: "Aksi tidak dikenal (muat/list/pdf/total)." }, 400);
+  // Lapis 3: daftar No. Pesanan yang dihitung dobel (muncul di >1 tanggal_snapshot).
+  if (aksi === "overlap") {
+    const dari = (url.searchParams.get("dari") ?? "").trim();
+    const sampai = (url.searchParams.get("sampai") ?? "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dari) || !/^\d{4}-\d{2}-\d{2}$/.test(sampai)) return json({ ok: false, error: "dari/sampai harus YYYY-MM-DD." }, 400);
+    return json({ ok: true, ...(await cariOverlap(db, presetId, dari, sampai)) });
+  }
+  // Lapis 3: export CSV per No dari registry (bukan agregat SKU).
+  if (aksi === "export-csv") {
+    const dari = (url.searchParams.get("dari") ?? "").trim();
+    const sampai = (url.searchParams.get("sampai") ?? "").trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dari) || !/^\d{4}-\d{2}-\d{2}$/.test(sampai)) return json({ ok: false, error: "dari/sampai harus YYYY-MM-DD." }, 400);
+    const csv = barisCsv(await daftarPerNo(db, presetId, dari, sampai));
+    return new Response(csv, {
+      headers: {
+        "content-type": "text/csv; charset=utf-8",
+        "content-disposition": `attachment; filename="laba-${presetId}-${dari}_${sampai}.csv"`,
+      },
+    });
+  }
+  return json({ ok: false, error: "Aksi tidak dikenal (muat/list/pdf/total/overlap/export-csv)." }, 400);
 }
 
 export async function POST(request: Request) {
@@ -112,9 +134,18 @@ export async function POST(request: Request) {
   const tanggalRaw = typeof body.tanggal === "string" ? body.tanggal.trim() : "";
   const tanggal = /^\d{4}-\d{2}-\d{2}$/.test(tanggalRaw) ? tanggalRaw : tanggalJakarta();
   const mode = body.mode === "timpa_semua" ? "timpa_semua" : "tambah_baru";
-  const { agregat, klasifikasi } = await hitungDanSimpan(
-    db, siap, rows as Record<string, unknown>[], file, tanggal, user.tg_id, aksi === "simpan", mode
-  );
-  if (aksi === "hitung") return json({ ok: true, agregat, klasifikasi });
-  return json({ ok: true, tanggal, agregat, klasifikasi });
+  let agregat;
+  let klasifikasi;
+  try {
+    const hasil = await hitungDanSimpan(
+      db, siap, rows as Record<string, unknown>[], file, tanggal, user.tg_id, aksi === "simpan", mode
+    );
+    agregat = hasil.agregat;
+    klasifikasi = hasil.klasifikasi;
+  } catch (e) {
+    // Lapis 2 D-1: simpan diblokir (SKU tanpa kategori) → 422 dengan pesan jelas.
+    return json({ ok: false, error: e instanceof Error ? e.message : "Gagal menyimpan perhitungan." }, 422);
+  }
+  if (aksi === "hitung") return json({ ok: true, agregat, klasifikasi, estimasi_kasar: agregat.estimasi_kasar });
+  return json({ ok: true, tanggal, agregat, klasifikasi, estimasi_kasar: agregat.estimasi_kasar });
 }

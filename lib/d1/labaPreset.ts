@@ -13,6 +13,7 @@ export type SiapHitung = {
     plafon: number | null; plafon_per_qty: number | null; priority: number;
     valid_from: string; valid_to: string | null; aktif: number;
     kode_program: string | null; ukuran: string | null; syarat_json: string | null;
+    status_verifikasi: string | null;
   }[];
   tierAdmin: Map<string, number>;
   kategoriTabel: Map<string, string>;
@@ -35,7 +36,7 @@ export async function siapkanHitung(db: D1Database, presetId: number): Promise<S
 
   const { results: rules } = await db.prepare(
     "SELECT id, jenis, kategori, status_toko, basis, unit, nilai, plafon, plafon_per_qty, priority, " +
-    "valid_from, valid_to, aktif, kode_program, ukuran, syarat_json FROM fee_rules " +
+    "valid_from, valid_to, aktif, kode_program, ukuran, syarat_json, status_verifikasi FROM fee_rules " +
     "WHERE preset_id = ? AND aktif = 1"
   ).bind(presetId).all<SiapHitung["rules"][number]>();
 
@@ -89,6 +90,12 @@ export async function hitungDanSimpan(
   db: D1Database, siap: SiapHitung, rows: BarisPreset[], file: string,
   tanggal: string, oleh: string | null, simpan: boolean, mode: ModeSimpan = "tambah_baru"
 ): Promise<{ tanggal: string; agregat: AgregatPreset; klasifikasi: Klasifikasi }> {
+  // Lapis 2 D-5: status lama untuk deteksi No yang jadi Batal/hilang dari file.
+  const { results: lamaRows } = await db.prepare(
+    "SELECT no_pesanan, status_pesanan, tanggal_snapshot FROM laba_order WHERE preset_id = ?"
+  ).bind(siap.presetId).all<{ no_pesanan: string; status_pesanan: string; tanggal_snapshot: string }>();
+  const dataLama = new Map(lamaRows.map((x) => [x.no_pesanan, { status_pesanan: x.status_pesanan, tanggal_snapshot: x.tanggal_snapshot }]));
+
   const agregat = await hitungLabaPreset(rows, {
     preset: { id: siap.presetId, status_toko: siap.statusToko },
     tanggal,
@@ -98,34 +105,46 @@ export async function hitungDanSimpan(
     grupGo: siap.grupGo,
     ambilSku: async (sku) => {
       const p = await db.prepare(
-        "SELECT hpp, nama_accurate, kategori, tier_override, pre_order, ukuran_khusus, go_override FROM products WHERE sku = ?"
+        "SELECT hpp, nama_accurate, kategori, tier_override, pre_order, ukuran_khusus, go_override, updated_at FROM products WHERE sku = ?"
       ).bind(sku).first<{
         hpp: number | null; nama_accurate: string | null; kategori: string | null; tier_override: string | null;
-        pre_order: number; ukuran_khusus: number; go_override: string | null;
+        pre_order: number; ukuran_khusus: number; go_override: string | null; updated_at: number | null;
       }>();
       if (!p) return null;
       return {
         hpp: p.hpp, nama: p.nama_accurate, kategori: p.kategori, tierOverride: p.tier_override,
         preOrder: p.pre_order === 1, ukuranKhusus: p.ukuran_khusus === 1, goOverride: p.go_override,
+        updatedAt: p.updated_at ?? null,
       };
     },
     konteks: {
       iklanPersen: siap.iklanPersen, pesananKumulatif: siap.pesananKumulatif,
       bergabungSejak: siap.bergabungSejak, uploadPertama: siap.uploadPertama,
     },
+    dataLama,
   });
   const klasifikasi = await klasifikasikan(db, siap.presetId, agregat.orders);
+  if (simpan && agregat.jml_baris_belum_terpetakan > 0) {
+    // Lapis 2 D-1: SKU tanpa kategori = tier admin tak diketahui → laba bisa salah → blokir simpan.
+    const contoh = agregat.sku_belum_terpetakan.slice(0, 5).join(", ");
+    throw new Error(
+      `Simpan dibatalkan: ${agregat.jml_baris_belum_terpetakan} baris SKU belum punya kategori tarif ` +
+      `(contoh: ${contoh}). Petakan kategori produk di master stok lalu hitung ulang.`
+    );
+  }
   if (simpan) {
     const at = Math.floor(Date.now() / 1000);
     const abaikanLama = mode !== "timpa_semua";
     const stmts: D1PreparedStatement[] = [
       db.prepare(
         "INSERT OR REPLACE INTO laba_snapshot (preset_id, tanggal, jml_order, jml_baris, omzet, hpp, biaya, pajak, laba, " +
-        "tolak_json, rincian_json, peringatan_json, file, at, by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "tolak_json, rincian_json, peringatan_json, no_json, file, at, by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
       ).bind(
         siap.presetId, tanggal, agregat.jml_order, agregat.jml_baris, agregat.omzet, agregat.hpp,
         agregat.biaya, agregat.pajak, agregat.laba, JSON.stringify(agregat.tolak), JSON.stringify(agregat.rincian),
-        JSON.stringify(agregat.peringatan), file.slice(0, 120), at, oleh
+        // Lapis 3: daftar No per tanggal (registry hanya simpan 1 baris per No → tak bisa deteksi overlap).
+        JSON.stringify(agregat.peringatan), JSON.stringify(agregat.orders.map((x) => x.no_pesanan)),
+        file.slice(0, 120), at, oleh
       ),
     ];
     for (const x of agregat.orders) {

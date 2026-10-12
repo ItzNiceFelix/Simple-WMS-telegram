@@ -3,7 +3,7 @@
 // app/laba/page.tsx — Laba per preset toko (U2/U3/U4).
 // Satu preset = satu kartu upload (tag nama+status). Riwayat filter per preset. Tanggal WIB.
 import { useCallback, useEffect, useState } from "react";
-import { Calculator, ChartColumn, RotateCcw } from "lucide-react";
+import { Calculator, ChartColumn, FileSpreadsheet, Layers, RotateCcw } from "lucide-react";
 
 import { PageHeader } from "@/components/dashboard/page-header";
 import { DialogLabaShopee } from "@/components/dashboard/dialog-laba-shopee";
@@ -63,6 +63,16 @@ type Snapshot = {
 
 type RingkasTanggal = { tanggal: string; jml_order: number; laba: number };
 
+type BarisOverlap = {
+  no_pesanan: string;
+  tanggal_list: string[];
+  jumlah_snapshot: number;
+  omzet_total: number;
+  laba_total: number;
+  selisih_omzet: number;
+  ada_di_registry: boolean;
+};
+
 type Preset = { id: number; nama: string; status_toko: string; jml_aturan?: number };
 
 function tanggalHariIniWib(): string {
@@ -91,6 +101,10 @@ function LabaPreset() {
   const [tanggal, setTanggal] = useState(tanggalHariIniWib);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [daftar, setDaftar] = useState<RingkasTanggal[] | null>(null);
+  const [overlap, setOverlap] = useState<BarisOverlap[] | null>(null);
+  const [overlapTanpaDaftar, setOverlapTanpaDaftar] = useState(0);
+  const [bukaOverlap, setBukaOverlap] = useState(false);
+  const [memuatOverlap, setMemuatOverlap] = useState(false);
   const [memuat, setMemuat] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -147,6 +161,34 @@ function LabaPreset() {
     }
   }, []);
 
+  // Lapis 3: rentang default = 90 hari terakhir sampai tanggal terpilih.
+  const muatOverlap = useCallback(async (pid: number, akhir: string) => {
+    setMemuatOverlap(true);
+    try {
+      const sampai = new Date(`${akhir}T00:00:00Z`);
+      sampai.setUTCDate(sampai.getUTCDate() - 89);
+      const dari = sampai.toISOString().slice(0, 10);
+      const res = await fetch(
+        `/api/laba?aksi=overlap&presetId=${pid}&dari=${dari}&sampai=${akhir}`,
+        { credentials: "include" }
+      );
+      const data = (await res.json().catch(() => null)) as {
+        ok?: boolean;
+        error?: string;
+        daftar?: BarisOverlap[];
+        jml_snapshot_tanpa_daftar?: number;
+      } | null;
+      if (!res.ok || !data?.ok) throw new Error(data?.error ?? `Gagal (${res.status}).`);
+      setOverlap(data.daftar ?? []);
+      setOverlapTanpaDaftar(data.jml_snapshot_tanpa_daftar ?? 0);
+      setBukaOverlap(true);
+    } catch (e) {
+      tampilkanGagalTulis(e instanceof Error ? e.message : "Gagal memuat overlap.");
+    } finally {
+      setMemuatOverlap(false);
+    }
+  }, []);
+
   useEffect(() => {
     void muatPreset();
   }, [muatPreset]);
@@ -189,6 +231,21 @@ function LabaPreset() {
             >
               <RotateCcw data-icon="inline-start" />
               Muat ulang
+            </Button>
+            <Button
+              size="lg"
+              variant="outline"
+              className="h-11 md:h-8"
+              data-testid="cek-overlap-laba"
+              disabled={!presetId || memuatOverlap}
+              onClick={() => {
+                if (!presetId) return;
+                if (bukaOverlap) setBukaOverlap(false);
+                else void muatOverlap(presetId, tanggal);
+              }}
+            >
+              <Layers data-icon="inline-start" />
+              {memuatOverlap ? "Memeriksa…" : bukaOverlap ? "Tutup overlap" : "Cek overlap"}
             </Button>
           </div>
         }
@@ -361,6 +418,83 @@ function LabaPreset() {
                     presetId={presetId}
                     presetNama={presetAktif?.nama ?? ""}
                   />
+                ) : null}
+                {presetId ? (
+                  <div>
+                    <Button
+                      size="lg"
+                      variant="outline"
+                      className="h-11 md:h-8"
+                      data-testid="export-laba-csv"
+                      onClick={() => {
+                        // Rentang 90 hari terakhir s/d tanggal aktif (sama seperti Cek overlap).
+                        const sampai = new Date(`${tanggal}T00:00:00Z`);
+                        sampai.setUTCDate(sampai.getUTCDate() - 89);
+                        window.open(
+                          `/api/laba?aksi=export-csv&presetId=${presetId}&dari=${sampai.toISOString().slice(0, 10)}&sampai=${tanggal}`,
+                          "_blank"
+                        );
+                      }}
+                    >
+                      <FileSpreadsheet data-icon="inline-start" />
+                      Export CSV per No
+                    </Button>
+                  </div>
+                ) : null}
+                {bukaOverlap ? (
+                  <div className="rounded-lg border border-border p-3" data-testid="overlap-laba">
+                    <h2 className="text-sm font-semibold">No. Pesanan dobel (overlap snapshot)</h2>
+                    <p className="mb-2 text-xs text-muted-foreground">
+                      No. Pesanan yang tercatat di lebih dari satu tanggal snapshot. Sumber daftar No per tanggal =
+                      kolom <code>laba_snapshot.no_json</code> (migrasi 0018). Registry menyimpan satu baris per No,
+                      jadi angka di bawah = nilai tersimpan terakhir; selisih omzet = perkiraan bagian yang terhitung dobel.
+                    </p>
+                    <p className="mb-2 text-xs text-muted-foreground" data-testid="overlap-catatan-migrasi">
+                      Hanya mendeteksi upload setelah migrasi 0018 — snapshot lama tanpa daftar No tidak terdeteksi.
+                      {overlapTanpaDaftar > 0
+                        ? ` ${overlapTanpaDaftar} snapshot pada rentang ini tanpa daftar No (dilewati).`
+                        : ""}
+                    </p>
+                    {!overlap || overlap.length === 0 ? (
+                      <p className="text-xs text-muted-foreground" data-testid="overlap-kosong">
+                        Tidak ada No. Pesanan dobel pada rentang ini.
+                      </p>
+                    ) : (
+                      <div className="overflow-x-auto rounded-lg border border-border">
+                        <table className="w-full min-w-[640px] text-sm">
+                          <thead>
+                            <tr className="bg-muted text-left text-xs text-muted-foreground">
+                              <th className="px-3 py-2 font-medium">No. Pesanan</th>
+                              <th className="px-3 py-2 font-medium">Tanggal snapshot</th>
+                              <th className="px-3 py-2 text-right font-medium">Jml</th>
+                              <th className="px-3 py-2 text-right font-medium">Omzet tersimpan</th>
+                              <th className="px-3 py-2 text-right font-medium">Laba tersimpan</th>
+                              <th className="px-3 py-2 text-right font-medium">Selisih omzet</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {overlap.map((o) => (
+                              <tr key={o.no_pesanan} className="border-t border-border tabular-nums" data-testid={`overlap-${o.no_pesanan}`}>
+                                <td className="px-3 py-2 font-medium">
+                                  {o.no_pesanan}
+                                  {!o.ada_di_registry ? (
+                                    <span className="ml-1 text-xs text-amber-600" title="Tidak ada di registry laba_order (angka omzet/laba dianggap 0)">
+                                      (tak ada di registry)
+                                    </span>
+                                  ) : null}
+                                </td>
+                                <td className="px-3 py-2">{o.tanggal_list.join(", ")}</td>
+                                <td className="px-3 py-2 text-right">{formatAngka(o.jumlah_snapshot)}</td>
+                                <td className="px-3 py-2 text-right">{formatRupiah(o.omzet_total)}</td>
+                                <td className="px-3 py-2 text-right">{formatRupiah(o.laba_total)}</td>
+                                <td className="px-3 py-2 text-right">{formatRupiah(o.selisih_omzet)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
                 ) : null}
                 {snapshot.peringatan.length > 0 ? (
                   <Alert data-testid="peringatan-laba">
