@@ -123,7 +123,7 @@ function parseCommand(teks: string): { cmd: string; args: string[] } {
   return { cmd: (bagian[0] || "").toLowerCase(), args: bagian.slice(1) };
 }
 
-async function tanganiCommand(env: Env, tgId: string, chatId: number, msgId: number, teks: string): Promise<void> {
+async function tanganiCommand(env: Env, tgId: string, chatId: number, msgId: number, teks: string, dari?: TgUser): Promise<void> {
   const { cmd, args } = parseCommand(teks);
 
   if (cmd === "start") {
@@ -132,7 +132,12 @@ async function tanganiCommand(env: Env, tgId: string, chatId: number, msgId: num
   }
   if (cmd === "daftar") {
     const u = await ambilPengguna(env.DB, tgId).catch(() => null);
-    const r = await mintaAkses(env.DB, Number(tgId), null, u?.display_name ?? tgId);
+    // Nama: pakai display_name yang sudah ada bila bukan placeholder telegramId,
+    // selain itu ambil dari profil Telegram (first/last name).
+    const dariTelegram = namaUser(dari);
+    const nama = u?.display_name && u.display_name !== tgId ? u.display_name : dariTelegram;
+    const username = dari?.username ?? null;
+    const r = await mintaAkses(env.DB, Number(tgId), username, nama);
     if (!r.ok) {
       await kirimPesanBot(env, chatId, esc(r.status === 409 || r.status === 429 ? r.error : "Gagal meminta akses."), msgId);
       return;
@@ -141,7 +146,7 @@ async function tanganiCommand(env: Env, tgId: string, chatId: number, msgId: num
     // Notifikasi owner
     const { results } = await env.DB.prepare("SELECT tg_id FROM users WHERE role = 'owner' AND active = 1").bind().all<{ tg_id: number }>().catch(() => ({ results: [] as { tg_id: number }[] }));
     for (const o of results) {
-      await kirimPesanBot(env, o.tg_id, `📝 Permintaan akses baru dari <code>${esc(tgId)}</code>.\nSetujui di dashboard admin.`).catch(() => undefined);
+      await kirimPesanBot(env, o.tg_id, `📝 Permintaan akses baru dari <b>${esc(nama)}</b> (<code>${esc(tgId)}</code>).\nSetujui di dashboard admin.`).catch(() => undefined);
     }
     return;
   }
@@ -370,7 +375,7 @@ async function prosesUpdate(env: Env, update: Update): Promise<void> {
     return;
   }
   if (teks.startsWith("/")) {
-    await tanganiCommand(env, tgId, chatId, msg.message_id, teks);
+    await tanganiCommand(env, tgId, chatId, msg.message_id, teks, msg.from);
     return;
   }
   // Teks biasa: gating akses, balas info (AI chat menyusul)

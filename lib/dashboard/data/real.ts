@@ -217,6 +217,11 @@ export function makeRealDataSource(_getRole: () => Role): DataSource {
       return data as never;
     },
 
+    async ubahNamaAdmin(req) {
+      const data = await kirimTulis("/api/admin/ubah-nama", req);
+      return data as never;
+    },
+
     async tambahAdmin(req) {
       const data = await kirimTulis("/api/admin/tambah", req);
       return data as never;

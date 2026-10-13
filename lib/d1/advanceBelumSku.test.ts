@@ -281,7 +281,7 @@ describe("compareNama", () => {
 
 describe("advancePdf", () => {
   it("menghasilkan PDF A4 halaman cukup + header 'PICKLIST ADVANCE'", async () => {
-    const rows = Array.from({ length: 80 }, (_, i) => ({ booking_sn: `BS-${i}`, sku: `SKU-${i}`, nama: "Produk Uji", variasi: "", qty: 1, lokasi: "A1" }));
+    const rows = Array.from({ length: 80 }, (_, i) => ({ booking_sn: `BS-${i}`, sku: `SKU-${i}`, nama: "Produk Uji", variasi: "", qty: 1, antarKe: "D12" }));
     const bytes = await bangunPdfAdvance(rows, { gudang: "Gudang ONLINE", batchImport: 12 });
     assert.ok(bytes.length > 1000);
     const doc = await PDFDocument.load(bytes);

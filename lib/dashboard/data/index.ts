@@ -47,6 +47,8 @@ import type {
   UbahReorderPointResponse,
   UbahRoleAdminRequest,
   UbahRoleAdminResponse,
+  UbahNamaAdminRequest,
+  UbahNamaAdminResponse,
   PutusAksesRequest,
   PutusAksesResponse,
   SetQtyGudangRequest,
@@ -111,6 +113,7 @@ export interface DataSource {
   ubahHpp(req: UbahHppRequest): Promise<UbahHppResponse>;
   ubahReorderPoint(req: UbahReorderPointRequest): Promise<UbahReorderPointResponse>;
   ubahRoleAdmin(req: UbahRoleAdminRequest): Promise<UbahRoleAdminResponse>;
+  ubahNamaAdmin(req: UbahNamaAdminRequest): Promise<UbahNamaAdminResponse>;
   tambahAdmin(req: TambahAdminRequest): Promise<TambahAdminResponse>;
   hapusAdmin(req: HapusAdminRequest): Promise<HapusAdminResponse>;
 

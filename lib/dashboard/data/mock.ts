@@ -71,6 +71,8 @@ import type {
   UbahReorderPointResponse,
   UbahRoleAdminRequest,
   UbahRoleAdminResponse,
+  UbahNamaAdminRequest,
+  UbahNamaAdminResponse,
 } from "../types";
 import type { DataSource, MovementFilter, ProdukDetail } from "./index";
 import { guardHapusMock, superAdminMock, validasiHppMock } from "./mock-paritas";
@@ -1342,6 +1344,18 @@ export function makeMockDataSource(getRole: () => Role): DataSource {
         role_lama: roleLama,
         role_baru: req.role_baru,
       };
+    },
+
+    async ubahNamaAdmin(req: UbahNamaAdminRequest): Promise<UbahNamaAdminResponse> {
+      await delay(300);
+      if (mockSesiKedaluwarsa()) return { ok: false, error: SESI_KEDALUWARSA };
+      if (getRole() !== "owner") return { ok: false, error: "Hanya owner." };
+      const bersih = req.nama.trim();
+      if (!bersih) return { ok: false, error: "Nama wajib diisi." };
+      const admin = adminById(req.target_user_id);
+      if (!admin) return { ok: false, error: "User belum terdaftar." };
+      admin.name = bersih;
+      return { ok: true, admin };
     },
 
     async tambahAdmin(req: TambahAdminRequest): Promise<TambahAdminResponse> {

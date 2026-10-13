@@ -38,9 +38,18 @@ export async function putuskanAkses(db: D1Database, tgId: number, setuju: boolea
     if ((r.meta.changes ?? 0) !== 1) return gagal(409, "Permintaan sudah diproses atau tidak ada.");
     // Resmikan langsung jadi users role guest — sesi kenalan legacy tak ada di worker,
     // tanpa baris users user nyangkut approved selamanya (gateAdmin tolak).
+    // Nama: pakai nama Telegram bila ada; jangan pakai telegramId sebagai nama
+    // (dulu fallback `?? String(tgId)` membuat display_name berisi angka).
+    const nama = req.telegram_display_name?.trim() || "";
     await db
-      .prepare("INSERT INTO users (tg_id, username, display_name, role, active, added_at, approved_by) VALUES (?, ?, ?, 'guest', 1, ?, ?) ON CONFLICT(tg_id) DO UPDATE SET active = 1, approved_by = excluded.approved_by")
-      .bind(String(tgId), req.telegram_username, req.telegram_display_name ?? String(tgId), at, oleh)
+      .prepare(
+        "INSERT INTO users (tg_id, username, display_name, role, active, added_at, approved_by) VALUES (?, ?, ?, 'guest', 1, ?, ?) " +
+          "ON CONFLICT(tg_id) DO UPDATE SET active = 1, approved_by = excluded.approved_by, " +
+          "username = COALESCE(excluded.username, users.username), " +
+          "display_name = CASE WHEN users.display_name = '' OR users.display_name = users.tg_id " +
+          "THEN excluded.display_name ELSE users.display_name END"
+      )
+      .bind(String(tgId), req.telegram_username, nama, at, oleh)
       .run();
     return { ok: true, status: "approved" };
   }

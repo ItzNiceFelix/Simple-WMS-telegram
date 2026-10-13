@@ -16,7 +16,7 @@
     "AI_PROVIDER_TEXT": "groq",
     "GEMINI_TIMEOUT_MS": "120000",
     "GEMINI_TOTAL_TIMEOUT_MS": "240000",
-    "DASHBOARD_ALLOWED_ORIGINS": ""
+    "DASHBOARD_ALLOWED_ORIGINS": "https://simple-wms-telegram.bagus-deva-nov-p.workers.dev"
   },
   "d1_databases": [
     {

@@ -1,5 +1,8 @@
 // app/api/admin/role/route.ts — forwarder ke /api/admin (Fase 1: D1 cutover).
+// PENTING: header Origin + cookie diteruskan apa adanya. Tanpa Origin, handler dalam
+// akan melihat "POST tanpa Origin" dan menolak 403 di produksi (bug: owner tak bisa ubah role).
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
+import { forwardKeAdmin } from "@/lib/d1/forwardAdmin";
 import { POST as adminPost } from "../route";
 
 export const runtime = "nodejs";
@@ -10,11 +13,5 @@ export async function POST(request: Request) {
   if (!sesi.ok) return json({ ok: false, error: sesi.error }, sesi.status);
   if (!sesi.user.is_owner) return json({ ok: false, error: "Hanya owner." }, 403);
   const body = await bacaBody(request);
-  return adminPost(
-    new Request(request.url.replace(/\/role\/?$/, ""), {
-      method: "POST",
-      headers: { "content-type": "application/json", cookie: request.headers.get("cookie") ?? "" },
-      body: JSON.stringify({ ...body, aksi: "ubah-role", target_user_id: body.target_user_id, role: body.role_baru ?? body.role }),
-    })
-  );
+  return adminPost(forwardKeAdmin(request, body, "ubah-role"));
 }

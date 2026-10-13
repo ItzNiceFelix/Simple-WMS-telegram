@@ -63,6 +63,23 @@ export async function ubahRole(
   return { ok: true, admin };
 }
 
+/**
+ * Perbaiki nama tampilan user (mis. terisi telegramId karena alur lama tanpa tanya-nama).
+ * `nama` wajib non-kosong agar user tidak jadi tanpa identitas di daftar admin.
+ */
+export async function ubahNama(
+  db: D1Database, tgId: string, nama: string, oleh: string | null
+): Promise<Hasil<{ admin: AdminRow }>> {
+  const bersih = nama.trim().slice(0, 80);
+  if (!bersih) return gagal(400, "Nama wajib diisi.");
+  const target = await ambilAdmin(db, tgId);
+  if (!target) return gagal(404, "User belum terdaftar.");
+  await db.prepare("UPDATE users SET display_name = ? WHERE tg_id = ?").bind(bersih, Number(tgId)).run();
+  const admin = await ambilAdmin(db, tgId);
+  if (!admin) return gagal(500, "Gagal mengubah nama.");
+  return { ok: true, admin };
+}
+
 export async function hapusAdmin(
   db: D1Database, tgId: string, oleh: string | null
 ): Promise<Hasil<{ dihapus: true }>> {

@@ -27,24 +27,13 @@ export async function GET(request: Request) {
   if (aksi === "picklist-pdf") {
     const booking = await listBooking(db, { status: status ?? "menunggu", limit: 500 });
     if (booking.length === 0) return json({ ok: false, error: "Tidak ada booking untuk dicetak." }, 400);
-    const skuList = [...new Set(booking.map((b) => b.sku))];
-    const lokasi = new Map<string, string>();
-    for (let i = 0; i < skuList.length; i += 50) {
-      const potong = skuList.slice(i, i + 50);
-      const tanda = potong.map(() => "?").join(",");
-      const { results } = await db
-        .prepare(`SELECT sku, lokasi FROM products WHERE sku IN (${tanda})`)
-        .bind(...potong)
-        .all<{ sku: string; lokasi: string | null }>();
-      for (const r of results) lokasi.set(r.sku, r.lokasi ?? "");
-    }
     const rows: BarisAdvancePick[] = booking.map((b) => ({
       booking_sn: b.booking_sn,
       sku: b.sku,
       nama: b.nama_produk,
       variasi: b.variasi,
       qty: b.qty,
-      lokasi: lokasi.get(b.sku) ?? "",
+      antarKe: b.antar_ke,
     }));
     const batchImport = booking[0]?.batch_import ?? null;
     const bytes = await bangunPdfAdvance(rows, { gudang: "Gudang ONLINE", batchImport });

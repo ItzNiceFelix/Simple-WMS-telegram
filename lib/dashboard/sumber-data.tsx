@@ -236,6 +236,7 @@ function dataKosong(): DataSource {
     ubahHpp: tolak,
     ubahReorderPoint: tolak,
     ubahRoleAdmin: tolak,
+    ubahNamaAdmin: tolak,
     tambahAdmin: tolak,
     hapusAdmin: tolak,
     // v3a (B4): `satisfies DataSource` menagih 6 method ini; tsc gagal bila ketinggalan.

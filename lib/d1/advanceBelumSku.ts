@@ -165,8 +165,8 @@ export async function tebakSku(db: D1Database, namaShopee: string, variasi: stri
       else if (s > lama.skor) lama.skor = s;
     }
   };
-  await lihat("SELECT sku, nama FROM products WHERE nama_accurate_normalized = ? LIMIT 20", [target]);
-  await lihat("SELECT sku, nama FROM products WHERE UPPER(REPLACE(REPLACE(nama_accurate_normalized, '-', ''), ' ', '')) = ? LIMIT 20", [target.replace(/ /g, "")]);
+  await lihat("SELECT sku, nama_accurate AS nama FROM products WHERE nama_accurate_normalized = ? LIMIT 20", [target]);
+  await lihat("SELECT sku, nama_accurate AS nama FROM products WHERE UPPER(REPLACE(REPLACE(nama_accurate_normalized, '-', ''), ' ', '')) = ? LIMIT 20", [target.replace(/ /g, "")]);
   await lihat("SELECT p.sku AS sku, p.nama_accurate AS nama FROM product_search_keywords k JOIN products p ON p.sku = k.sku WHERE k.keyword = ? LIMIT 20", [target]);
   await lihat("SELECT sku, nama_mp AS nama FROM mp_products WHERE UPPER(REPLACE(REPLACE(nama_mp, '-', ''), ' ', '')) = ? LIMIT 20", [target.replace(/ /g, "")]);
   kandidat.sort((a, b) => b.skor - a.skor || a.sku.localeCompare(b.sku));

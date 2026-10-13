@@ -101,3 +101,26 @@
    sekali (buat owner pertama), atau POST tg_id + password.
 2. Buka `/masuk`, login dengan telegramId + password.
 3. Dashboard penuh dengan data D1 (kosong — import/migrasi dulu).
+
+## Perbaikan Bug Produksi (2026-10-13)
+
+Tiga bug dilaporkan owner, semua sudah diverifikasi akar masalahnya lewat query langsung ke D1 produksi.
+
+### B1 — Import Order.toship error 500
+**Akar:** `lib/d1/advanceBelumSku.ts` menjalankan `SELECT sku, nama FROM products`, padahal kolomnya bernama `nama_accurate`. D1 mengembalikan `no such column: nama` → handler tanpa try/catch → 500. Terbukti via query produksi: `no such column: nama at offset 12: SQLITE_ERROR [code: 7500]`.
+**Pemicu:** setiap file Order.toship yang punya baris tanpa `Nomor Referensi SKU` memanggil `tebakSku`, jadi bug ini selalu kena.
+**Fix:** dua query diganti `nama_accurate AS nama`.
+
+### B1b — Bonus: `SELECT sku, lokasi FROM products` di picklist Advance
+**Akar:** kolom `lokasi` tidak ada di `products` maupun `stock_by_bin`. Data lokasi rak tidak pernah ada di skema.
+**Fix:** kolom PDF "Bin" diganti "Kirim Ke", bersumber `advance_bookings.antar_ke` yang memang terisi.
+
+### B2 — Owner tidak bisa menjadikan orang admin ("Origin tidak diizinkan")
+**Akar ganda:**
+1. `DASHBOARD_ALLOWED_ORIGINS` kosong di `wrangler.jsonc`. Hostname produksi (`bagus-deva-nov-p`) ≠ suffix hardcode (`bagus-deva-n-p`) → allowlist kosong + produksi = 403.
+2. Forwarder `/api/admin/role` (dan `tambah`/`hapus`) membangun `Request` BARU hanya dengan `content-type` + `cookie`, **membuang header `Origin`** → handler dalam melihat "POST tanpa Origin" → 403.
+**Fix:** allowlist diisi origin produksi; helper `lib/d1/forwardAdmin.ts` meneruskan header asli termasuk `Origin`.
+
+### B3 — User terdaftar tanpa nama (hanya telegramId)
+**Akar:** `worker/bot.ts` `/daftar` memanggil `mintaAkses(db, tgId, null, u?.display_name ?? tgId)`; karena user belum ada di `users`, `u` selalu null → nama = telegramId. Approval menyalin placeholder itu (`req.telegram_display_name ?? String(tgId)`). Tidak ada langkah tanya-nama di webhook D1 (handler legacy `lanjutkanKenalan` tidak diport). Tidak ada jalur perbaikan nama sama sekali.
+**Fix:** bot meneruskan `msg.from` → `namaUser()` (first+last name); `akses.ts` tidak lagi fallback ke telegramId; ditambah **aksi `ubah-nama`** (lib + API + UI dialog di tabel admin). Data produksi yang telanjur salah sudah dibersihkan.

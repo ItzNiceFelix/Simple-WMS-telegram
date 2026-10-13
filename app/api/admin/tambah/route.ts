@@ -1,7 +1,9 @@
 // app/api/admin/tambah/route.ts — forwarder ke /api/admin (Fase 1: D1 cutover).
-// Kontrak body sama; logika tunggal di route gabungan.
+// Kontrak body sama; logika tunggal di route gabungan. Header asli diteruskan
+// (termasuk Origin) agar guard dalam tidak menolak 403 di produksi.
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
 import { POST as adminPost } from "../route";
+import { forwardKeAdmin } from "@/lib/d1/forwardAdmin";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,10 +14,6 @@ export async function POST(request: Request) {
   if (!sesi.user.is_owner) return json({ ok: false, error: "Hanya owner." }, 403);
   const body = await bacaBody(request);
   return adminPost(
-    new Request(request.url.replace(/\/tambah\/?$/, ""), {
-      method: "POST",
-      headers: { "content-type": "application/json", cookie: request.headers.get("cookie") ?? "" },
-      body: JSON.stringify({ ...body, aksi: "tambah-admin", target_user_id: body.telegram_user_id, nama: body.name, role: body.role }),
-    })
+    forwardKeAdmin(request, { ...body, target_user_id: body.telegram_user_id, nama: body.name, role: body.role }, "tambah-admin")
   );
 }

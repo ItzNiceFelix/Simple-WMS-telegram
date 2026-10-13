@@ -2,7 +2,7 @@
 // Pure: baris jadi → bytes PDF. Dipakai GET /api/advance?aksi=picklist-pdf.
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
 
-export type BarisAdvancePick = { booking_sn: string; sku: string; nama: string; variasi: string; qty: number; lokasi: string };
+export type BarisAdvancePick = { booking_sn: string; sku: string; nama: string; variasi: string; qty: number; antarKe: string };
 
 const LEBAR = 595.28; // A4 portrait
 const TINGGI = 841.89;
@@ -11,9 +11,9 @@ const JUDUL_FS = 16;
 const ISI_FS = 10;
 const BARIS_H = 20;
 const LEBAR_TABEL = 515;
-// 7 kolom: No | Booking SN | SKU | Nama Produk | Variasi | Qty | Lokasi | Cek
+// 8 kolom: No | Booking SN | SKU | Nama Produk | Variasi | Qty | Kirim Ke | Cek
 const KOLOM = [26, 100, 70, 150, 75, 34, 40, 20];
-const HEADER = ["No", "Booking SN", "SKU", "Nama Produk", "Variasi", "Qty", "Bin", "Cek"];
+const HEADER = ["No", "Booking SN", "SKU", "Nama Produk", "Variasi", "Qty", "Kirim Ke", "Cek"];
 
 /** Timestamp zona Jakarta: 09 Okt 2026, 14.35 WIB. */
 function waktuJakarta(d = new Date()): string {
@@ -91,7 +91,7 @@ export async function bangunPdfAdvance(
     hal.drawText(potong(r.variasi, KOLOM[4] - 6, biasa), { x: xKolom[4] + 3, y, size: ISI_FS, font: biasa });
     const q = String(r.qty);
     hal.drawText(q, { x: xKolom[5] + KOLOM[5] - tebal.widthOfTextAtSize(q, ISI_FS) - 4, y, size: ISI_FS, font: tebal });
-    hal.drawText(potong(r.lokasi, KOLOM[6] - 6, biasa), { x: xKolom[6] + 3, y, size: ISI_FS, font: biasa });
+    hal.drawText(potong(r.antarKe, KOLOM[6] - 6, biasa), { x: xKolom[6] + 3, y, size: ISI_FS, font: biasa });
     hal.drawRectangle({
       x: xKolom[7] + 4,
       y: y - 1,

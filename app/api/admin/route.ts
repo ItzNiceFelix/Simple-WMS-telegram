@@ -3,7 +3,7 @@
 //       tambah-produk (owner+admin) | set-gudang-user/set-jabatan (owner)
 // konfirmasi-draft (butuh bot/Sheets) DITUNDA ke Fase 2 → 501.
 import { getDb } from "@/lib/d1/db";
-import { hapusAdmin, setGudangUser, setJabatan, tambahAdmin, ubahRole } from "@/lib/d1/admin";
+import { hapusAdmin, setGudangUser, setJabatan, tambahAdmin, ubahNama, ubahRole } from "@/lib/d1/admin";
 import { putuskanAkses } from "@/lib/d1/akses";
 import { konfirmasiKeyword } from "@/lib/d1/kamus";
 import { normalisasiNama, tambahProduk } from "@/lib/d1/produk";
@@ -112,6 +112,12 @@ export async function POST(request: Request) {
   if (aksi === "ubah-role") {
     if (!user.is_owner) return json({ ok: false, error: "Hanya owner." }, 403);
     const h = await ubahRole(db, String(body.target_user_id ?? ""), String(body.role ?? ""), uid);
+    if (!h.ok) return json({ ok: false, error: h.error }, h.status);
+    return json({ ok: true, admin: h.admin });
+  }
+  if (aksi === "ubah-nama") {
+    if (!user.is_owner) return json({ ok: false, error: "Hanya owner." }, 403);
+    const h = await ubahNama(db, String(body.target_user_id ?? ""), String(body.nama ?? ""), uid);
     if (!h.ok) return json({ ok: false, error: h.error }, h.status);
     return json({ ok: true, admin: h.admin });
   }

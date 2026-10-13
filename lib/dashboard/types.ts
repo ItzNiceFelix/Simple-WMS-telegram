@@ -480,7 +480,16 @@ export type UbahRoleAdminResponse =
     }
   | { ok: false; error: string };
 
-/** F4a `POST /api/admin/tambah`. */
+/** Perbaiki nama tampilan user (mis. terisi telegramId oleh alur lama). Owner only. */
+export interface UbahNamaAdminRequest {
+  target_user_id: string;
+  nama: string;
+}
+
+export type UbahNamaAdminResponse =
+  | { ok: true; admin: AdminDoc }
+  | { ok: false; error: string };
+
 export interface TambahAdminRequest {
   telegram_user_id: string;
   name: string;

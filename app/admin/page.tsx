@@ -9,6 +9,7 @@ import { ShieldCheck, TriangleAlert, UserPlus, Users } from "lucide-react";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { ButuhAkses } from "@/components/dashboard/butuh-akses";
 import { AksiAkses } from "@/components/dashboard/aksi-akses";
+import { AksiNamaAdmin } from "@/components/dashboard/aksi-nama-admin";
 import { AksiRoleAdmin } from "@/components/dashboard/aksi-role-admin";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -181,7 +182,8 @@ function Admin() {
                           </TableCell>
                           {bolehUbahRole ? (
                             <TableCell className="text-right">
-                              <div className="flex justify-end">
+                              <div className="flex flex-wrap justify-end gap-2">
+                                <AksiNamaAdmin admin={a} onSukses={() => void muat()} />
                                 <AksiRoleAdmin
                                   admin={a}
                                   uid={uid ?? ""}
