@@ -16,13 +16,14 @@ export const getDb = cache((): D1Database => {
  * Lebih akurat: getCloudflareContext() membaca binding asli, sedangkan process.env
  * bergantung pada penyuntikan OpenNext. Dipakai route /api/baca?scope=ai.
  */
-export const getEnvAi = cache((): { AI_PROVIDER_TEXT?: string; GEMINI_TIMEOUT_MS?: string; GEMINI_TOTAL_TIMEOUT_MS?: string; AI_KEY_ENCRYPTION_KEY?: string } => {
+export const getEnvAi = cache((): { AI_PROVIDER_TEXT?: string; GEMINI_TIMEOUT_MS?: string; GEMINI_TOTAL_TIMEOUT_MS?: string; AI_KEY_ENCRYPTION_KEY?: string; KENARI_BASE_URL?: string } => {
   const { env } = getCloudflareContext();
   return {
     AI_PROVIDER_TEXT: env.AI_PROVIDER_TEXT as string | undefined,
     GEMINI_TIMEOUT_MS: env.GEMINI_TIMEOUT_MS as string | undefined,
     GEMINI_TOTAL_TIMEOUT_MS: env.GEMINI_TOTAL_TIMEOUT_MS as string | undefined,
     AI_KEY_ENCRYPTION_KEY: env.AI_KEY_ENCRYPTION_KEY as string | undefined,
+    KENARI_BASE_URL: env.KENARI_BASE_URL as string | undefined,
   };
 });
 
@@ -33,13 +34,6 @@ export const getKunciEnkripsi = cache((): string => {
 });
 
 /** Unix epoch detik saat ini. */
-export function sekarang(): number {
-  return Math.floor(Date.now() / 1000);
-}
-
-/** Hasil bisnis standar: ok:true + data, atau ok:false + status HTTP + error. */
-export type Hasil<T> = { ok: true } & T | { ok: false; status: number; error: string };
-
-export function gagal(status: number, error: string): { ok: false; status: number; error: string } {
-  return { ok: false, status, error };
-}
+// Hasil, gagal, sekarang tinggal di lib/d1/hasil.ts (tanpa dependensi) supaya kode
+// Worker bisa memakainya tanpa ikut menarik next/server. Di-re-export agar pemakai lama tetap jalan.
+export { gagal, sekarang, type Hasil } from "./hasil";

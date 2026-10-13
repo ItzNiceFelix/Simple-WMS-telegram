@@ -11,6 +11,7 @@ import { ButuhAkses } from "@/components/dashboard/butuh-akses";
 import { AiFallback } from "@/components/dashboard/ai-fallback";
 import { AiKredensial } from "@/components/dashboard/ai-kredensial";
 import { AiModel } from "@/components/dashboard/ai-model";
+import { AiPrompt } from "@/components/dashboard/ai-prompt";
 import { AiTool } from "@/components/dashboard/ai-tool";
 import { KelolaAdmin } from "@/components/dashboard/kelola-admin";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -239,6 +240,7 @@ function Pengaturan() {
           <>
             <AiKredensial bolehUbah={bolehUbah} onBerubah={() => void muat()} />
             <AiModel bolehUbah={bolehUbah} onBerubah={() => void muat()} />
+            <AiPrompt bolehUbah={bolehUbah} onBerubah={() => void muat()} />
             <AiFallback bolehUbah={bolehUbah} onBerubah={() => void muat()} />
             <AiTool bolehUbah={bolehUbah} onBerubah={() => void muat()} />
           </>

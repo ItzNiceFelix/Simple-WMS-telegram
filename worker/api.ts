@@ -4,6 +4,7 @@
 // bot Telegram. Semua query prepared + .bind() (skill cloudflare-d1).
 import {
   ambilPengguna,
+  ambilPenggunaLogin,
   ambilTokenDariCookie,
   atributCookieSesi,
   bootstrapOwner,
@@ -12,6 +13,7 @@ import {
   catatLogin,
   cookieHapusSesi,
   loginTerkunci,
+  PESAN_LOGIN_GAGAL,
   setPassword,
   terbitkanKode,
   verifikasiKode,
@@ -25,6 +27,13 @@ export type Env = {
   TELEGRAM_BOT_TOKEN?: string;
   TELEGRAM_WEBHOOK_SECRET?: string;
   SUPER_ADMIN_ID?: string;
+  /** Worker secret untuk dekripsi kredensial AI (AES-GCM). */
+  AI_KEY_ENCRYPTION_KEY?: string;
+  /** Provider AI opsional dari binding (fallback bila pengaturan DB kosong). */
+  AI_PROVIDER_TEXT?: string;
+  GEMINI_TIMEOUT_MS?: string;
+  GEMINI_TOTAL_TIMEOUT_MS?: string;
+  KENARI_BASE_URL?: string;
 };
 
 function json(body: unknown, status = 200, cookie?: string): Response {
@@ -62,6 +71,8 @@ function ipDanUa(request: Request): { ip: string; ua: string } {
 }
 
 const TG_ID_RE = /^[0-9]{5,20}$/;
+// Login menerima telegramId (angka) ATAU username (huruf kecil/angka/underscore).
+const KUNCI_LOGIN_RE = /^[a-z0-9_]{3,20}$|^[0-9]{5,20}$/i;
 
 export async function tanganiApi(request: Request, env: Env): Promise<Response | null> {
   const url = new URL(request.url);
@@ -103,24 +114,26 @@ export async function tanganiApi(request: Request, env: Env): Promise<Response |
   }
 
   // POST /api/auth/login { tg_id, password }
+  // `tg_id` menerima telegramId ATAU username (Fase F). Pesan gagal seragam.
   if (path === "/api/auth/login" && request.method === "POST") {
     const body = await bacaBody(request);
     const tgId = String(body.tg_id ?? "");
     const password = String(body.password ?? "");
     const { ip, ua } = ipDanUa(request);
-    if (!TG_ID_RE.test(tgId) || !password) {
+    if (!KUNCI_LOGIN_RE.test(tgId) || !password) {
       await catatLogin(env.DB, tgId || "?", false, ip, ua, "input");
-      return json({ ok: false, error: "telegramId atau password salah." }, 401);
+      return json({ ok: false, error: PESAN_LOGIN_GAGAL }, 401);
     }
     if (await loginTerkunci(env.DB, tgId, Math.floor(Date.now() / 1000))) {
       await catatLogin(env.DB, tgId, false, ip, ua, "terkunci");
       return json({ ok: false, error: "Terlalu banyak gagal. Coba lagi 15 menit." }, 429);
     }
-    const user = await ambilPengguna(env.DB, tgId);
+    // Cari dulu supaya rate limit dihitung per user, bukan per teks input.
+    const user = await ambilPenggunaLogin(env.DB, tgId);
     const cocok = user?.password_hash ? await verifikasiPassword(password, user.password_hash) : false;
     if (!user || !cocok) {
-      await catatLogin(env.DB, tgId, false, ip, ua, "kredensial");
-      return json({ ok: false, error: "telegramId atau password salah." }, 401);
+      await catatLogin(env.DB, user?.tg_id ?? tgId, false, ip, ua, "kredensial");
+      return json({ ok: false, error: PESAN_LOGIN_GAGAL }, 401);
     }
     await catatLogin(env.DB, tgId, true, ip, ua, null);
     const { token } = await buatSesi(env.DB, user.id, ip, ua);

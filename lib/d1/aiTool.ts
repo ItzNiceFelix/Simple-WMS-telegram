@@ -1,7 +1,7 @@
 // lib/d1/aiTool.ts — Katalog tool AI + peta kata kunci (bisa diatur dari UI).
 // Tujuan: admin bisa memperbaiki pemilihan tool tanpa deploy — mis. menambah kata
 // "persediaan" yang biasa dipakai, atau mematikan tool yang sudah punya UI sendiri.
-import { gagal, sekarang, type Hasil } from "./db";
+import { gagal, sekarang, type Hasil } from "./hasil";
 
 export type ToolAi = {
   nama: string;
@@ -144,6 +144,7 @@ export const SEED_TOOL: { nama: string; label: string; deskripsi: string; jenis:
   { nama: "tambahStok", label: "Tambah Stok", deskripsi: "Tambah jumlah stok 1 produk. WAJIB sebut gudang.", jenis: "tulis", perluKonfirmasi: true, urutan: 6, kata: ["tambah", "datang", "restock", "masuk", "barang datang"] },
   { nama: "kurangiStok", label: "Kurangi Stok", deskripsi: "Kurangi jumlah stok 1 produk. WAJIB sebut gudang.", jenis: "tulis", perluKonfirmasi: true, urutan: 7, kata: ["kurang", "koreksi", "hilang", "rusak", "selisih"] },
   { nama: "mutasiAntarGudang", label: "Pindah Stok antar Gudang", deskripsi: "Pindahkan qty dari satu gudang ke gudang lain.", jenis: "tulis", perluKonfirmasi: true, urutan: 8, kata: ["pindah", "transfer gudang", "mutasi", "kirim ke gudang"] },
+  { nama: "stokBanyakProduk", label: "Cek Banyak SKU", deskripsi: "Cek stok beberapa SKU sekaligus dalam satu panggilan.", jenis: "baca", perluKonfirmasi: false, urutan: 9, kata: ["beberapa produk", "banyak sku", "cek beberapa"] },
 ];
 
 /** Jalankan seed. `paksa` = true menimpa label/jenis tool yang sudah ada (kata kunci tetap tidak diubah). */

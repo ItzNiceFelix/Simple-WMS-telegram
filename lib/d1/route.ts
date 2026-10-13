@@ -39,19 +39,9 @@ export function tolakOriginD1(request: Request): { ok: true } | { ok: false; sta
   if (daftar.length === 0 && process.env.NODE_ENV !== "production") return { ok: true };
   return { ok: false, status: 403, error: "Origin tidak diizinkan." };
 }
-const _catatan = new Map<string, number[]>();
-const WINDOW_MS = 60_000;
-
-export function cekRateLimitD1(kunci: string, maksPerMenit: number): { ok: true } | { ok: false; status: number; error: string } {
-  const now = Date.now();
-  const arr = (_catatan.get(kunci) ?? []).filter((t) => now - t < WINDOW_MS);
-  if (arr.length >= maksPerMenit) {
-    return { ok: false, status: 429, error: "Terlalu banyak permintaan. Coba lagi sebentar lagi." };
-  }
-  arr.push(now);
-  _catatan.set(kunci, arr);
-  return { ok: true };
-}
+// Rate limit tinggal di lib/d1/rateLimit.ts (tanpa dependensi next/server).
+import { cekRateLimitD1 } from "./rateLimit";
+export { cekRateLimitD1 };
 
 // --- Sesi: gabungan origin+rate+sesi dalam satu panggilan ---
 export async function sesiRoute(

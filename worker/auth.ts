@@ -14,6 +14,9 @@ const RATE_KUNCI_DETIK = 15 * 60;
 
 export const NAMA_COOKIE_SESI = "swt_sesi";
 
+/** Pesan tunggal untuk semua kegagalan login (jangan bocorkan mana yang salah). */
+export const PESAN_LOGIN_GAGAL = "Login gagal.";
+
 function b64url(buf: ArrayBuffer | Uint8Array): string {
   const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
   let s = "";
@@ -99,6 +102,21 @@ export async function ambilPengguna(db: D1Database, tgId: string): Promise<Pengg
       "SELECT id, tg_id, username, display_name, password_hash, role, active FROM users WHERE tg_id = ? AND active = 1"
     )
     .bind(tgId)
+    .first<Pengguna>();
+}
+
+/**
+ * Ambil user aktif untuk login: input apa adanya dicocokkan ke tg_id, dan
+ * versi lowercase dicocokkan ke username. Satu query agar tidak membocorkan
+ * mana yang salah lewat perbedaan waktu/pesan.
+ */
+export async function ambilPenggunaLogin(db: D1Database, input: string): Promise<Pengguna | null> {
+  const id = input.trim();
+  return db
+    .prepare(
+      "SELECT id, tg_id, username, display_name, password_hash, role, active FROM users WHERE (tg_id = ?1 OR lower(username) = ?2) AND active = 1"
+    )
+    .bind(id, id.toLowerCase())
     .first<Pengguna>();
 }
 

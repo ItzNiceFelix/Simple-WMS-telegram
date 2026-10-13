@@ -42,18 +42,27 @@ function geser(arr: string[], dari: number, ke: number): string[] {
   return baru
 }
 
+type Pemakaian = {
+  totalPanggilan: number
+  totalTokenMasuk: number
+  totalTokenKeluar: number
+  rincian: { provider: string; model: string; jenis: string; panggilan: number; tokenMasuk: number; tokenKeluar: number }[]
+}
+
 export function AiFallback({ bolehUbah, onBerubah }: Props) {
   const [p, setP] = useState<Pengaturan | null>(null)
   const [model, setModel] = useState<ModelAi[]>([])
   const [mengirim, setMengirim] = useState(false)
   const [maksRiwayat, setMaksRiwayat] = useState("10")
   const [maksLoopTool, setMaksLoopTool] = useState("5")
+  const [pemakaian, setPemakaian] = useState<Pemakaian | null>(null)
 
   const muat = useCallback(async () => {
     try {
-      const [r1, r2] = await Promise.all([
+      const [r1, r2, r3] = await Promise.all([
         fetch("/api/pengaturan/ai?aksi=ringkas", { credentials: "include" }),
         fetch("/api/pengaturan/ai?aksi=model", { credentials: "include" }),
+        fetch("/api/pengaturan/ai?aksi=pemakaian", { credentials: "include" }),
       ])
       const d1 = (await r1.json().catch(() => null)) as { ok?: boolean; pengaturan?: Pengaturan; error?: string } | null
       if (!r1.ok || !d1?.ok || !d1.pengaturan) throw new Error(d1?.error ?? `Gagal memuat (${r1.status}).`)
@@ -62,6 +71,8 @@ export function AiFallback({ bolehUbah, onBerubah }: Props) {
       setMaksLoopTool(String(d1.pengaturan.maksLoopTool))
       const d2 = (await r2.json().catch(() => null)) as { ok?: boolean; model?: ModelAi[] } | null
       if (d2?.ok) setModel(d2.model ?? [])
+      const d3 = (await r3.json().catch(() => null)) as { ok?: boolean } & Partial<Pemakaian> | null
+      setPemakaian(d3?.ok && d3.totalPanggilan ? (d3 as Pemakaian) : null)
     } catch (e) {
       tampilkanGagalTulis(e instanceof Error ? e.message : "Gagal memuat pengaturan AI.")
     }
@@ -301,6 +312,34 @@ export function AiFallback({ bolehUbah, onBerubah }: Props) {
               </Button>
             </div>
           ) : null}
+
+          <div className="flex flex-col gap-2 border-t border-border pt-3">
+            <p className="text-sm font-medium">Pemakaian 30 hari terakhir</p>
+            {pemakaian === null ? (
+              <p className="text-xs text-muted-foreground" data-testid="pemakaian-kosong">
+                Belum ada pemakaian tercatat.
+              </p>
+            ) : (
+              <>
+                <p className="text-xs text-muted-foreground" data-testid="pemakaian-total">
+                  {pemakaian.totalPanggilan} panggilan · {pemakaian.totalTokenMasuk.toLocaleString("id-ID")} token masuk ·{" "}
+                  {pemakaian.totalTokenKeluar.toLocaleString("id-ID")} token keluar
+                </p>
+                <ul className="flex flex-col gap-1">
+                  {pemakaian.rincian.slice(0, 8).map((r) => (
+                    <li key={`${r.provider}-${r.model}-${r.jenis}`} className="flex justify-between gap-2 text-xs">
+                      <span className="truncate">
+                        {r.provider} · {r.model} <span className="text-muted-foreground">({r.jenis})</span>
+                      </span>
+                      <span className="shrink-0 tabular-nums text-muted-foreground">
+                        {r.panggilan}× · {(r.tokenMasuk + r.tokenKeluar).toLocaleString("id-ID")} tok
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </div>
         </CardContent>
       </Card>
     </>

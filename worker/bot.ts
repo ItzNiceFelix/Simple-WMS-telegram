@@ -14,6 +14,14 @@ import { listOpname } from "../lib/d1/opname";
 import { listTransfer } from "../lib/d1/transfer";
 import { listAkses, mintaAkses } from "../lib/d1/akses";
 import { ambilAdmin } from "../lib/d1/admin";
+import type { Konteks } from "../lib/ai/provider";
+import { panggilGambar } from "../lib/ai/panggil";
+import { parsePerintahGambar } from "../lib/ai/parserGambar";
+import { ekstrakPickingList } from "../lib/ai/vision";
+import { balasChat } from "../lib/ai/chat";
+import { ambilPengaturanAI } from "../lib/d1/pengaturan";
+import { jalankanTool } from "../lib/ai/tools";
+import { cekBatas } from "../lib/ai/rateLimit";
 
 export type Update = {
   update_id: number;
@@ -29,7 +37,7 @@ type TgMessage = {
   chat: { id: number; type: string; title?: string };
   text?: string;
   caption?: string;
-  photo?: { file_id: string }[];
+  photo?: FotoTelegram[];
 };
 
 function esc(s: string): string {
@@ -86,6 +94,61 @@ export async function kirimPesanBot(env: Env, chatId: number | string, teks: str
       throw err;
     }
   }
+}
+
+/** Kirim atau perbarui pesan ber-tombol inline; mengembalikan message_id. */
+export async function kirimPesanTombol(
+  env: Env,
+  chatId: number | string,
+  teks: string,
+  tombol: { teks: string; data: string }[][],
+  replyTo?: number
+): Promise<number | undefined> {
+  if (!env.TELEGRAM_BOT_TOKEN) throw new Error("TELEGRAM_BOT_TOKEN belum diset.");
+  const body: Record<string, unknown> = {
+    chat_id: chatId,
+    text: teks,
+    parse_mode: "HTML",
+    disable_web_page_preview: true,
+    reply_markup: { inline_keyboard: tombol.map((baris) => baris.map((t) => ({ text: t.teks, callback_data: t.data }))) },
+  };
+  if (replyTo) body.reply_to_message_id = replyTo;
+  const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) return undefined;
+  const data = (await res.json().catch(() => null)) as { result?: { message_id?: number } } | null;
+  return data?.result?.message_id;
+}
+
+/** Ubah pesan yang sudah dikirim (hindari spam saat proses selesai). Tombol kosong = hapus keyboard. */
+export async function editPesan(
+  env: Env,
+  chatId: number | string,
+  messageId: number,
+  teks: string,
+  tombol?: { teks: string; data: string }[][]
+): Promise<void> {
+  if (!env.TELEGRAM_BOT_TOKEN) return;
+  const body: Record<string, unknown> = { chat_id: chatId, message_id: messageId, text: teks, parse_mode: "HTML", disable_web_page_preview: true };
+  body.reply_markup = tombol ? { inline_keyboard: tombol.map((baris) => baris.map((t) => ({ text: t.teks, callback_data: t.data }))) } : { inline_keyboard: [] };
+  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/editMessageText`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  }).catch(() => undefined);
+}
+
+/** Tandai "sedang mengetik" selama AI berpikir. Kegagalan diabaikan (kosmetik). */
+export async function kirimTyping(env: Env, chatId: number | string): Promise<void> {
+  if (!env.TELEGRAM_BOT_TOKEN) return;
+  await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendChatAction`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ chat_id: chatId, action: "typing" }),
+  }).catch(() => undefined);
 }
 
 async function jawabCallback(env: Env, id: string, teks?: string): Promise<void> {
@@ -300,7 +363,7 @@ async function tanganiCommand(env: Env, tgId: string, chatId: number, msgId: num
     return;
   }
 
-  await kirimPesanBot(env, chatId, `Perintah tidak dikenal. Kirim /start untuk daftar. AI chat menyusul di Fase 2.`, msgId);
+  await kirimPesanBot(env, chatId, `Perintah tidak dikenal. Kirim /start untuk daftar, atau tulis pertanyaan biasa (mis. <code>stok 001163</code>).`, msgId);
 }
 
 /** Entry webhook: validasi secret → selalu 200 → proses via waitUntil. */
@@ -337,6 +400,271 @@ async function tanganiMigrasiGrup(env: Env, msg: TgMessage): Promise<boolean> {
   return true;
 }
 
+/** Batas ukuran foto Telegram yang diterima (Bot API maks unduhan 20MB; kita batasi 10MB). */
+const MAKS_FOTO_BYTE = 10 * 1024 * 1024;
+
+type FotoTelegram = { file_id: string; file_size?: number };
+
+/** File terbesar dari daftar ukuran photo Telegram (item terakhir = resolusi tertinggi). */
+function fotoTerbesar(foto: FotoTelegram[]): FotoTelegram | undefined {
+  return foto.length ? foto[foto.length - 1] : undefined;
+}
+
+/** Ambil metadata file Telegram (dipakai untuk ukuran + file_path unduhan). */
+async function getFileTelegram(env: Env, fileId: string): Promise<{ file_path?: string; file_size?: number } | null> {
+  if (!env.TELEGRAM_BOT_TOKEN) return null;
+  const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/getFile?file_id=${encodeURIComponent(fileId)}`);
+  if (!res.ok) return null;
+  const data = (await res.json().catch(() => null)) as { ok?: boolean; result?: { file_path?: string; file_size?: number } } | null;
+  return data?.ok ? (data.result ?? null) : null;
+}
+
+/** Unduh isi file Telegram sebagai base64. Melempar bila token/file tidak tersedia. */
+async function unduhFotoTelegram(env: Env, filePath: string): Promise<string> {
+  if (!env.TELEGRAM_BOT_TOKEN) throw new Error("TELEGRAM_BOT_TOKEN belum diset.");
+  const res = await fetch(`https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${filePath}`);
+  if (!res.ok) throw new Error(`Unduh file Telegram gagal (HTTP ${res.status}).`);
+  const buf = new Uint8Array(await res.arrayBuffer());
+  let biner = "";
+  for (const b of buf) biner += String.fromCharCode(b);
+  return btoa(biner);
+}
+
+/** Kirim gambar (base64) ke chat sebagai FOTO, bukan link. */
+async function kirimFotoBot(env: Env, chatId: number | string, base64: string, mime: string, caption?: string, replyTo?: number): Promise<void> {
+  if (!env.TELEGRAM_BOT_TOKEN) throw new Error("TELEGRAM_BOT_TOKEN belum diset.");
+  const biner = atob(base64);
+  const bytes = new Uint8Array(biner.length);
+  for (let i = 0; i < biner.length; i++) bytes[i] = biner.charCodeAt(i);
+  const form = new FormData();
+  form.append("chat_id", String(chatId));
+  form.append("photo", new Blob([bytes], { type: mime }), "gambar.png");
+  if (caption) form.append("caption", caption.slice(0, 1024));
+  if (replyTo) form.append("reply_to_message_id", String(replyTo));
+  const res = await fetch(`https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/sendPhoto`, { method: "POST", body: form });
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    throw new Error(`sendPhoto ${res.status}: ${t.slice(0, 200)}`);
+  }
+}
+
+/** Jalur `@gambar`: text-to-image, atau edit bila ada lampiran foto sebagai referensi. */
+async function jalurGambar(env: Env, msg: TgMessage, prompt: string, tgId: string, chatId: number, foto: FotoTelegram[]): Promise<void> {
+  const gate = await gateAdmin(env, tgId, chatId);
+  if (!gate) return;
+  if (!prompt) {
+    await kirimPesanBot(env, chatId, `Format: <code>@gambar deskripsi gambar</code>\nBoleh dengan lampiran foto sebagai referensi (mode edit).`, msg.message_id);
+    return;
+  }
+  await kirimTyping(env, chatId);
+  const ctx: Konteks = { db: env.DB, kunci: env.AI_KEY_ENCRYPTION_KEY ?? "" };
+
+  let referensi: { mime: string; base64: string }[] | undefined;
+  if (foto.length) {
+    const fileTerpilih = fotoTerbesar(foto);
+    const info = fileTerpilih ? await getFileTelegram(env, fileTerpilih.file_id) : null;
+    const ukuran = info?.file_size ?? fileTerpilih?.file_size ?? 0;
+    if (ukuran > MAKS_FOTO_BYTE) {
+      await kirimPesanBot(env, chatId, `Foto terlalu besar (${Math.round(ukuran / 1024 / 1024)} MB). Batas 10 MB.`, msg.message_id);
+      return;
+    }
+    if (!info?.file_path) {
+      await kirimPesanBot(env, chatId, `Gagal mengambil file foto dari Telegram. Coba kirim ulang.`, msg.message_id);
+      return;
+    }
+    try {
+      const unduh = await unduhFotoTelegram(env, info.file_path);
+      referensi = [{ mime: "image/jpeg", base64: unduh }];
+    } catch (e) {
+      await kirimPesanBot(env, chatId, `Gagal mengunduh foto: ${esc(e instanceof Error ? e.message : String(e))}`, msg.message_id);
+      return;
+    }
+  }
+
+  const r = await panggilGambar(ctx, { prompt, referensi });
+  if (!r.ok) {
+    await kirimPesanBot(env, chatId, `Gagal membuat gambar (HTTP ${r.status}). Provider/model yang dicoba: ${esc(r.error)}`, msg.message_id);
+    return;
+  }
+  await kirimFotoBot(env, chatId, r.base64, r.mime, `Dibuat oleh ${r.provider}/${r.model}`, msg.message_id);
+}
+
+/** Jalur foto tanpa perintah: ekstraksi picking list (vision) lalu ringkas sebagai tabel. */
+async function jalurVision(env: Env, msg: TgMessage, tgId: string, chatId: number, foto: FotoTelegram[]): Promise<void> {
+  const gate = await gateAdmin(env, tgId, chatId);
+  if (!gate) return;
+  await kirimTyping(env, chatId);
+  const fileTerpilih = fotoTerbesar(foto);
+  const info = fileTerpilih ? await getFileTelegram(env, fileTerpilih.file_id) : null;
+  const ukuran = info?.file_size ?? fileTerpilih?.file_size ?? 0;
+  if (ukuran > MAKS_FOTO_BYTE) {
+    await kirimPesanBot(env, chatId, `Foto terlalu besar (${Math.round(ukuran / 1024 / 1024)} MB). Batas 10 MB.`, msg.message_id);
+    return;
+  }
+  if (!info?.file_path) {
+    await kirimPesanBot(env, chatId, `Gagal mengambil file foto dari Telegram. Coba kirim ulang.`, msg.message_id);
+    return;
+  }
+  let base64Foto: string;
+  try {
+    base64Foto = await unduhFotoTelegram(env, info.file_path);
+  } catch (e) {
+    await kirimPesanBot(env, chatId, `Gagal mengunduh foto: ${esc(e instanceof Error ? e.message : String(e))}`, msg.message_id);
+    return;
+  }
+  const ctx: Konteks = { db: env.DB, kunci: env.AI_KEY_ENCRYPTION_KEY ?? "" };
+  const r = await ekstrakPickingList(ctx, { mime: "image/jpeg", base64: base64Foto });
+  if (!r.ok) {
+    await kirimPesanBot(env, chatId, `Gagal membaca picking list: ${esc(r.error)}`, msg.message_id);
+    return;
+  }
+  if (r.baris.length === 0) {
+    await kirimPesanBot(env, chatId, `Tidak ada baris picking list yang terbaca di foto ini.`, msg.message_id);
+    return;
+  }
+  const lebarSku = Math.max(3, ...r.baris.map((b) => b.sku.length));
+  const barisTeks = r.baris.map((b) => `${b.sku.padEnd(lebarSku)}  x${b.qty}`);
+  const total = r.baris.reduce((s, b) => s + b.qty, 0);
+  const catatan = r.catatan ? `\n\n<i>${esc(r.catatan)}</i>` : "";
+  await kirimPesanBot(env, chatId, `<b>Hasil baca picking list</b>\n<pre>${esc(barisTeks.join("\n"))}</pre>\nTotal: <b>${total}</b> pcs / ${r.baris.length} baris${catatan}`, msg.message_id);
+}
+
+/** Riwayat disimpan di kolom yang sudah ada (bot_sessions.history_json), format [{role, teks}]. */
+type EntriRiwayat = { role: "user" | "assistant"; teks: string };
+
+async function bacaRiwayat(env: Env, tgId: string): Promise<EntriRiwayat[]> {
+  const row = await env.DB.prepare("SELECT history_json FROM bot_sessions WHERE tg_id = ?")
+    .bind(Number(tgId))
+    .first<{ history_json: string }>()
+    .catch(() => null);
+  if (!row?.history_json) return [];
+  try {
+    const v = JSON.parse(row.history_json) as unknown;
+    if (!Array.isArray(v)) return [];
+    return v
+      .filter((x): x is EntriRiwayat => !!x && typeof x === "object" && ((x as EntriRiwayat).role === "user" || (x as EntriRiwayat).role === "assistant") && typeof (x as EntriRiwayat).teks === "string")
+      .map((x) => ({ role: x.role, teks: String(x.teks).slice(0, 2000) }));
+  } catch {
+    return [];
+  }
+}
+
+/** Simpan riwayat + aksi tertunda sekaligus (kolom sudah ada sejak 0006). */
+async function simpanSesi(
+  env: Env,
+  tgId: string,
+  riwayat: EntriRiwayat[],
+  tertunda?: { aksi: string; arg: Record<string, unknown>; ringkas: string } | null
+): Promise<void> {
+  const potong = riwayat.slice(-20);
+  await env.DB.prepare(
+    "INSERT INTO bot_sessions (tg_id, history_json, last_updated, pending_action_json) VALUES (?, ?, ?, ?) " +
+      "ON CONFLICT(tg_id) DO UPDATE SET history_json = excluded.history_json, last_updated = excluded.last_updated, pending_action_json = excluded.pending_action_json"
+  )
+    .bind(Number(tgId), JSON.stringify(potong), Math.floor(Date.now() / 1000), tertunda ? JSON.stringify(tertunda) : null)
+    .run()
+    .catch(() => undefined);
+}
+
+async function bacaTertunda(env: Env, tgId: string): Promise<{ aksi: string; arg: Record<string, unknown>; ringkas: string } | null> {
+  const row = await env.DB.prepare("SELECT pending_action_json FROM bot_sessions WHERE tg_id = ?")
+    .bind(Number(tgId))
+    .first<{ pending_action_json: string | null }>()
+    .catch(() => null);
+  if (!row?.pending_action_json) return null;
+  try {
+    const v = JSON.parse(row.pending_action_json) as { aksi?: string; arg?: Record<string, unknown>; ringkas?: string };
+    if (typeof v.aksi !== "string" || !v.arg) return null;
+    return { aksi: v.aksi, arg: v.arg, ringkas: String(v.ringkas ?? "") };
+  } catch {
+    return null;
+  }
+}
+
+/** HTML aman: hanya izinkan <b>/<code>/<i>/<pre> dari output AI, escape sisanya. */
+function amanHtml(teks: string): string {
+  return esc(teks)
+    .replace(/&lt;(\/?)(b|code|i|pre)&gt;/gi, "<$1$2>")
+    .replace(/\n/g, "\n");
+}
+
+/** Jalur teks biasa → orchestrator AI, dengan typing + riwayat + tombol konfirmasi. */
+async function jalurAiTeks(env: Env, tgId: string, chatId: number, msgId: number, teks: string): Promise<void> {
+  const batas = await cekBatas(env.DB, tgId, 20);
+  if (!batas.ok) {
+    await kirimPesanBot(env, chatId, esc(batas.error), msgId);
+    return;
+  }
+  await kirimTyping(env, chatId);
+  const settings = await ambilPengaturanAI(env.DB, { AI_KEY_ENCRYPTION_KEY: env.AI_KEY_ENCRYPTION_KEY, KENARI_BASE_URL: env.KENARI_BASE_URL });
+  const riwayatLama = await bacaRiwayat(env, tgId);
+  const balasan = await balasChat(env.DB, {
+    pesan: teks,
+    riwayat: riwayatLama.map((r) => ({ role: r.role, teks: r.teks })),
+    user: { tg_id: tgId },
+    settings,
+    kunci: env.AI_KEY_ENCRYPTION_KEY ?? "",
+    env,
+  });
+  const baru: EntriRiwayat[] = [...riwayatLama, { role: "user", teks }, { role: "assistant", teks: "" }];
+  if (!balasan.ok) {
+    baru[baru.length - 1] = { role: "assistant", teks: `(galat) ${balasan.error}` };
+    await simpanSesi(env, tgId, baru, null);
+    await kirimPesanBot(env, chatId, `Gagal memproses: ${esc(balasan.error)}`, msgId);
+    return;
+  }
+  baru[baru.length - 1] = { role: "assistant", teks: balasan.balasan };
+  if (balasan.perluKonfirmasi) {
+    await simpanSesi(env, tgId, baru, balasan.perluKonfirmasi);
+    await kirimPesanTombol(
+      env,
+      chatId,
+      `${amanHtml(balasan.balasan)}\n\nTerapkan perubahan ini?`,
+      [
+        [
+          { teks: "Ya, terapkan", data: "ai:ya" },
+          { teks: "Tidak", data: "ai:tidak" },
+        ],
+      ],
+      msgId
+    );
+    return;
+  }
+  await simpanSesi(env, tgId, baru, null);
+  await kirimPesanBot(env, chatId, amanHtml(balasan.balasan), msgId);
+}
+
+/** Tombol konfirmasi AI: `ai:ya` menjalankan aksi tertunda, `ai:tidak` membatalkan. */
+async function tanganiCallbackAi(
+  env: Env,
+  callbackId: string,
+  tgId: string,
+  chatId: number | undefined,
+  messageId: number | undefined,
+  data: string
+): Promise<void> {
+  if (chatId === undefined || messageId === undefined) {
+    await jawabCallback(env, callbackId, "Pesan tidak ditemukan.");
+    return;
+  }
+  const tertunda = await bacaTertunda(env, tgId);
+  if (data === "ai:tidak") {
+    await simpanSesi(env, tgId, await bacaRiwayat(env, tgId), null);
+    await jawabCallback(env, callbackId, "Dibatalkan.");
+    await editPesan(env, chatId, messageId, "Dibatalkan. Tidak ada perubahan stok.");
+    return;
+  }
+  if (!tertunda) {
+    await jawabCallback(env, callbackId, "Tidak ada aksi tertunda.");
+    await editPesan(env, chatId, messageId, "Aksi sudah tidak berlaku. Ulangi perintahmu.");
+    return;
+  }
+  const r = await jalankanTool(env.DB, tertunda.aksi, tertunda.arg, { tg_id: tgId });
+  await simpanSesi(env, tgId, await bacaRiwayat(env, tgId), null);
+  await jawabCallback(env, callbackId, r.ok ? "Diterapkan." : "Gagal.");
+  await editPesan(env, chatId, messageId, amanHtml(r.ok ? `Diterapkan.\n${r.ringkas}` : `Gagal: ${r.error}`));
+}
+
 async function prosesUpdate(env: Env, update: Update): Promise<void> {
   // Lifecycle grup: join/left via my_chat_member
   if (update.my_chat_member) {
@@ -354,6 +682,12 @@ async function prosesUpdate(env: Env, update: Update): Promise<void> {
 
   if (update.callback_query) {
     const cb = update.callback_query;
+    const data = cb.data ?? "";
+    // Prefix `ai:` dipakai tombol konfirmasi aksi AI (ya/tidak).
+    if (data.startsWith("ai:") && cb.from) {
+      await tanganiCallbackAi(env, cb.id, String(cb.from.id), cb.message?.chat.id, cb.message?.message_id, data);
+      return;
+    }
     await jawabCallback(env, cb.id, "Diproses di dashboard (bot penuh Fase 2).");
     return;
   }
@@ -364,26 +698,26 @@ async function prosesUpdate(env: Env, update: Update): Promise<void> {
   if (!msg.from) return;
   const tgId = String(msg.from.id);
   const chatId = msg.chat.id;
-  const teks = (msg.text ?? msg.caption ?? "").trim();
-  if (!teks) {
-    // Foto tanpa caption → info (vision menyusul Fase 2 lanjutan)
-    if (msg.photo?.length) {
-      const gate = await gateAdmin(env, tgId, chatId);
-      if (!gate) return;
-      await kirimPesanBot(env, chatId, `Foto diterima. Ekstraksi picking list (vision) menyusul — sementara catat via /tambah /kurangi atau dashboard.`, msg.message_id);
-    }
+  // §6.1: cek foto DI ATAS cek teks — foto bercaption tidak boleh bocor ke jalur teks.
+  if (msg.photo?.length) {
+    const perintahFoto = parsePerintahGambar(msg.caption ?? "");
+    if (perintahFoto.adaPerintah) await jalurGambar(env, msg, perintahFoto.prompt, tgId, chatId, msg.photo);
+    else await jalurVision(env, msg, tgId, chatId, msg.photo);
     return;
   }
+  const teks = (msg.text ?? msg.caption ?? "").trim();
+  if (!teks) return;
   if (teks.startsWith("/")) {
     await tanganiCommand(env, tgId, chatId, msg.message_id, teks, msg.from);
     return;
   }
-  // Teks biasa: gating akses, balas info (AI chat menyusul)
-  const gate = await gateAdmin(env, tgId, chatId);
-  if (!gate) return;
-  if (/^(halo|hai|pagi|siang|sore|malam|makasih|terima kasih|ok|oke)\b/i.test(teks)) {
-    await kirimPesanBot(env, chatId, `Halo ${esc(namaUser(msg.from))}! Kirim /start untuk daftar perintah.`, msg.message_id);
+  const perintah = parsePerintahGambar(teks);
+  if (perintah.adaPerintah) {
+    await jalurGambar(env, msg, perintah.prompt, tgId, chatId, []);
     return;
   }
-  await kirimPesanBot(env, chatId, `AI chat menyusul di Fase 2. Sementara: /stok, /tambah, /kurangi, /cari, /transfer, /opname.`, msg.message_id);
+  // Teks biasa → AI. Riwayat disimpan di bot_sessions.history_json.
+  const gate = await gateAdmin(env, tgId, chatId);
+  if (!gate) return;
+  await jalurAiTeks(env, tgId, chatId, msg.message_id, teks);
 }

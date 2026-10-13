@@ -1,5 +1,5 @@
 // lib/d1/pengaturan.ts — Settings + provider AI di D1 (Fase 1, paritas aiSettings.js).
-import { gagal, type Hasil } from "./db";
+import { gagal, type Hasil } from "./hasil";
 
 export const PROVIDER_VALID = ["gemini", "groq", "kenari", "openai", "openrouter"] as const;
 
@@ -8,6 +8,9 @@ export type EnvAi = {
   AI_PROVIDER_TEXT?: string | undefined;
   GEMINI_TIMEOUT_MS?: string | undefined;
   GEMINI_TOTAL_TIMEOUT_MS?: string | undefined;
+  /** Dipakai provider.ts (dekripsi kredensial) + adapter kenari. Opsional. */
+  AI_KEY_ENCRYPTION_KEY?: string | undefined;
+  KENARI_BASE_URL?: string | undefined;
 };
 
 export type AiSettings = {
@@ -29,6 +32,8 @@ export type AiSettings = {
   saatTakCocok: "semua_tool" | "tolak";
   /** Prompt sistem, bisa diedit dari UI. */
   promptSistem: string;
+  /** Batas pesan AI per user per menit (jaga biaya). */
+  rateLimitPerMenit: number;
   geminiTimeoutMs: number;
   totalTimeoutMs: number;
 };
@@ -48,6 +53,7 @@ export function dasarPengaturan(env: EnvAi = {}): AiSettings {
     maksLoopTool: 5,
     saatTakCocok: "semua_tool",
     promptSistem: "",
+    rateLimitPerMenit: 20,
     geminiTimeoutMs: Number(env.GEMINI_TIMEOUT_MS) > 0 ? Number(env.GEMINI_TIMEOUT_MS) : 120000,
     totalTimeoutMs: Number(env.GEMINI_TOTAL_TIMEOUT_MS) > 0 ? Number(env.GEMINI_TOTAL_TIMEOUT_MS) : 240000,
   };
@@ -100,6 +106,7 @@ export async function ambilPengaturanAI(db: D1Database, env: EnvAi = {}): Promis
       maksLoopTool: angka(data.maksLoopTool, dasar.maksLoopTool, 1, 20),
       saatTakCocok: data.saatTakCocok === "tolak" ? "tolak" : "semua_tool",
       promptSistem: typeof data.promptSistem === "string" ? data.promptSistem.slice(0, 8000) : dasar.promptSistem,
+      rateLimitPerMenit: angka(data.rateLimitPerMenit, dasar.rateLimitPerMenit, 1, 300),
       geminiTimeoutMs: Number(data.geminiTimeoutMs) > 0 ? Number(data.geminiTimeoutMs) : dasar.geminiTimeoutMs,
       totalTimeoutMs: Number(data.totalTimeoutMs) > 0 ? Number(data.totalTimeoutMs) : dasar.totalTimeoutMs,
     };
@@ -135,6 +142,7 @@ export async function simpanPengaturanAI(
     maksLoopTool: Math.max(1, Math.min(20, Math.floor(Number(gabung.maksLoopTool) || kini.maksLoopTool))),
     saatTakCocok: gabung.saatTakCocok === "tolak" ? "tolak" : "semua_tool",
     promptSistem: String(gabung.promptSistem ?? "").slice(0, 8000),
+    rateLimitPerMenit: Math.max(1, Math.min(300, Math.floor(Number(gabung.rateLimitPerMenit) || kini.rateLimitPerMenit))),
     geminiTimeoutMs: Number(gabung.geminiTimeoutMs) > 0 ? Number(gabung.geminiTimeoutMs) : kini.geminiTimeoutMs,
     totalTimeoutMs: Number(gabung.totalTimeoutMs) > 0 ? Number(gabung.totalTimeoutMs) : kini.totalTimeoutMs,
   };
