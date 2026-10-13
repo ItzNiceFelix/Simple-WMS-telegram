@@ -12,7 +12,7 @@ export async function ambilAdmin(db: D1Database, tgId: string | number): Promise
   const row = await db
     .prepare(`SELECT u.*, (SELECT warehouse_id FROM user_warehouses WHERE user_id = u.id LIMIT 1) AS gudang_id
       FROM users u WHERE u.tg_id = ? AND u.active = 1`)
-    .bind(Number(tgId))
+    .bind(String(tgId))
     .first<AdminRow>();
   return row ?? null;
 }
@@ -32,8 +32,9 @@ async function catatRole(db: D1Database, tgId: string, lama: string | null, baru
 export async function tambahAdmin(
   db: D1Database, tgId: string, nama: string, role: string, oleh: string | null
 ): Promise<Hasil<{ admin: AdminRow }>> {
-  const tg = Number(tgId);
-  if (!Number.isInteger(tg)) return gagal(400, "telegramId tidak valid.");
+  const tg = String(tgId).trim();
+  // tg_id bertipe TEXT di D1. Validasi: digit saja (Telegram ID selalu numerik).
+  if (!/^\d{3,20}$/.test(tg)) return gagal(400, "telegramId tidak valid.");
   if (!["owner", "admin", "guest"].includes(role)) return gagal(400, "Role tidak dikenal.");
   const ada = await ambilAdmin(db, tg);
   if (ada) return gagal(409, "User sudah terdaftar.");
@@ -52,11 +53,11 @@ export async function ubahRole(
   const target = await ambilAdmin(db, tgId);
   if (!target) return gagal(404, "User belum terdaftar.");
   if (target.role === "owner" && roleBaru !== "owner") {
-    const sisa = await db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'owner' AND active = 1 AND tg_id != ?").bind(Number(tgId)).first<{ n: number }>();
+    const sisa = await db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'owner' AND active = 1 AND tg_id != ?").bind(String(tgId)).first<{ n: number }>();
     if ((sisa?.n ?? 0) === 0) return gagal(409, "Owner terakhir tidak bisa didemosi.");
   }
   const at = sekarang();
-  await db.prepare("UPDATE users SET role = ?, role_updated_at = ?, role_updated_by = ? WHERE tg_id = ?").bind(roleBaru, at, oleh, Number(tgId)).run();
+  await db.prepare("UPDATE users SET role = ?, role_updated_at = ?, role_updated_by = ? WHERE tg_id = ?").bind(roleBaru, at, oleh, String(tgId)).run();
   await catatRole(db, String(tgId), target.role, roleBaru, null, oleh);
   const admin = await ambilAdmin(db, tgId);
   if (!admin) return gagal(500, "Gagal mengubah role.");
@@ -74,7 +75,7 @@ export async function ubahNama(
   if (!bersih) return gagal(400, "Nama wajib diisi.");
   const target = await ambilAdmin(db, tgId);
   if (!target) return gagal(404, "User belum terdaftar.");
-  await db.prepare("UPDATE users SET display_name = ? WHERE tg_id = ?").bind(bersih, Number(tgId)).run();
+  await db.prepare("UPDATE users SET display_name = ? WHERE tg_id = ?").bind(bersih, String(tgId)).run();
   const admin = await ambilAdmin(db, tgId);
   if (!admin) return gagal(500, "Gagal mengubah nama.");
   return { ok: true, admin };
@@ -87,13 +88,13 @@ export async function hapusAdmin(
   const target = await ambilAdmin(db, tgId);
   if (!target) return gagal(404, "User belum terdaftar.");
   if (target.role === "owner") {
-    const sisa = await db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'owner' AND active = 1 AND tg_id != ?").bind(Number(tgId)).first<{ n: number }>();
+    const sisa = await db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'owner' AND active = 1 AND tg_id != ?").bind(String(tgId)).first<{ n: number }>();
     if ((sisa?.n ?? 0) === 0) return gagal(409, "Owner terakhir tidak bisa dihapus.");
   }
   const at = sekarang();
   await db.batch([
-    db.prepare("UPDATE users SET active = 0 WHERE tg_id = ?").bind(Number(tgId)),
-    db.prepare("INSERT INTO access_requests (tg_id, status, revoked_by, revoked_at) VALUES (?, 'revoked', ?, ?) ON CONFLICT(tg_id) DO UPDATE SET status = 'revoked', revoked_by = excluded.revoked_by, revoked_at = excluded.revoked_at").bind(Number(tgId), oleh, at),
+    db.prepare("UPDATE users SET active = 0 WHERE tg_id = ?").bind(String(tgId)),
+    db.prepare("INSERT INTO access_requests (tg_id, status, revoked_by, revoked_at) VALUES (?, 'revoked', ?, ?) ON CONFLICT(tg_id) DO UPDATE SET status = 'revoked', revoked_by = excluded.revoked_by, revoked_at = excluded.revoked_at").bind(String(tgId), oleh, at),
   ]);
   await catatRole(db, String(tgId), target.role, null, "hapus", oleh);
   return { ok: true, dihapus: true as const };

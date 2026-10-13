@@ -13,5 +13,7 @@ export async function POST(request: Request) {
   if (!sesi.ok) return json({ ok: false, error: sesi.error }, sesi.status);
   if (!sesi.user.is_owner) return json({ ok: false, error: "Hanya owner." }, 403);
   const body = await bacaBody(request);
-  return adminPost(forwardKeAdmin(request, body, "ubah-role"));
+  // UI mengirim `role_baru`; handler gabungan membaca `role`. Petakan keduanya.
+  const role = body.role ?? body.role_baru;
+  return adminPost(forwardKeAdmin(request, { ...body, role }, "ubah-role"));
 }
