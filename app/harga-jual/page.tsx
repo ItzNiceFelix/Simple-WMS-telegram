@@ -299,13 +299,13 @@ function HitungHarga() {
               </CardHeader>
               <CardContent className="grid gap-3 sm:grid-cols-2">
                 <Field>
-                  <FieldLabel htmlFor="opex">OPEX bulanan (Rp)</FieldLabel>
-                  <Input id="opex" className="h-11 md:h-8" inputMode="numeric" placeholder="33450515"
+                  <FieldLabel htmlFor="opex">OPEX bulanan (Rp) — opsional</FieldLabel>
+                  <Input id="opex" className="h-11 md:h-8" inputMode="numeric" placeholder="0 (boleh dikosongkan)"
                     value={opex} onChange={(e) => setOpex(e.target.value)} data-testid="opex-bulanan" />
                 </Field>
                 <Field>
-                  <FieldLabel htmlFor="vol">Volume terjual / bulan (unit)</FieldLabel>
-                  <Input id="vol" className="h-11 md:h-8" inputMode="numeric" placeholder="11577"
+                  <FieldLabel htmlFor="vol">Volume terjual / bulan (unit) — opsional</FieldLabel>
+                  <Input id="vol" className="h-11 md:h-8" inputMode="numeric" placeholder="0 (boleh dikosongkan)"
                     value={volume} onChange={(e) => setVolume(e.target.value)} data-testid="volume-bulanan" />
                 </Field>
                 <Field>
@@ -334,11 +334,15 @@ function HitungHarga() {
                     </SelectContent>
                   </Select>
                 </Field>
-                {opex && volume && Number(volume) > 0 ? (
-                  <p className="self-end text-xs text-muted-foreground">
+                {opex && volume && Number(volume.replace(/\D/g, "")) > 0 ? (
+                  <p className="self-end text-xs text-muted-foreground" data-testid="opex-per-unit">
                     OPEX/unit: {formatRupiah(Number(opex.replace(/\D/g, "")) / Number(volume.replace(/\D/g, "")))}
                   </p>
-                ) : null}
+                ) : (
+                  <p className="self-end text-xs text-muted-foreground" data-testid="opex-per-unit">
+                    OPEX/unit: Rp0 (tidak dibebankan)
+                  </p>
+                )}
               </CardContent>
             </Card>
 
@@ -346,7 +350,7 @@ function HitungHarga() {
               size="lg"
               className="h-11 md:h-8"
               onClick={() => void jalankanHitung()}
-              disabled={hitung || !opex || !volume}
+              disabled={hitung}
               data-testid="hitung-harga-jual"
             >
               {hitung ? <RefreshCw className="animate-spin" data-icon="inline-start" /> : <Calculator data-icon="inline-start" />}

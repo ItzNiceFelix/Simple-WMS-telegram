@@ -81,11 +81,27 @@ describe("hitungHargaJual", () => {
     assert.match(h.error, /tak terdefinisi/i);
   });
 
-  it("tolak volume 0 (pembagi OPEX)", () => {
-    const h = hitungHargaJual(basa({ volumeBulanan: 0 }));
+  it("OPEX & volume opsional: keduanya 0 tetap bisa dihitung", () => {
+    const h = hitungHargaJual(basa({ opexBulanan: 0, volumeBulanan: 0 }));
+    assert.equal(h.ok, true);
+    if (!h.ok) return;
+    assert.equal(h.opexPerUnit, 0);
+    // harga hanya menutup HPP + fee + flat
+    assert.ok(h.harga > 0);
+    assert.ok(h.peringatan.some((p) => p.includes("hanya menutup HPP") || p.includes("volume 0")));
+  });
+
+  it("OPEX diisi tapi volume 0 -> peringatan biaya hilang (tidak blokir)", () => {
+    const h = hitungHargaJual(basa({ opexBulanan: 33_450_515, volumeBulanan: 0 }));
+    assert.equal(h.ok, true);
+    if (!h.ok) return;
+    assert.equal(h.opexPerUnit, 0);
+    assert.ok(h.peringatan.some((p) => p.includes("TIDAK dibebankan")));
+  });
+
+  it("tolak volume negatif", () => {
+    const h = hitungHargaJual(basa({ volumeBulanan: -1 }));
     assert.equal(h.ok, false);
-    if (h.ok) return;
-    assert.match(h.error, /volume/i);
   });
 
   it("tolak HPP negatif", () => {

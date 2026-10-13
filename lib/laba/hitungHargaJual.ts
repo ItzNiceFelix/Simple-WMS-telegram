@@ -18,9 +18,9 @@ export type InputHarga = {
   feeFlat: KomponenFee[];
   /** Rata-rata qty per order untuk mengalokasikan flat. Default 1. */
   qtyPerOrder?: number;
-  /** OPEX non-iklan per BULAN (nominal rupiah). */
+  /** OPEX non-iklan per BULAN (nominal rupiah). Opsional — 0/kosong = tidak dibebankan. */
   opexBulanan: number;
-  /** Volume unit per BULAN. */
+  /** Volume unit per BULAN. Opsional — 0 = OPEX tidak dibagi (peringatan bila OPEX diisi). */
   volumeBulanan: number;
   /** Iklan sebagai PERSEN dari harga jual (mis. 2.47). */
   iklanPersen: number;
@@ -72,11 +72,19 @@ export function hitungHargaJual(i: InputHarga): HasilHarga {
     };
   }
   if (i.hpp < 0) return { ok: false, error: "HPP tidak boleh negatif.", peringatan };
-  if (i.volumeBulanan <= 0) return { ok: false, error: "Volume bulanan harus > 0 (dipakai membagi OPEX).", peringatan };
   if (i.opexBulanan < 0) return { ok: false, error: "OPEX bulanan tidak boleh negatif.", peringatan };
+  if (i.volumeBulanan < 0) return { ok: false, error: "Volume bulanan tidak boleh negatif.", peringatan };
 
   const qty = i.qtyPerOrder && i.qtyPerOrder > 0 ? i.qtyPerOrder : 1;
-  const opexPerUnit = i.opexBulanan / i.volumeBulanan;
+  // OPEX & volume opsional. OPEX hanya dibebankan bila volume > 0.
+  const opexPerUnit = i.volumeBulanan > 0 ? i.opexBulanan / i.volumeBulanan : 0;
+  if (opexPerUnit === 0) {
+    peringatan.push(
+      i.opexBulanan > 0
+        ? "OPEX diisi tapi volume 0 — biaya operasional TIDAK dibebankan ke harga. Isi volume bila ingin OPEX ikut terhitung."
+        : "OPEX tidak dibebankan — harga hanya menutup HPP dan fee Shopee, bukan biaya operasional."
+    );
+  }
   const flatPerUnit = i.feeFlat.reduce((a, x) => a + x.flat, 0) / qty;
 
   const modalPerUnit = i.hpp + opexPerUnit + flatPerUnit;
