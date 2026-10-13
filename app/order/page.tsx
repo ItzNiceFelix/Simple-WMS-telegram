@@ -259,7 +259,7 @@ function DaftarOrder() {
         judul="Order Keluar"
         deskripsi="Pesanan marketplace + transisi fulfill."
         aksi={
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <Button size="lg" variant="outline" className="h-11 md:h-8" data-testid="template-pesanan" onClick={() => window.open("/template-import-produk.xlsx", "_blank")}>
               <FileDown data-icon="inline-start" />
               Template

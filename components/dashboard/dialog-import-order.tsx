@@ -20,21 +20,7 @@ import {
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Spinner } from "@/components/ui/spinner"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table"
+import { PilihSku, type OpsiSku } from "@/components/dashboard/pilih-sku"
 import { tampilkanGagalTulis } from "@/components/dashboard/umpan-tulis"
 
 type Kandidat = { sku: string; nama: string; skor: number }
@@ -82,10 +68,11 @@ interface Props {
   onSukses?: () => void
 }
 
-/** Pilihan SKU master untuk 1 baris "Perlu SKU" (tebakan dulu, lalu manual). */
-function opsiUntuk(b: BarisBelumSku, master: string[]): string[] {
-  const dariTebakan = b.tebakan.kandidat.map((k) => k.sku)
-  return [...new Set([...dariTebakan, ...master.filter((s) => !dariTebakan.includes(s))])]
+/** Opsi SKU untuk 1 baris "Perlu SKU": kandidat tebakan (beri skor) lalu seluruh master. */
+function opsiUntuk(b: BarisBelumSku, master: OpsiSku[]): OpsiSku[] {
+  const dariTebakan: OpsiSku[] = b.tebakan.kandidat.map((k) => ({ sku: k.sku, nama: k.nama, skor: k.skor }))
+  const ada = new Set(dariTebakan.map((o) => o.sku))
+  return [...dariTebakan, ...master.filter((m) => !ada.has(m.sku))]
 }
 
 export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
@@ -93,7 +80,7 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
   const [preview, setPreview] = useState<Preview | null>(null)
   const [mengirim, setMengirim] = useState(false)
   const [manual, setManual] = useState<Record<string, string>>({})
-  const [master, setMaster] = useState<string[]>([])
+  const [master, setMaster] = useState<OpsiSku[]>([])
   const [tandai, setTandai] = useState<Set<string>>(new Set())
 
   function kunciBaris(b: BarisBelumSku): string {
@@ -131,11 +118,14 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
       const raw = (await res.json().catch(() => null)) as (Preview & { ok?: boolean; error?: string }) | null
       if (!res.ok || !raw?.ok) { tampilkanGagalTulis(raw?.error ?? `Gagal preview (${res.status}).`); return }
       setPreview({ ...raw, totalBaris: ordersRows.length + advanceRows.length })
-      // Daftar SKU master untuk dropdown manual. Endpoint: /api/baca?scope=produk
-      // (tidak ada /api/produk — dulu 404 sehingga dropdown selalu kosong).
+      // Daftar SKU master untuk pemilih manual. Endpoint: /api/baca?scope=produk
+      // (tidak ada /api/produk — dulu 404 sehingga daftar selalu kosong).
       const resMaster = await fetch("/api/baca?scope=produk", { credentials: "include" })
-      const dataMaster = (await resMaster.json().catch(() => null)) as { ok?: boolean; rows?: { sku: string }[] } | null
-      setMaster((dataMaster?.rows ?? []).map((p) => p.sku))
+      const dataMaster = (await resMaster.json().catch(() => null)) as
+        | { ok?: boolean; rows?: { sku: string; nama_accurate?: string }[] }
+        | null
+      setMaster((dataMaster?.rows ?? []).map((p) => ({ sku: p.sku, nama: p.nama_accurate ?? "" })))
+      if (!dataMaster?.ok) tampilkanGagalTulis("Daftar SKU master gagal dimuat — pemilih SKU hanya berisi tebakan.")
     } catch {
       tampilkanGagalTulis("Jaringan gagal. Coba lagi.")
     } finally {
@@ -157,10 +147,25 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
     })
   }
 
+  /** Tandai semua baris yang masih kosong sebagai "belum ada di MP" (sekali klik). */
+  function tandaiSemuaSisa(): void {
+    setTandai((lama) => {
+      const baru = new Set(lama)
+      for (const b of preview?.belumSku ?? []) {
+        const k = kunciBaris(b)
+        if (!manual[k]) baru.add(k)
+      }
+      return baru
+    })
+  }
+
   function siapCommit(): boolean {
     if (!preview) return false
     return preview.belumSku.every((b) => manual[kunciBaris(b)] || tandai.has(kunciBaris(b)))
   }
+
+  /** Baris yang belum dipilih SKU dan belum ditandai — penyebab tombol Konfirmasi mati. */
+  const belumLengkap = (preview?.belumSku ?? []).filter((b) => !manual[kunciBaris(b)] && !tandai.has(kunciBaris(b)))
 
   async function konfirmasi() {
     if (!preview) return
@@ -203,7 +208,7 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={tutup}>
-      <DialogContent className="max-h-[90dvh] overflow-y-auto sm:max-w-3xl" data-testid="dialog-import-order">
+      <DialogContent className="max-h-[92dvh] w-[95vw] overflow-y-auto sm:max-w-[min(96rem,95vw)]" data-testid="dialog-import-order">
         <DialogHeader>
           <DialogTitle>Import Order Shopee (Order.toship)</DialogTitle>
           <DialogDescription>
@@ -270,83 +275,89 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
 
             {belumSkuList.length > 0 && (
               <div className="space-y-2">
-                <p className="text-sm font-medium">Perlu SKU ({belumSkuList.length})</p>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-sm font-medium">Perlu SKU ({belumSkuList.length} produk)</p>
+                  {belumLengkap.length > 0 && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-9 md:h-7"
+                      onClick={tandaiSemuaSisa}
+                      data-testid="tandai-semua-sisa"
+                    >
+                      Tandai {belumLengkap.length} sisanya "Belum di MP"
+                    </Button>
+                  )}
+                </div>
                 <p className="text-xs text-muted-foreground">
                   Baris ini belum punya SKU di file Shopee. Pilih SKU master <b>atau</b> centang{" "}
                   <b>Belum di MP</b> bila barang ini memang belum terdaftar di marketplace — order tetap
                   diimpor, dan baris ini dicatat sebagai daftar tunggu supaya kamu bisa urus SKU-nya nanti.
                 </p>
-                <div className="overflow-x-auto rounded-lg border border-border">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Order</TableHead>
-                        <TableHead>Nama Shopee</TableHead>
-                        <TableHead>Variasi</TableHead>
-                        <TableHead>Qty</TableHead>
-                        <TableHead>SKU</TableHead>
-                        <TableHead>Belum di MP</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {belumSkuList.map((b) => {
-                        const k = kunciBaris(b)
-                        const refs = b.order_refs ?? [b.order_ref]
-                        return (
-                          <TableRow key={k} data-testid={`belum-sku-${b.order_ref}`}>
-                            <TableCell className="tabular-nums">
-                              <span
-                                className="block font-medium"
-                                title={refs.join("\n")}
-                                data-testid={`jumlah-order-${b.order_ref}`}
-                              >
-                                {b.jumlah_order > 1 ? `${b.jumlah_order} order` : b.order_ref}
-                              </span>
-                              {b.jumlah_order > 1 && (
-                                <span className="block text-[11px] text-muted-foreground">
-                                  {b.order_ref} +{b.jumlah_order - 1} lagi
-                                </span>
-                              )}
-                            </TableCell>
-                            <TableCell className="max-w-64 truncate" title={b.nama_shopee}>{b.nama_shopee}</TableCell>
-                            <TableCell>{b.variasi || "-"}</TableCell>
-                            <TableCell className="text-right tabular-nums">{b.qty_total}</TableCell>
-                            <TableCell>
-                              <Select value={manual[k] ?? ""} onValueChange={(v) => typeof v === "string" && pilihSku(b, v)}>
-                                <SelectTrigger className="h-9 w-52" data-testid={`pilih-sku-${b.order_ref}`}>
-                                  <SelectValue placeholder={b.tebakan.sku ? `Tebakan: ${b.tebakan.sku}` : "Pilih SKU"} />
-                                </SelectTrigger>
-                                <SelectContent>
-                                  {opsiUntuk(b, master).map((sku) => {
-                                    const kandidat = b.tebakan.kandidat.find((x) => x.sku === sku)
-                                    return (
-                                      <SelectItem key={sku} value={sku}>
-                                        {sku}{kandidat ? ` (${Math.round(kandidat.skor * 100)}%)` : ""}
-                                      </SelectItem>
-                                    )
-                                  })}
-                                </SelectContent>
-                              </Select>
-                              {b.tebakan.sku && (
-                                <p className="mt-1 text-[11px] text-emerald-700">Cocok persis: {b.tebakan.sku}</p>
-                              )}
-                            </TableCell>
-                            <TableCell>
-                              <input
-                                type="checkbox"
-                                className="size-5 accent-primary"
-                                aria-label={`Tandai belum ada SKU di MP ${b.nama_shopee}`}
-                                data-testid={`tandai-belum-mp-${b.order_ref}`}
-                                checked={tandai.has(k)}
-                                disabled={Boolean(manual[k])}
-                                onChange={() => toggleTandai(b)}
-                              />
-                            </TableCell>
-                          </TableRow>
-                        )
-                      })}
-                    </TableBody>
-                  </Table>
+                <div className="rounded-lg border border-border">
+                  {/* Kepala kolom: hanya di layar lebar (md+). Di mobile tiap baris jadi kartu. */}
+                  <div className="hidden border-b border-border bg-muted/40 px-3 py-2 text-xs font-medium text-muted-foreground md:grid md:grid-cols-[9rem_minmax(0,1fr)_7rem_4rem_minmax(0,20rem)_5rem] md:items-center md:gap-3">
+                    <span>Order</span>
+                    <span>Nama Shopee</span>
+                    <span>Variasi</span>
+                    <span className="text-right">Qty</span>
+                    <span>SKU &amp; nama produk</span>
+                    <span className="text-center">Belum di MP</span>
+                  </div>
+                  <ul className="divide-y divide-border">
+                    {belumSkuList.map((b) => {
+                      const k = kunciBaris(b)
+                      const refs = b.order_refs ?? [b.order_ref]
+                      return (
+                        <li
+                          key={k}
+                          className="grid gap-2 p-3 md:grid-cols-[9rem_minmax(0,1fr)_7rem_4rem_minmax(0,20rem)_5rem] md:items-center md:gap-3"
+                          data-testid={`belum-sku-${b.order_ref}`}
+                        >
+                          <div className="tabular-nums">
+                            <span className="font-medium" title={refs.join("\n")} data-testid={`jumlah-order-${b.order_ref}`}>
+                              {b.jumlah_order > 1 ? `${b.jumlah_order} order` : b.order_ref}
+                            </span>
+                            {b.jumlah_order > 1 && (
+                              <span className="ml-2 text-[11px] text-muted-foreground">{b.order_ref} +{b.jumlah_order - 1}</span>
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <span className="block truncate text-sm" title={b.nama_shopee}>{b.nama_shopee}</span>
+                            <span className="text-[11px] text-muted-foreground md:hidden">
+                              {b.variasi ? `Variasi: ${b.variasi} · ` : ""}Qty {b.qty_total}
+                            </span>
+                          </div>
+                          <div className="hidden truncate text-sm md:block">{b.variasi || "-"}</div>
+                          <div className="hidden text-right text-sm tabular-nums md:block">{b.qty_total}</div>
+                          <div className="min-w-0">
+                            <PilihSku
+                              opsi={opsiUntuk(b, master)}
+                              nilai={manual[k] ?? ""}
+                              onPilih={(sku) => pilihSku(b, sku)}
+                              placeholder={b.tebakan.sku ? `Tebakan: ${b.tebakan.sku}` : "Cari SKU / nama…"}
+                              testId={`pilih-sku-${b.order_ref}`}
+                            />
+                            {b.tebakan.sku && (
+                              <p className="mt-1 text-[11px] text-emerald-700">Cocok persis: {b.tebakan.sku}</p>
+                            )}
+                          </div>
+                          <label className="flex items-center gap-2 text-xs md:justify-center">
+                            <input
+                              type="checkbox"
+                              className="size-5 accent-primary"
+                              aria-label={`Tandai belum ada SKU di MP ${b.nama_shopee}`}
+                              data-testid={`tandai-belum-mp-${b.order_ref}`}
+                              checked={tandai.has(k)}
+                              disabled={Boolean(manual[k])}
+                              onChange={() => toggleTandai(b)}
+                            />
+                            <span className="md:hidden">Belum di MP</span>
+                          </label>
+                        </li>
+                      )
+                    })}
+                  </ul>
                 </div>
               </div>
             )}
@@ -381,6 +392,11 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
             </Button>
           ) : (
             <>
+              {belumLengkap.length > 0 && (
+                <p className="mr-auto self-center text-xs text-amber-700" data-testid="sisa-belum-lengkap">
+                  {belumLengkap.length} produk belum dipetakan (pilih SKU atau centang "Belum di MP").
+                </p>
+              )}
               <Button variant="secondary" onClick={() => setPreview(null)} disabled={mengirim}>
                 Ganti file
               </Button>

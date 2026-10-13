@@ -17,7 +17,7 @@ export function PageHeader({
           <p className="mt-0.5 text-sm text-muted-foreground">{deskripsi}</p>
         ) : null}
       </div>
-      {aksi ? <div className="flex items-center gap-2">{aksi}</div> : null}
+      {aksi ? <div className="flex flex-wrap items-center gap-2">{aksi}</div> : null}
     </div>
   );
 }
