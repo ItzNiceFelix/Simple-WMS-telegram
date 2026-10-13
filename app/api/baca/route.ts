@@ -2,7 +2,7 @@
 // Menggantikan baca Firestore client SDK (real.ts). Scope: ?scope=stok|
 // produk|gudang|opname|transfer|daily|admin|akses|histori|keyword|ai|ringkasan.
 // Auth: cookie swt_sesi (D1). Filter gudang ditegakkan di server (RBAC scope).
-import { getDb } from "@/lib/d1/db";
+import { getDb, getEnvAi } from "@/lib/d1/db";
 import { bacaQtyPerGudang } from "@/lib/d1/stok";
 import { listGudang } from "@/lib/d1/gudang";
 import { listOpname } from "@/lib/d1/opname";
@@ -229,7 +229,8 @@ export async function GET(request: Request) {
   }
 
   if (scope === "ai") {
-    const s = await ambilPengaturanAI(db);
+    // Vars dari binding Worker (wrangler.jsonc) — lihat getEnvAi di lib/d1/db.ts.
+    const s = await ambilPengaturanAI(db, getEnvAi());
     return json({ ok: true, settings: { textProvider: s.textProvider, updatedAt: null, updatedBy: null } });
   }
 

@@ -1,5 +1,5 @@
 // app/api/pengaturan/ai/route.ts — POST ubah provider AI (Fase 1: D1 cutover).
-import { getDb } from "@/lib/d1/db";
+import { getDb, getEnvAi } from "@/lib/d1/db";
 import { PROVIDER_VALID, simpanProviderAI } from "@/lib/d1/pengaturan";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
 
@@ -15,7 +15,7 @@ export async function POST(request: Request) {
   if (!(PROVIDER_VALID as readonly string[]).includes(provider)) {
     return json({ ok: false, error: "Provider AI tidak dikenal." }, 400);
   }
-  const hasil = await simpanProviderAI(getDb(), provider, sesi.user.tg_id);
+  const hasil = await simpanProviderAI(getDb(), provider, sesi.user.tg_id, getEnvAi());
   if (!hasil.ok) return json({ ok: false, error: hasil.error }, hasil.status);
   return json({ ok: true, pengaturan: hasil.pengaturan });
 }
