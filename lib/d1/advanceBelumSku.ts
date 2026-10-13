@@ -1,6 +1,6 @@
 // lib/d1/advanceBelumSku.ts — Fase C/D helper: booking advance, tebak SKU, sku_belum_mp, compare nama.
 // Satu file per Fase C+D supaya diff pendek; tiap blok tetap fungsi murni/DB terpisah.
-import { gagal, sekarang, type Hasil } from "./db";
+import { gagal, sekarang, type Hasil } from "./hasil";
 
 // ---------- C1: advance_bookings ----------
 

@@ -1,7 +1,7 @@
 // lib/d1/auth.ts — Guard sesi untuk route Next.js (Fase 1).
 // Memakai cookie swt_sesi (worker/auth.ts) yang diverifikasi ke tabel sessions
 // D1. Route Next memanggil requireSession(request) lalu cek role/scope.
-import { gagal, type Hasil } from "./db";
+import { gagal, type Hasil } from "./hasil";
 
 export type SesiPengguna = {
   id: number;

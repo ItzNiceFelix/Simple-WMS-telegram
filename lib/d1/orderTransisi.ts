@@ -2,7 +2,7 @@
 // Flag `stok_dikurangi` memisahkan dua makna status `kirim`:
 //   0 = order diserahkan eksternal (sebelum WMS) → stok TIDAK pernah dipotong di sini;
 //   1 = order dipack di WMS → stok sudah dipotong, wajib dikembalikan bila dibatalkan.
-import { gagal, sekarang, type Hasil } from "./db";
+import { gagal, sekarang, type Hasil } from "./hasil";
 import { bacaQty, GUDANG_ONLINE } from "./stok";
 
 export const PETA_TRANSISI: Record<string, readonly string[]> = {

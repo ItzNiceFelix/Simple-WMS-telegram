@@ -12,6 +12,7 @@ import {
   ShieldCheck,
   Tag,
   Tags,
+  UserRound,
   Warehouse,
   type LucideIcon,
 } from "lucide-react";
@@ -43,6 +44,7 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/kata-kunci", label: "Kata Kunci", icon: Tags, roles: ["owner", "admin"] },
   { href: "/admin", label: "Admin", icon: ShieldCheck, roles: ["owner", "admin"] },
   { href: "/pengaturan", label: "Pengaturan", icon: Settings, roles: ["owner", "admin"], utama: true },
+  { href: "/profil", label: "Profil", icon: UserRound, roles: ["owner", "admin", "guest"] },
 ];
 
 export function itemUntukRole(role: Role): NavItem[] {

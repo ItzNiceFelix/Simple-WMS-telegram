@@ -1,6 +1,6 @@
 // lib/d1/resiGrup.ts — Peta 1 No. Resi → N No. Pesanan (F18, Pesanan Gabungan Shopee).
 // Satu pass agregasi: resi dipakai >1 order → 'gabungan', sisanya 'tunggal'.
-import { sekarang } from "./db";
+import { sekarang } from "./hasil";
 
 export type ResiGrup = {
   no_resi: string;

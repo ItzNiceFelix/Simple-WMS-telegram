@@ -3,7 +3,7 @@
 // dienkripsi) dan keluar lewat `ambilKredensial` (untuk dipakai adapter).
 // `daftarKredensial` TIDAK PERNAH mengembalikan plaintext — hanya mask.
 import { dekripsi, enkripsi, maskKredensial } from "@/lib/ai/kripto";
-import { gagal, sekarang, type Hasil } from "./db";
+import { gagal, sekarang, type Hasil } from "./hasil";
 
 export type KredensialRingkas = {
   id: number;

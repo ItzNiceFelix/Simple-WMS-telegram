@@ -2,7 +2,7 @@
 // Paritas BR3: baris `stock_by_bin(sku,'ONLINE')` adalah sumber angka online
 // (kolom stok_gudang_online TIDAK ada di D1 — dihitung). Setiap perubahan
 // qty menulis baris stock_moves (ledger). Stok negatif = fitur (keputusan I1).
-import { gagal, sekarang, type Hasil } from "./db";
+import { gagal, sekarang, type Hasil } from "./hasil";
 
 export const GUDANG_ONLINE = "ONLINE";
 

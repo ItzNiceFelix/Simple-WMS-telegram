@@ -77,14 +77,13 @@ export default function HalamanMasuk() {
         {tahap === "masuk" && (
           <form onSubmit={aksiMasuk} className="mt-4 space-y-3">
             <label className="block">
-              <span className="text-sm font-medium">telegramId</span>
+              <span className="text-sm font-medium">telegramId atau username</span>
               <input
                 className="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 text-base"
-                inputMode="numeric"
                 autoComplete="username"
                 value={tgId}
                 onChange={(e) => setTgId(e.target.value)}
-                placeholder="cth. 123456789"
+                placeholder="1817932703 atau bagus"
                 required
               />
             </label>
@@ -118,11 +117,15 @@ export default function HalamanMasuk() {
               <span className="text-sm font-medium">telegramId</span>
               <input
                 className="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 text-base"
-                inputMode="numeric"
+                autoComplete="off"
                 value={tgId}
                 onChange={(e) => setTgId(e.target.value)}
+                placeholder="1817932703"
                 required
               />
+              <span className="mt-1 block text-xs text-muted-foreground">
+                Kode dikirim lewat bot Telegram, jadi wajib telegramId (bukan username).
+              </span>
             </label>
             <button
               type="submit"
@@ -143,7 +146,6 @@ export default function HalamanMasuk() {
               <span className="text-sm font-medium">Kode 6 digit</span>
               <input
                 className="mt-1 w-full rounded-lg border border-input bg-background px-3 py-2 text-center text-xl tracking-[0.3em]"
-                inputMode="numeric"
                 maxLength={6}
                 value={kode}
                 onChange={(e) => setKode(e.target.value)}

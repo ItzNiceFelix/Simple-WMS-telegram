@@ -4,7 +4,7 @@
 // tujuan; stok tujuan naik saat terima; kembali ke asal saat tidak-terima.
 // Status dokumen TURUNAN (hitungStatusDokumen) — jangan ditulis manual.
 // CAS: UPDATE ... WHERE status_kirim = <harap>, cek meta.changes.
-import { gagal, sekarang, type Hasil } from "./db";
+import { gagal, sekarang, type Hasil } from "./hasil";
 import { bacaQty } from "./stok";
 
 export const MAKS_TUJUAN = 20;

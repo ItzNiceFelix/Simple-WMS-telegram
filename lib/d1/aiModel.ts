@@ -1,6 +1,6 @@
 // lib/d1/aiModel.ts — Katalog model AI: teks | gambar | vision, per provider.
 // Sumber awal dari GET /v1/models provider; user bisa tambah manual.
-import { gagal, sekarang, type Hasil } from "./db";
+import { gagal, sekarang, type Hasil } from "./hasil";
 
 export const JENIS_MODEL = ["teks", "gambar", "vision"] as const;
 export type JenisModel = (typeof JENIS_MODEL)[number];

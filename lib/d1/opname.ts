@@ -1,7 +1,7 @@
 // lib/d1/opname.ts — Opname gudang di D1 (Fase 1, paritas lib/models/opnameGudang.js).
 // qty_sistem/selisih DIHITUNG SERVER. Setujui = CAS T9 (qty berubah → 409)
 // lalu tulis qty_fisik + stock_moves jenis opname. Gagal audit ≠ rollback.
-import { gagal, sekarang, type Hasil } from "./db";
+import { gagal, sekarang, type Hasil } from "./hasil";
 import { bacaQty } from "./stok";
 
 export type OpnameItem = { sku: string; qty_fisik: number };

@@ -1,6 +1,6 @@
 // lib/d1/akses.ts — Permintaan akses di D1 (Fase 1, paritas accessRequests.js).
 // CAS: hanya status pending yang bisa diproses. Cooldown 1 jam setelah tolak.
-import { gagal, sekarang, type Hasil } from "./db";
+import { gagal, sekarang, type Hasil } from "./hasil";
 
 export const COOLDOWN_DETIK = 3600;
 

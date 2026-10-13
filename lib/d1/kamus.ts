@@ -1,6 +1,6 @@
 // lib/d1/kamus.ts — Keyword notes di D1 (Fase 1, paritas keywordNotes.js).
 // raw_text unik case-insensitive; dedup digabung saat migrasi.
-import { gagal, sekarang, type Hasil } from "./db";
+import { gagal, sekarang, type Hasil } from "./hasil";
 
 export type Keyword = {
   id: number; raw_text: string; interpreted_as: string; confidence: string;

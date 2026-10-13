@@ -1,5 +1,5 @@
 // lib/d1/order.ts — Impor pesanan + CRUD/transisi (stok). Laba pindah ke /laba per preset (A4).
-import { gagal, sekarang, type Hasil } from "./db";
+import { gagal, sekarang, type Hasil } from "./hasil";
 import { ambilProduk } from "./produk";
 import { bacaQty, GUDANG_ONLINE } from "./stok";
 

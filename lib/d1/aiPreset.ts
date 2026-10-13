@@ -1,6 +1,6 @@
 // lib/d1/aiPreset.ts — Preset prompt untuk image gen (foto produk listing).
 // Preset awal disetel untuk kebutuhan Shopee/Tokopedia: latar bersih, produk jelas.
-import { gagal, sekarang, type Hasil } from "./db";
+import { gagal, sekarang, type Hasil } from "./hasil";
 
 export type PresetPrompt = {
   id: number;

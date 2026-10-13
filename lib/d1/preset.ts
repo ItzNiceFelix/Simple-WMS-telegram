@@ -1,6 +1,6 @@
 // lib/d1/preset.ts — CRUD preset toko + aturan + program (A1/A2/A-R1).
 // Tulis: owner. Baca: admin. Hapus preset bersnapshot = soft delete.
-import { gagal, sekarang, type Hasil } from "./db";
+import { gagal, sekarang, type Hasil } from "./hasil";
 
 export type Preset = {
   id: number; nama: string; marketplace: string; status_toko: string;

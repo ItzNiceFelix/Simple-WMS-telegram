@@ -1,5 +1,5 @@
 // lib/d1/picklist.ts — Agregat read-only item order pending untuk picklist.
-import { gagal, type Hasil } from "./db";
+import { gagal, type Hasil } from "./hasil";
 
 export type PickTarget = { mp: string; no: string };
 export type PickRow = { sku: string; nama: string; qty: number; variasi?: string };

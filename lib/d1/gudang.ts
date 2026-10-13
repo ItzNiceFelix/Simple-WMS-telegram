@@ -1,7 +1,7 @@
 // lib/d1/gudang.ts — Master gudang di D1 (Fase 1, paritas lib/models/gudang.js).
 // Flat, maks 50 aktif (BR15), nama unik case-insensitive di yang aktif,
 // nonaktif = soft (referensi lama tetap valid).
-import { gagal, sekarang, type Hasil } from "./db";
+import { gagal, sekarang, type Hasil } from "./hasil";
 
 export const MAKS_GUDANG = 50;
 

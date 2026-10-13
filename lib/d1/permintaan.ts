@@ -1,7 +1,7 @@
 // lib/d1/permintaan.ts — Permintaan harian di D1 (Fase 1, paritas
 // lib/models/dailyRequests.js v3a). Identitas item = sku+variasi+buffer+status.
 // Snapshot B2 (qty_diminta) hanya di buat-form; auto-selesai B6 di-transaksi.
-import { gagal, sekarang, type Hasil } from "./db";
+import { gagal, sekarang, type Hasil } from "./hasil";
 
 export type ItemMasuk = { kode_barang: string; nama?: string; variasi?: string; qty: number; buffer?: boolean };
 

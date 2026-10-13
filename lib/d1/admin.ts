@@ -1,7 +1,7 @@
 // lib/d1/admin.ts — Admin & role di D1 (Fase 1, paritas lib/models/admins.js).
 // Hapus = soft (active=0) + access_requests → revoked agar audit utuh.
 // Guard: bukan diri sendiri, owner terakhir tidak bisa didemosi/dinonaktifkan.
-import { gagal, sekarang, type Hasil } from "./db";
+import { gagal, sekarang, type Hasil } from "./hasil";
 
 export type AdminRow = {
   id: number; tg_id: number; username: string | null; display_name: string;

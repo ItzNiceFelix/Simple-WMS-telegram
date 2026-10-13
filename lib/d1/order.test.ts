@@ -1,7 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { ambilOrder, imporPesanan, listOrder, transisiFulfill, transisiFulfillBatch, type BarisPesanan } from "./order";
-import type { Hasil } from "./db";
+import type { Hasil } from "./hasil";
 
 type Row = Record<string, unknown>;
 const kunciOrder = (mp: string, no: string) => `${mp}|${no}`;

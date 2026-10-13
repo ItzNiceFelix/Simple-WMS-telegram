@@ -1,7 +1,7 @@
 // lib/d1/produk.ts — Master produk di D1 (Fase 1, paritas lib/models/produk.js).
 // Cache in-memory Firestore TIDAK dibawa (Workers terdistribusi); D1 query
 // murah + row-read, bukan per-dokumen. normalisasiNama dipertahankan.
-import { gagal, sekarang, type Hasil } from "./db";
+import { gagal, sekarang, type Hasil } from "./hasil";
 
 export function normalisasiNama(nama: string): string {
   return nama.toLowerCase().replace(/[^a-z0-9\u00C0-\u024F\u1E00-\u1EFF ]/gi, " ").replace(/\s+/g, " ").trim();

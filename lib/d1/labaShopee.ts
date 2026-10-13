@@ -3,7 +3,7 @@
 // (SKU = Nomor Referensi SKU → SKU Induk → tolak bila kosong/tak cocok);
 // biaya = preset MP % × omzet + Σ(voucher_penjual + diskon_penjual + paket_diskon_penjual);
 // laba = omzet − hpp − biaya. Filter: kecuali batal / retur penuh.
-import { gagal, sekarang, type Hasil } from "./db";
+import { gagal, sekarang, type Hasil } from "./hasil";
 import { ambilProduk } from "./produk";
 
 export type BarisShopee = Record<string, unknown>;

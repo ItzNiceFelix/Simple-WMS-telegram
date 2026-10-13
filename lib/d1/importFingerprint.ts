@@ -1,7 +1,7 @@
 // lib/d1/importFingerprint.ts — Anti-dobel file impor (B1).
 // Fingerprint = sha256 atas baris ternormalisasi + nama file, sehingga urutan baris
 // tidak mengubah hasil (baris diurut dulu). WebCrypto tersedia di Cloudflare Workers.
-import { sekarang } from "./db";
+import { sekarang } from "./hasil";
 import type { ShopeeAdvanceRow, ShopeeOrderRow } from "./orderImportShopee";
 
 export type TipeImport = "orders_toship" | "advance" | "pesanan_lain";
