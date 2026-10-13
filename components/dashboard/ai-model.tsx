@@ -48,6 +48,11 @@ export function AiModel({ bolehUbah, onBerubah }: Props) {
   const [modelId, setModelId] = useState("")
   const [label, setLabel] = useState("")
   const [mengirim, setMengirim] = useState(false)
+  const [providerTarik, setProviderTarik] = useState<string>("groq")
+  const [menarik, setMenarik] = useState(false)
+  // Hasil tes koneksi terakhir per model (kunci = `provider/model_id`) — hilang saat reload, tidak perlu persist.
+  const [ujiHasil, setUjiHasil] = useState<Record<string, { ok: boolean; latencyMs: number; error?: string }>>({})
+  const [menguji, setMenguji] = useState<Record<string, boolean>>({})
 
   const muat = useCallback(async () => {
     setMemuat(true)
@@ -119,6 +124,55 @@ export function AiModel({ bolehUbah, onBerubah }: Props) {
     }
   }
 
+  /** Tarik katalog langsung dari provider lewat server (kredensial tetap di server). */
+  async function tarikDariProvider() {
+    setMenarik(true)
+    try {
+      const res = await fetch(`/api/pengaturan/ai?aksi=tarik-model&provider=${encodeURIComponent(providerTarik)}`, {
+        credentials: "include",
+      })
+      const d = (await res.json().catch(() => null)) as
+        | { ok?: boolean; error?: string; jumlah?: number; ditambah?: number; dilewati?: number }
+        | null
+      if (!res.ok || !d?.ok) {
+        tampilkanGagalTulis(d?.error ?? `Gagal menarik model (${res.status}).`)
+        return
+      }
+      toast.success(`Ditarik ${d.jumlah ?? 0} model dari ${LABEL_PROVIDER[providerTarik] ?? providerTarik} · ${d.ditambah ?? 0} baru, ${d.dilewati ?? 0} sudah ada.`)
+      await muat()
+      onBerubah?.()
+    } finally {
+      setMenarik(false)
+    }
+  }
+
+  /** Tes koneksi nyata: prompt minimal ke provider, latensi diukur server. */
+  async function uji(m: ModelAi) {
+    if (!bolehUbah) return
+    const kunci = `${m.provider}/${m.model_id}`
+    setMenguji((p) => ({ ...p, [kunci]: true }))
+    try {
+      const res = await fetch("/api/pengaturan/ai", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ aksi: "uji", provider: m.provider, model: m.model_id, jenis: m.jenis }),
+      })
+      const d = (await res.json().catch(() => null)) as
+        | { ok?: boolean; error?: string; latencyMs?: number; model?: string }
+        | null
+      const latencyMs = d?.latencyMs ?? 0
+      if (d?.ok) {
+        setUjiHasil((p) => ({ ...p, [kunci]: { ok: true, latencyMs } }))
+        toast.success(`${m.model_id} OK · ${latencyMs}ms`)
+      } else {
+        setUjiHasil((p) => ({ ...p, [kunci]: { ok: false, latencyMs, error: d?.error ?? `Gagal (${res.status}).` } }))
+      }
+    } finally {
+      setMenguji((p) => ({ ...p, [kunci]: false }))
+    }
+  }
+
   return (
     <Card data-testid="kartu-model">
       <CardHeader>
@@ -127,6 +181,34 @@ export function AiModel({ bolehUbah, onBerubah }: Props) {
           Daftar model per provider. Bisa ditarik otomatis dari provider (Fase B) atau ditambah manual di sini.
         </CardDescription>
       </CardHeader>
+      {bolehUbah && (
+        <div className="flex flex-col gap-2 border-b border-border px-6 pb-4 sm:flex-row sm:items-center">
+          <Select value={providerTarik} onValueChange={(v) => typeof v === "string" && setProviderTarik(v)}>
+            <SelectTrigger className="h-11 w-full md:h-8 sm:w-56" data-testid="provider-tarik">
+              <SelectValue>{(v: string | null) => (v ? (LABEL_PROVIDER[v] ?? v) : "Pilih provider")}</SelectValue>
+            </SelectTrigger>
+            <SelectContent>
+              <SelectGroup>
+                {PROVIDER_AI.map((p) => (
+                  <SelectItem key={p} value={p}>
+                    {LABEL_PROVIDER[p] ?? p}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
+          <Button
+            variant="outline"
+            className="h-11 md:h-8"
+            onClick={() => void tarikDariProvider()}
+            disabled={menarik}
+            data-testid="tarik-model"
+          >
+            {menarik ? <Spinner data-icon="inline-start" /> : null}
+            {menarik ? "Menarik…" : "Muat dari provider"}
+          </Button>
+        </div>
+      )}
       <CardContent className="flex flex-col gap-4">
         {memuat ? (
           <p className="text-sm text-muted-foreground">Memuat…</p>
@@ -144,6 +226,7 @@ export function AiModel({ bolehUbah, onBerubah }: Props) {
                   <th className="px-3 py-2 text-left font-medium">Model</th>
                   <th className="px-3 py-2 text-left font-medium">Jenis</th>
                   <th className="px-3 py-2 text-left font-medium">Status</th>
+                  <th className="px-3 py-2 text-left font-medium">Hasil uji</th>
                   <th className="px-3 py-2 text-right font-medium">Aksi</th>
                 </tr>
               </thead>
@@ -161,8 +244,34 @@ export function AiModel({ bolehUbah, onBerubah }: Props) {
                     <td className="px-3 py-2">
                       <Badge variant={m.aktif === 1 ? "default" : "secondary"}>{m.aktif === 1 ? "aktif" : "nonaktif"}</Badge>
                     </td>
+                    <td className="px-3 py-2">
+                      <div className="flex flex-col gap-1" data-testid={`hasil-uji-${m.model_id}`}>
+                        {ujiHasil[`${m.provider}/${m.model_id}`] ? (
+                          ujiHasil[`${m.provider}/${m.model_id}`].ok ? (
+                            <Badge className="bg-emerald-600 text-white">OK {ujiHasil[`${m.provider}/${m.model_id}`].latencyMs}ms</Badge>
+                          ) : (
+                            <span className="text-xs text-destructive">
+                              {ujiHasil[`${m.provider}/${m.model_id}`].error ?? "Gagal."}
+                            </span>
+                          )
+                        ) : (
+                          <span className="text-xs text-muted-foreground">—</span>
+                        )}
+                      </div>
+                    </td>
                     <td className="px-3 py-2 text-right">
                       <div className="flex justify-end gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="h-9 md:h-7"
+                          disabled={!bolehUbah || menguji[`${m.provider}/${m.model_id}`] === true}
+                          onClick={() => void uji(m)}
+                          data-testid={`uji-${m.model_id}`}
+                        >
+                          {menguji[`${m.provider}/${m.model_id}`] ? <Spinner data-icon="inline-start" /> : null}
+                          {menguji[`${m.provider}/${m.model_id}`] ? "Menguji…" : "Tes koneksi"}
+                        </Button>
                         <Button
                           variant="outline"
                           size="sm"

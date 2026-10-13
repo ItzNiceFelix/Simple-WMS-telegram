@@ -14,8 +14,12 @@ import {
 import { daftarModel, hapusModel, setAktifModel, tambahModel, tambahModelBanyak, ubahLabelModel } from "@/lib/d1/aiModel";
 import { daftarPreset, hapusPreset, seedPreset, tambahPreset, ubahPreset } from "@/lib/d1/aiPreset";
 import { daftarTool, hapusTool, seedTool, setAktifTool, setKataTool, simpanTool } from "@/lib/d1/aiTool";
-import { ambilPengaturanAI, PROVIDER_VALID, simpanPengaturanAI, simpanProviderAI } from "@/lib/d1/pengaturan";
+import { ambilPengaturanAI, PROVIDER_VALID, simpanPengaturanAI, simpanProviderAI, type EnvAi } from "@/lib/d1/pengaturan";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
+import { BASE_OPENAI, baseKenari, chatOpenai, modelOpenai } from "@/lib/ai/adapterOpenai";
+import { chatGemini, modelGemini } from "@/lib/ai/adapterGemini";
+import { tanggalWib } from "@/lib/ai/provider";
+import type { HasilHttp, HasilModel } from "@/lib/ai/http";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -29,6 +33,19 @@ function angkaOpsional(v: unknown): number | undefined {
 
 function teks(v: unknown): string {
   return typeof v === "string" ? v.trim() : v == null ? "" : String(v).trim();
+}
+
+/** Tarik daftar model dari provider memakai kredensial aktif. Error provider diteruskan apa adanya. */
+async function tarikModel(db: D1Database, provider: string, kunci: string, env: EnvAi): Promise<HasilHttp<HasilModel[]>> {
+  const kred = await ambilKredensial(db, provider, kunci);
+  if (!kred) return { ok: false, status: 400, error: `Provider ${provider} belum punya kredensial aktif.`, latencyMs: 0 };
+  if (provider === "gemini") return modelGemini({ apiKey: kred.plaintext });
+  if (provider === "kenari") return modelOpenai({ baseUrl: baseKenari(env), apiKey: kred.plaintext });
+  const baseUrl = BASE_OPENAI[provider];
+  if (!baseUrl) {
+    return { ok: false, status: 400, error: `Provider ${provider} tidak menyediakan endpoint daftar model.`, latencyMs: 0 };
+  }
+  return modelOpenai({ baseUrl, apiKey: kred.plaintext });
 }
 
 export async function GET(request: Request) {
@@ -64,6 +81,35 @@ export async function GET(request: Request) {
   if (aksi === "tool") {
     return json({ ok: true, tool: await daftarTool(db) });
   }
+  if (aksi === "tarik-model") {
+    const provider = teks(url.searchParams.get("provider"));
+    if (!provider) return json({ ok: false, error: "Provider wajib diisi." }, 400);
+    const h = await tarikModel(db, provider, getKunciEnkripsi(), getEnvAi());
+    if (!h.ok) return json({ ok: false, error: h.error, provider, latencyMs: h.latencyMs }, h.status >= 400 ? h.status : 502);
+    const jenis = teks(url.searchParams.get("jenis")) || "teks";
+    const impor = await tambahModelBanyak(db, provider, h.data.map((m) => ({ model_id: m.id, label: m.label, jenis })));
+    return json({ ok: true, provider, jumlah: h.data.length, ditambah: impor.ditambah, dilewati: impor.dilewati, latencyMs: h.latencyMs });
+  }
+  if (aksi === "pemakaian") {
+    const rangkuman = await db
+      .prepare(
+        "SELECT provider, model, SUM(panggilan) AS panggilan, SUM(token_masuk) AS token_masuk, SUM(token_keluar) AS token_keluar " +
+          "FROM ai_pemakaian WHERE tanggal >= ? GROUP BY provider, model ORDER BY panggilan DESC"
+      )
+      .bind(tanggalWib(Date.now() - 29 * 24 * 60 * 60 * 1000))
+      .all<{ provider: string; model: string; panggilan: number; token_masuk: number; token_keluar: number }>();
+    const rincian = rangkuman.results ?? [];
+    return json({
+      ok: true,
+      sejak: tanggalWib(Date.now() - 29 * 24 * 60 * 60 * 1000),
+      total: {
+        panggilan: rincian.reduce((a, r) => a + (r.panggilan ?? 0), 0),
+        tokenMasuk: rincian.reduce((a, r) => a + (r.token_masuk ?? 0), 0),
+        tokenKeluar: rincian.reduce((a, r) => a + (r.token_keluar ?? 0), 0),
+      },
+      rincian,
+    });
+  }
   return json({ ok: false, error: "Aksi tidak dikenal." }, 400);
 }
 
@@ -96,6 +142,7 @@ export async function POST(request: Request) {
       maksLoopTool: angkaOpsional(body.maksLoopTool),
       saatTakCocok: body.saatTakCocok === "tolak" ? ("tolak" as const) : body.saatTakCocok === "semua_tool" ? ("semua_tool" as const) : undefined,
       promptSistem: typeof body.promptSistem === "string" ? body.promptSistem : undefined,
+      rateLimitPerMenit: angkaOpsional(body.rateLimitPerMenit),
     };
     const bersih = Object.fromEntries(Object.entries(patch).filter(([, v]) => v !== undefined));
     const h = await simpanPengaturanAI(db, bersih, uid, getEnvAi());
@@ -207,6 +254,55 @@ export async function POST(request: Request) {
   }
   if (aksi === "tool-seed") {
     return json({ ok: true, ...(await seedTool(db)) });
+  }
+
+  // ── Uji koneksi nyata ──
+  if (aksi === "uji") {
+    const provider = teks(body.provider);
+    const modelDiminta = teks(body.model);
+    const jenis = teks(body.jenis) || "teks";
+    if (!provider) return json({ ok: false, error: "Provider wajib diisi." }, 400);
+    const kunci = getKunciEnkripsi();
+    const kred = await ambilKredensial(db, provider, kunci);
+    if (!kred) {
+      return json({ ok: false, provider, model: modelDiminta, latencyMs: 0, error: `Provider ${provider} belum punya kredensial aktif.` }, 400);
+    }
+
+    // Bila model tidak disebut: pakai pilihan pengaturan untuk provider itu, lalu katalog aktif.
+    let model = modelDiminta;
+    if (!model) {
+      const set = await ambilPengaturanAI(db, getEnvAi());
+      const peta = jenis === "vision" ? set.modelVision : jenis === "gambar" ? set.modelGambar : set.modelTeks;
+      const katalog = await daftarModel(db, provider, jenis);
+      model = peta[provider] ?? katalog.find((m) => m.aktif === 1)?.model_id ?? katalog[0]?.model_id ?? "";
+    }
+    if (!model) {
+      return json({ ok: false, provider, model: "", latencyMs: 0, error: `Tidak ada model ${jenis} terdaftar untuk ${provider}. Tambah atau tarik dari provider dulu.` }, 400);
+    }
+
+    const mulai = Date.now();
+    const pesan = [{ role: "user" as const, teks: "Balas satu kata: OK" }];
+    if (jenis === "gambar") {
+      return json({ ok: false, provider, model, latencyMs: 0, error: "Uji koneksi untuk model gambar belum didukung di sini." }, 400);
+    }
+    const h =
+      provider === "gemini"
+        ? await chatGemini({ apiKey: kred.plaintext, timeoutMs: 30000 }, { model, pesan, maksToken: 16 })
+        : await (async () => {
+            const baseUrl = provider === "kenari" ? baseKenari(getEnvAi()) : BASE_OPENAI[provider];
+            if (!baseUrl) return { ok: false as const, status: 400, error: `Provider ${provider} tidak mendukung chat teks.`, latencyMs: 0 };
+            return chatOpenai({ baseUrl, apiKey: kred.plaintext, timeoutMs: 30000 }, { model, pesan, maksToken: 16 });
+          })();
+
+    const latencyMs = h.ok ? h.latencyMs : h.latencyMs || Date.now() - mulai;
+    await catatUji(db, kred.id, {
+      ok: h.ok,
+      latencyMs,
+      model,
+      error: h.ok ? undefined : h.error,
+    });
+    if (!h.ok) return json({ ok: false, provider, model, latencyMs, error: h.error }, h.status >= 400 ? h.status : 502);
+    return json({ ok: true, provider, model, latencyMs, teks: h.data.teks, tokenMasuk: h.data.tokenMasuk ?? 0, tokenKeluar: h.data.tokenKeluar ?? 0 });
   }
 
   // ── Uji koneksi (dipakai Fase B; di sini hanya mencatat bila dipanggil) ──

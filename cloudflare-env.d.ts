@@ -17,6 +17,7 @@ interface CloudflareEnv {
   DASHBOARD_ALLOWED_ORIGINS?: string;
   DASHBOARD_SESSION_SECRET?: string;
   AI_KEY_ENCRYPTION_KEY?: string;
+  KENARI_BASE_URL?: string;
 }
 
 // OpenNext menyalurkan `vars` wrangler ke process.env saat runtime Worker, jadi route
