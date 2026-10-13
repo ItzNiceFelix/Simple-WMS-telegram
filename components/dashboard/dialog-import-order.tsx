@@ -208,8 +208,8 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
 
   return (
     <Dialog open={open} onOpenChange={tutup}>
-      <DialogContent className="max-h-[92dvh] w-[95vw] overflow-y-auto sm:max-w-[min(96rem,95vw)]" data-testid="dialog-import-order">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[92dvh] w-[95vw] flex-col gap-3 overflow-hidden sm:max-w-[min(96rem,95vw)]" data-testid="dialog-import-order">
+        <DialogHeader className="shrink-0">
           <DialogTitle>Import Order Shopee (Order.toship)</DialogTitle>
           <DialogDescription>
             Sheet <b>orders</b> + <b>Advance Fulfilment</b>. File sama ditolak (fingerprint). Status yang sudah
@@ -217,6 +217,8 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
           </DialogDescription>
         </DialogHeader>
 
+        {/* Isi scroll sendiri (flex-1) supaya footer tetap terjangkau di HP. */}
+        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
         {!preview ? (
           <div className="space-y-3">
             <Input
@@ -384,8 +386,9 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
             )}
           </div>
         )}
+        </div>
 
-        <DialogFooter>
+        <DialogFooter className="shrink-0">
           {!preview ? (
             <Button onClick={unggah} disabled={!file || mengirim} data-testid="unggah-import-order">
               {mengirim && <Spinner />} Upload & preview
