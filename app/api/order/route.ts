@@ -388,16 +388,22 @@ export async function POST(request: Request) {
         if (ref && sku) skuManual.set(`${ref}\u0000${nama}\u0000${variasi}`, sku);
       }
     }
+    const stmts: D1PreparedStatement[] = [];
+    let nItem = 0;
+    const noList: string[] = [];
+    // Item tanpa SKU yang ditandai "belum ada di MP": dicatat di sku_belum_mp untuk diurus
+    // nanti, dan TIDAK ditulis ke order_items (belum punya SKU master untuk dirujuk).
+    const kunciBelumMp = new Set<string>();
     if (Array.isArray(body.tandaiBelumMp)) {
       for (const t of body.tandaiBelumMp as Record<string, unknown>[]) {
         const namaShopee = teks(t.nama_shopee);
         if (!namaShopee) continue;
-        await tandaiBelumMp(db, { namaShopee, variasi: teks(t.variasi), orderRef: teks(t.order_ref), oleh: String(user.tg_id) });
+        const variasi = teks(t.variasi);
+        const orderRef = teks(t.order_ref);
+        kunciBelumMp.add(`${orderRef}\u0000${namaShopee}\u0000${variasi}`);
+        await tandaiBelumMp(db, { namaShopee, variasi, orderRef, oleh: String(user.tg_id) });
       }
     }
-    const stmts: D1PreparedStatement[] = [];
-    let nItem = 0;
-    const noList: string[] = [];
     for (const o of orders) {
       noList.push(o.no_pesanan);
       stmts.push(
@@ -420,7 +426,17 @@ export async function POST(request: Request) {
       );
       stmts.push(db.prepare("DELETE FROM order_items WHERE marketplace = 'shopee' AND no_pesanan = ?").bind(o.no_pesanan));
       for (const item of o.items) {
-        const skuFinal = skuManual.get(`${o.no_pesanan}\u0000${item.nama_shopee}\u0000${item.variasi}`) ?? item.sku;
+        const kunci = `${o.no_pesanan}\u0000${item.nama_shopee}\u0000${item.variasi}`;
+        const skuFinal = skuManual.get(kunci) ?? item.sku;
+        // Belum ada SKU sama sekali (tidak dipilih manual, tidak ditandai belum-MP):
+        // hentikan supaya tidak menulis item tanpa rujukan produk.
+        if (!skuFinal) {
+          if (kunciBelumMp.has(kunci)) continue;
+          return json(
+            { ok: false, error: `Baris "${item.nama_shopee}" (order ${o.no_pesanan}) belum dipilih SKU — pilih SKU atau centang "Belum di MP".` },
+            400,
+          );
+        }
         const hpp = await ambilProduk(db, skuFinal);
         if (!hpp) return json({ ok: false, error: `SKU ${skuFinal} belum ada di master stok (order ${o.no_pesanan}).` }, 400);
         stmts.push(

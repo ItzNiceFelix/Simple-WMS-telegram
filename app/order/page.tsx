@@ -8,6 +8,13 @@ import { FileDown, FileUp, PackageSearch, RotateCcw } from "lucide-react";
 
 import { DialogImportExcel } from "@/components/dashboard/dialog-import-excel";
 import { DialogImportOrder } from "@/components/dashboard/dialog-import-order";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { ButuhAkses } from "@/components/dashboard/butuh-akses";
 import { tampilkanGagalTulis } from "@/components/dashboard/umpan-tulis";
@@ -130,6 +137,7 @@ function DaftarOrder() {
   const [status, setStatus] = useState("semua");
   const [mp, setMp] = useState("");
   const [target, setTarget] = useState<Target | null>(null);
+  const [rincian, setRincian] = useState<RincianOrder | null>(null);
   const [mengirim, setMengirim] = useState(false);
   const [terpilih, setTerpilih] = useState<Set<string>>(new Set());
   const mpTertunda = useDeferredValue(mp.trim().toLowerCase());
@@ -421,6 +429,17 @@ function DaftarOrder() {
                     <TableCell className="text-right tabular-nums">{formatRupiah(o.items.reduce((a, i) => a + i.subtotal, 0))}</TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1.5">
+                        {o.items.length > 1 && (
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-9 md:h-7"
+                            data-testid={`rincian-${o.no_pesanan}`}
+                            onClick={() => setRincian(o)}
+                          >
+                            {o.items.length} item
+                          </Button>
+                        )}
                         {(TRANSISI[o.status_fulfill] ?? []).map((t) => (
                           <Button
                             key={t.ke}
@@ -485,6 +504,41 @@ function DaftarOrder() {
       </AlertDialog>
       <DialogImportExcel open={importOpen} onOpenChange={setImportOpen} tipe="pesanan" onSukses={() => void muat()} />
       <DialogImportOrder open={importOrderOpen} onOpenChange={setImportOrderOpen} onSukses={() => void muat()} />
+
+      <Dialog open={Boolean(rincian)} onOpenChange={(v) => !v && setRincian(null)}>
+        <DialogContent className="max-h-[80dvh] overflow-y-auto sm:max-w-2xl" data-testid="dialog-rincian-order">
+          <DialogHeader>
+            <DialogTitle>Rincian {rincian?.no_pesanan}</DialogTitle>
+            <DialogDescription>
+              {rincian?.items.length === 1
+                ? "1 jenis barang pada pesanan ini."
+                : `${rincian?.items.length} jenis barang; baris dengan SKU & variasi sama sudah digabung.`}
+            </DialogDescription>
+          </DialogHeader>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>SKU</TableHead>
+                <TableHead>Nama Shopee</TableHead>
+                <TableHead>Variasi</TableHead>
+                <TableHead className="text-right">Qty</TableHead>
+                <TableHead className="text-right">Subtotal</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {(rincian?.items ?? []).map((it, i) => (
+                <TableRow key={`${it.sku}-${it.variasi}-${i}`}>
+                  <TableCell className="font-medium tabular-nums">{it.sku}</TableCell>
+                  <TableCell className="max-w-56 truncate" title={it.nama_shopee}>{it.nama_shopee}</TableCell>
+                  <TableCell>{it.variasi || "-"}</TableCell>
+                  <TableCell className="text-right tabular-nums">{it.qty}</TableCell>
+                  <TableCell className="text-right tabular-nums">{formatRupiah(it.subtotal)}</TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }

@@ -3,7 +3,7 @@ import { gagal, sekarang, type Hasil } from "./db";
 import { ambilProduk } from "./produk";
 import { bacaQty, GUDANG_ONLINE } from "./stok";
 
-export type OrderItem = { sku: string; qty: number; harga_satuan: number; hpp_snapshot: number };
+export type OrderItem = { sku: string; qty: number; harga_satuan: number; hpp_snapshot: number; variasi?: string; nama_shopee?: string };
 export type OrderFee = { jenis: string; basis: "flat" | "persen"; nilai: number };
 export type BarisPesanan = {
   marketplace: string; no_pesanan: string; tanggal: number; buyer: string;
@@ -78,7 +78,7 @@ export type OrderDetail = {
 export async function ambilOrder(db: D1Database, mp: string, no: string): Promise<OrderDetail | null> {
   const h = await db.prepare("SELECT marketplace, no_pesanan, tanggal, buyer, status_fulfill, pajak_pph, pajak_ppn_persen FROM orders WHERE marketplace = ? AND no_pesanan = ?").bind(mp, no).first<{ marketplace: string; no_pesanan: string; tanggal: number; buyer: string; status_fulfill: string; pajak_pph: number; pajak_ppn_persen: number }>();
   if (!h) return null;
-  const { results: items } = await db.prepare("SELECT sku, qty, harga_satuan, hpp_snapshot, subtotal FROM order_items WHERE marketplace = ? AND no_pesanan = ?").bind(mp, no).all<OrderItem & { subtotal: number }>();
+  const { results: items } = await db.prepare("SELECT sku, variasi, nama_shopee, qty, harga_satuan, hpp_snapshot, subtotal FROM order_items WHERE marketplace = ? AND no_pesanan = ? ORDER BY sku, variasi").bind(mp, no).all<OrderItem & { subtotal: number }>();
   const { results: fees } = await db.prepare("SELECT jenis, basis, nilai, amount FROM order_fees WHERE marketplace = ? AND no_pesanan = ?").bind(mp, no).all<OrderFee & { amount: number }>();
   return { marketplace: h.marketplace, no_pesanan: h.no_pesanan, tanggal: h.tanggal, buyer: h.buyer, status_fulfill: h.status_fulfill, pajak_pph: h.pajak_pph === 1, pajak_ppn_persen: h.pajak_ppn_persen, items, fees };
 }

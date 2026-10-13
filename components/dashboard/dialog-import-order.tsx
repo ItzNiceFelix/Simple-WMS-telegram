@@ -125,9 +125,11 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
       const raw = (await res.json().catch(() => null)) as (Preview & { ok?: boolean; error?: string }) | null
       if (!res.ok || !raw?.ok) { tampilkanGagalTulis(raw?.error ?? `Gagal preview (${res.status}).`); return }
       setPreview({ ...raw, totalBaris: ordersRows.length + advanceRows.length })
-      const resMaster = await fetch("/api/produk?limit=500", { credentials: "include" })
-      const dataMaster = (await resMaster.json().catch(() => null)) as { produk?: { sku: string }[] } | null
-      setMaster((dataMaster?.produk ?? []).map((p) => p.sku))
+      // Daftar SKU master untuk dropdown manual. Endpoint: /api/baca?scope=produk
+      // (tidak ada /api/produk — dulu 404 sehingga dropdown selalu kosong).
+      const resMaster = await fetch("/api/baca?scope=produk", { credentials: "include" })
+      const dataMaster = (await resMaster.json().catch(() => null)) as { ok?: boolean; rows?: { sku: string }[] } | null
+      setMaster((dataMaster?.rows ?? []).map((p) => p.sku))
     } catch {
       tampilkanGagalTulis("Jaringan gagal. Coba lagi.")
     } finally {
@@ -256,6 +258,11 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
             {belumSkuList.length > 0 && (
               <div className="space-y-2">
                 <p className="text-sm font-medium">Perlu SKU ({belumSkuList.length})</p>
+                <p className="text-xs text-muted-foreground">
+                  Baris ini belum punya SKU di file Shopee. Pilih SKU master <b>atau</b> centang{" "}
+                  <b>Belum di MP</b> bila barang ini memang belum terdaftar di marketplace — order tetap
+                  diimpor, dan baris ini dicatat sebagai daftar tunggu supaya kamu bisa urus SKU-nya nanti.
+                </p>
                 <div className="overflow-x-auto rounded-lg border border-border">
                   <Table>
                     <TableHeader>

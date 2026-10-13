@@ -119,11 +119,40 @@ describe("normalisasiSheetShopee", () => {
     assert.equal(o.preorder, true);
   });
 
-  it("baris tanpa SKU masuk belumSku, bukan gagal", () => {
+  it("baris tanpa SKU masuk belumSku DAN order tetap dibuat (dulu order hilang)", () => {
     const r = normalisasiSheetShopee([{ ...HDR, "No. Pesanan": "O-11", Jumlah: 1, "Nama Produk": "Rak Makanan", "Nama Variasi": "MERAH,3 SSN" }], []);
     assert.equal(r.belumSku.length, 1);
     assert.deepEqual(r.belumSku[0], { order_ref: "O-11", nama_shopee: "Rak Makanan", variasi: "MERAH,3 SSN" });
-    assert.equal(r.orders.length, 0);
+    // Order HARUS tetap ada dengan item sku kosong — supaya bisa dipetakan manual.
+    assert.equal(r.orders.length, 1);
+    assert.equal(r.orders[0].items.length, 1);
+    assert.equal(r.orders[0].items[0].sku, "");
+    assert.equal(r.orders[0].items[0].qty, 1);
+    assert.equal(r.gagal.length, 0);
+  });
+
+  it("item tanpa SKU tidak dianggap 'SKU tak dikenal' (tidak menggagalkan order)", () => {
+    const r = normalisasiSheetShopee(
+      [{ ...HDR, "No. Pesanan": "O-11b", Jumlah: "2", "Nama Produk": "Pisau Set", "Nama Variasi": "" }],
+      [],
+      () => false // master kosong: SKU "" tetap tidak boleh dianggap hilang
+    );
+    assert.equal(r.orders.length, 1);
+    assert.equal(r.gagal.length, 0);
+  });
+
+  it("baris tanpa SKU berulang (nama+variasi sama) digabung qty-nya", () => {
+    const r = normalisasiSheetShopee(
+      [
+        { ...HDR, "No. Pesanan": "O-11c", Jumlah: "1", "Nama Produk": "Gelas", "Nama Variasi": "biru" },
+        { ...HDR, "No. Pesanan": "O-11c", Jumlah: "3", "Nama Produk": "Gelas", "Nama Variasi": "biru" },
+      ],
+      []
+    );
+    assert.equal(r.orders.length, 1);
+    assert.equal(r.orders[0].items.length, 1);
+    assert.equal(r.orders[0].items[0].qty, 4);
+    assert.equal(r.belumSku.length, 2);
   });
 
   it("SKU tak dikenal master → gagal", () => {

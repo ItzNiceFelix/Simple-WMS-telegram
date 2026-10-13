@@ -150,10 +150,7 @@ export function normalisasiSheetShopee(
     }
     const sku = skuOf(row);
     const variasi = text(row["Nama Variasi"]);
-    if (!sku) {
-      belumSku.push({ order_ref: no, nama_shopee: text(row["Nama Produk"]), variasi });
-      continue;
-    }
+    const namaShopee = text(row["Nama Produk"]);
     const jml = angkaShopee(row["Jumlah"]);
     const kembali = angkaShopee(row["Returned quantity"]);
     if (jml < 1) {
@@ -163,12 +160,29 @@ export function normalisasiSheetShopee(
     // F13: qty bersih retur, minimal 1 (baris yang diretur penuh tetap dicatat agar alokasi tak bocor).
     const qty = Math.max(1, jml - kembali);
     const harga = angkaShopee(row["Harga Setelah Diskon"]);
+    if (!sku) {
+      // Baris tanpa SKU: order TETAP dibuat (jangan hilang), item disimpan dengan sku ""
+      // agar bisa dipetakan manual saat konfirmasi. Tanpa ini, order yang seluruh barisnya
+      // tanpa SKU hilang total padahal barangnya ada di file.
+      belumSku.push({ order_ref: no, nama_shopee: namaShopee, variasi });
+      const kunciKosong = `\u0000${namaShopee}\u0000${variasi}`;
+      const lamaKosong = g.items.get(kunciKosong);
+      g.items.set(kunciKosong, {
+        sku: "",
+        variasi,
+        nama_shopee: namaShopee,
+        qty: (lamaKosong?.qty ?? 0) + qty,
+        harga_satuan: lamaKosong?.harga_satuan ?? harga,
+        subtotal: (lamaKosong?.subtotal ?? 0) + angkaShopee(row["Subtotal Pesanan"]),
+      });
+      continue;
+    }
     const kunci = `${sku}\u0000${variasi}`;
     const lama = g.items.get(kunci);
     g.items.set(kunci, {
       sku,
       variasi,
-      nama_shopee: text(row["Nama Produk"]),
+      nama_shopee: namaShopee,
       qty: (lama?.qty ?? 0) + qty,
       harga_satuan: lama?.harga_satuan ?? harga,
       subtotal: (lama?.subtotal ?? 0) + angkaShopee(row["Subtotal Pesanan"]),
@@ -180,10 +194,12 @@ export function normalisasiSheetShopee(
     const statusFile = normalisasiStatus(g.statusMp);
     if (!STATUS_DIHITUNG.includes(statusFile)) continue;
     if (g.items.size === 0) {
-      gagal.push({ no_pesanan: g.no, pesan: "Tak ada baris dengan SKU (belum dipetakan)." });
+      gagal.push({ no_pesanan: g.no, pesan: "Tak ada baris barang pada pesanan ini." });
       continue;
     }
-    const hilang = [...g.items.values()].filter((it) => !hasSku(it.sku));
+    // Item dianggap "hilang" bila SKU-nya tidak ada di master. Item TANPA SKU (sku "")
+    // bukan hilang — order tetap dibuat, SKU diisi saat konfirmasi manual.
+    const hilang = [...g.items.values()].filter((it) => it.sku && !hasSku(it.sku));
     for (const it of hilang) gagal.push({ no_pesanan: g.no, sku: it.sku, pesan: `SKU ${it.sku} tidak ditemukan di master stok.` });
     if (hilang.length) continue;
     const r = g.row;

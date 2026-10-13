@@ -124,3 +124,24 @@ Tiga bug dilaporkan owner, semua sudah diverifikasi akar masalahnya lewat query 
 ### B3 — User terdaftar tanpa nama (hanya telegramId)
 **Akar:** `worker/bot.ts` `/daftar` memanggil `mintaAkses(db, tgId, null, u?.display_name ?? tgId)`; karena user belum ada di `users`, `u` selalu null → nama = telegramId. Approval menyalin placeholder itu (`req.telegram_display_name ?? String(tgId)`). Tidak ada langkah tanya-nama di webhook D1 (handler legacy `lanjutkanKenalan` tidak diport). Tidak ada jalur perbaikan nama sama sekali.
 **Fix:** bot meneruskan `msg.from` → `namaUser()` (first+last name); `akses.ts` tidak lagi fallback ke telegramId; ditambah **aksi `ubah-nama`** (lib + API + UI dialog di tabel admin). Data produksi yang telanjur salah sudah dibersihkan.
+
+## Perbaikan Import Order.toship (2026-10-13, lanjutan)
+
+Diuji dengan file produksi nyata 861 baris / 811 order unik.
+
+### B4 — 155 order hilang saat import
+**Akar:** `orderImportShopee.ts` men-`continue` baris tanpa SKU SEBELUM masuk ke `g.items`. Order yang SELURUH barisnya tanpa SKU jadi punya 0 item → dibuang ke `gagal` ("Tak ada baris dengan SKU"). Barangnya ada di file, tapi order tidak pernah dibuat.
+**Dampak:** 649 dari 804 order valid (155 hilang, 19%).
+**Fix:** baris tanpa SKU tetap dimasukkan ke `g.items` dengan `sku: ""`. Item dengan `sku === ""` tidak dianggap "SKU tak dikenal". Saat konfirmasi, SKU diisi dari pilihan manual; bila ditandai "Belum di MP", item dilewati dari `order_items` tapi dicatat di `sku_belum_mp`.
+**Hasil:** orders 649 → 804, gagal 156 → 1.
+
+### B5 — Dropdown pilih SKU tidak bereaksi
+**Akar:** dialog memanggil `/api/produk?limit=500` yang **tidak ada** (404). Daftar SKU master selalu kosong → Select tanpa item.
+**Fix:** pakai `/api/baca?scope=produk` (sudah menyediakan daftar produk).
+
+### B6 — Checkbox "Belum di MP" tanpa penjelasan
+Ditambah teks penjelas: baris tanpa SKU di file Shopee → pilih SKU master ATAU centang "Belum di MP" bila barangnya memang belum terdaftar (dicatat sebagai daftar tunggu).
+
+### Fitur — Rincian item per order
+Tombol "N item" pada baris order membuka dialog rincian (SKU, nama Shopee, variasi, qty, subtotal). Baris dengan SKU+variasi sama sudah digabung otomatis; variasi berbeda tetap terpisah (mis. MERAH vs BIRU = 2 item, bukan digabung).
+`ambilOrder` + `OrderItem` kini membawa `variasi` & `nama_shopee`.
