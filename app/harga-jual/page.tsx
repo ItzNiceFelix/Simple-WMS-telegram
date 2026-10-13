@@ -25,7 +25,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { formatRupiah } from "@/lib/dashboard/format";
+import { formatAngka, formatRupiah } from "@/lib/dashboard/format";
 
 type Preset = { id: number; nama: string; status_toko: string };
 type KandidatSku = { sku: string; nama_accurate: string; hpp: number | null };
@@ -43,6 +43,7 @@ type Komponen = {
 type Rincian = { nama: string; jenis: string; persen: number; flat: number; rupiah: number; sumber: string };
 type Hasil = {
   harga: number; opexPerUnit: number; flatPerUnit: number; feePersenTotal: number;
+  marginMode?: "persen" | "nominal"; marginTarget?: number;
   marginPersen: number; marginRupiah: number; modalPerUnit: number; rincian: Rincian[];
 };
 
@@ -71,6 +72,7 @@ function HitungHarga() {
   const [opex, setOpex] = useState("");
   const [volume, setVolume] = useState("");
   const [iklan, setIklan] = useState("2.47");
+  const [marginMode, setMarginMode] = useState<"persen" | "nominal">("persen");
   const [margin, setMargin] = useState("15");
   const [pembulatan, setPembulatan] = useState("500");
 
@@ -141,6 +143,7 @@ function HitungHarga() {
           opexBulanan: Number(opex.replace(/\D/g, "")) || 0,
           volumeBulanan: Number(volume.replace(/\D/g, "")) || 0,
           iklanPersen: Number(iklan.replace(",", ".")) || 0,
+          marginMode,
           marginTarget: Number(margin.replace(",", ".")) || 0,
           pembulatan: Number(pembulatan.replace(/\D/g, "")) || 0,
         }),
@@ -314,9 +317,28 @@ function HitungHarga() {
                     value={iklan} onChange={(e) => setIklan(e.target.value)} data-testid="iklan-persen" />
                 </Field>
                 <Field>
-                  <FieldLabel htmlFor="margin">Target margin (%)</FieldLabel>
-                  <Input id="margin" className="h-11 md:h-8" inputMode="decimal"
-                    value={margin} onChange={(e) => setMargin(e.target.value)} data-testid="margin-target" />
+                  <FieldLabel htmlFor="margin">
+                    Target margin {marginMode === "persen" ? "(%)" : "(Rp/unit)"}
+                  </FieldLabel>
+                  <div className="flex gap-2">
+                    <Input id="margin" className="h-11 md:h-8" inputMode="decimal"
+                      value={margin} onChange={(e) => setMargin(e.target.value)} data-testid="margin-target" />
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="h-11 shrink-0 md:h-8"
+                      onClick={() => setMarginMode((m) => (m === "persen" ? "nominal" : "persen"))}
+                      data-testid="toggle-margin-mode"
+                      title="Ganti antara persen dan nominal"
+                    >
+                      {marginMode === "persen" ? "%" : "Rp"}
+                    </Button>
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    {marginMode === "persen"
+                      ? "Margin = porsi dari harga jual (ikut naik saat harga naik)."
+                      : "Margin = nominal tetap per unit (tidak ikut skala harga)."}
+                  </p>
                 </Field>
                 <Field>
                   <FieldLabel htmlFor="bulat">Pembulatan (Rp)</FieldLabel>
@@ -375,6 +397,9 @@ function HitungHarga() {
                     <CardTitle className="text-3xl tabular-nums">{formatRupiah(hasil.harga)}</CardTitle>
                     <CardDescription>
                       Margin {hasil.marginPersen}% ({formatRupiah(hasil.marginRupiah)}/unit) · modal {formatRupiah(hasil.modalPerUnit)}
+                      {(hasil.marginMode ?? "persen") === "nominal" && hasil.marginTarget != null
+                        ? ` · target Rp${formatAngka(hasil.marginTarget)}/unit`
+                        : ""}
                     </CardDescription>
                   </CardHeader>
                 </Card>

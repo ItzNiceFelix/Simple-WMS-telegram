@@ -146,4 +146,61 @@ describe("hitungHargaJual", () => {
     assert.ok(v2.opexPerUnit < v1.opexPerUnit);
     assert.ok(v2.harga < v1.harga);
   });
+
+  // ── Mode margin NOMINAL (rupiah tetap per unit) ──
+
+  it("margin nominal: margin TIDAK masuk pembagi persen, hanya ditambah ke modal", () => {
+    const h = hitungHargaJual(basa({ marginMode: "nominal", marginTarget: 3000, pembulatan: 0 }));
+    assert.equal(h.ok, true);
+    if (!h.ok) return;
+    assert.equal(h.marginMode, "nominal");
+    assert.equal(h.marginTarget, 3000);
+    const modal = 5000 + 33_450_515 / 11_577 + 1250;
+    const harap = (modal + 3000) / (1 - (22.5 + 2.47) / 100);
+    assert.ok(Math.abs(h.harga - harap) < 5, `harga ${h.harga} ≈ ${harap.toFixed(0)}`);
+  });
+
+  it("margin nominal: sisa setelah semua biaya = persis nominal yang diminta", () => {
+    const h = hitungHargaJual(basa({ marginMode: "nominal", marginTarget: 5000, pembulatan: 0 }));
+    assert.equal(h.ok, true);
+    if (!h.ok) return;
+    assert.ok(Math.abs(h.marginRupiah - 5000) <= 1, `margin aktual Rp${h.marginRupiah} ≈ Rp5000`);
+  });
+
+  it("nominal Rp15.000 jauh lebih mahal daripada 15% (satuan beda)", () => {
+    const p = hitungHargaJual(basa({ marginMode: "persen", marginTarget: 15 }));
+    const n = hitungHargaJual(basa({ marginMode: "nominal", marginTarget: 15_000 }));
+    assert.equal(p.ok && n.ok, true);
+    if (!p.ok || !n.ok) return;
+    assert.ok(n.harga > p.harga, `nominal ${n.harga} > persen ${p.harga}`);
+    assert.ok(Math.abs(n.marginRupiah - 15_000) <= 1);
+  });
+
+  it("margin nominal 0 = jual di modal, tetap valid", () => {
+    const h = hitungHargaJual(basa({ marginMode: "nominal", marginTarget: 0, pembulatan: 0 }));
+    assert.equal(h.ok, true);
+    if (!h.ok) return;
+    assert.ok(Math.abs(h.marginRupiah) <= 1);
+  });
+
+  it("margin nominal: tolak negatif", () => {
+    const h = hitungHargaJual(basa({ marginMode: "nominal", marginTarget: -100 }));
+    assert.equal(h.ok, false);
+  });
+
+  it("margin nominal: fee+iklan 95% tetap bisa (margin bukan porsi harga)", () => {
+    const h = hitungHargaJual(
+      basa({
+        marginMode: "nominal",
+        marginTarget: 1000,
+        feePersen: [{ nama: "F", jenis: "admin", persen: 92, flat: 0, sumber: "auto" }],
+        feeFlat: [],
+        iklanPersen: 3,
+        pembulatan: 0,
+      })
+    );
+    assert.equal(h.ok, true);
+    if (!h.ok) return;
+    assert.ok(h.harga > 0);
+  });
 });

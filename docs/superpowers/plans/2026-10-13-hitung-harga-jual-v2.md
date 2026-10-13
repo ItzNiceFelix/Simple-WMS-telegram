@@ -18,8 +18,18 @@ Prinsip: **auto yang bisa diotomatiskan, manual yang memang perlu keputusan manu
 
 ```
 opex_unit = OPEX_non-iklan ÷ volume_bulanan        ← NOMINAL (biaya tetap)
-harga     = (hpp + opex_unit + flat_per_unit) ÷ (1 − fee_persen − iklan_persen − margin)
 ```
+**Mode margin PERSEN** (default):
+```
+harga = (hpp + opex_unit + flat_per_unit) ÷ (1 − fee_persen − iklan_persen − margin_persen)
+```
+**Mode margin NOMINAL** (rupiah tetap per unit):
+```
+harga = (hpp + opex_unit + flat_per_unit + margin_rupiah) ÷ (1 − fee_persen − iklan_persen)
+```
+Beda kuncinya: margin persen **masuk pembagi** (karena ia porsi dari harga jual), margin nominal **tidak** — ia konstanta yang ditambahkan ke modal. Konsekuensi: dengan margin nominal, fee+iklan boleh mendekati 100% dan tetap terdefinisi; dengan margin persen tidak.
+
+OPEX & volume bersifat **opsional** — 0/kosong = OPEX tidak dibebankan. Peringatan keras muncul bila OPEX diisi tapi volume 0 (biaya hilang diam-diam).
 
 **Kenapa OPEX nominal, bukan persen:** OPEX itu biaya tetap — gaji & sewa tidak naik saat harga jual naik. Kalau OPEX dijadikan persen omzet, ia ikut menskalakan diri dan **kurang tertutup** saat harga naik. Iklan tetap persen karena memang variabel.
 

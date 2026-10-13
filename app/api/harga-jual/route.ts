@@ -89,6 +89,7 @@ export async function POST(request: Request) {
     opexBulanan: angka(body.opexBulanan),
     volumeBulanan: angka(body.volumeBulanan),
     iklanPersen: angka(body.iklanPersen),
+    marginMode: body.marginMode === "nominal" ? "nominal" : "persen",
     marginTarget: angka(body.marginTarget),
     pembulatan: angka(body.pembulatan),
   });

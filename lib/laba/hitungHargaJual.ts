@@ -24,7 +24,13 @@ export type InputHarga = {
   volumeBulanan: number;
   /** Iklan sebagai PERSEN dari harga jual (mis. 2.47). */
   iklanPersen: number;
-  /** Target margin dalam PERSEN (mis. 15), dihitung dari harga jual. */
+  /**
+   * Cara menetapkan margin:
+   * - "persen"  : marginTarget = PERSEN dari harga jual (default).
+   * - "nominal" : marginTarget = RUPIAH per unit (margin tetap, tidak terpengaruh harga).
+   */
+  marginMode?: "persen" | "nominal";
+  /** Target margin: PERSEN dari harga jual bila mode "persen", RUPIAH/unit bila "nominal". */
   marginTarget: number;
   /** Pembulatan harga: 0 = tanpa pembulatan. */
   pembulatan?: number;
@@ -40,9 +46,13 @@ export type HasilHarga = {
   flatPerUnit: number;
   feePersenTotal: number;
   iklanPersen: number;
+  marginMode: "persen" | "nominal";
   marginPersen: number;
-  modalPerUnit: number;
+  /** Margin aktual per unit (rupiah) — selalu ada, apa pun modenya. */
   marginRupiah: number;
+  /** Target margin yang diminta user (persen atau rupiah, sesuai mode). */
+  marginTarget: number;
+  modalPerUnit: number;
   rincian: BarisRincian[];
   peringatan: string[];
 } | { ok: false; error: string; peringatan: string[] };
@@ -58,18 +68,25 @@ function bulatkan(nilai: number, kelipatan: number): number {
  */
 export function hitungHargaJual(i: InputHarga): HasilHarga {
   const peringatan: string[] = [];
+  const mode = i.marginMode ?? "persen";
 
   // ── Validasi keras: pembagi nol / negatif = mustahil, jangan dihitung ──
   const totalPersen = i.feePersen.reduce((a, x) => a + x.persen, 0);
-  const denom = 1 - (totalPersen + i.iklanPersen + i.marginTarget) / 100;
+  // Margin persen menambah pembagi; margin nominal TIDAK (ia konstanta, bukan porsi harga).
+  const marginPersenTarget = mode === "persen" ? i.marginTarget : 0;
+  const denom = 1 - (totalPersen + i.iklanPersen + marginPersenTarget) / 100;
   if (denom <= 0) {
     return {
       ok: false,
       error:
-        `Total (fee ${totalPersen.toFixed(2)}% + iklan ${i.iklanPersen.toFixed(2)}% + margin ${i.marginTarget.toFixed(2)}%) ` +
-        `= ${(100 - denom * 100).toFixed(2)}% ≥ 100% — harga jual tak terdefinisi. Turunkan margin atau periksa fee.`,
+        `Total (fee ${totalPersen.toFixed(2)}% + iklan ${i.iklanPersen.toFixed(2)}%` +
+        (mode === "persen" ? ` + margin ${i.marginTarget.toFixed(2)}%` : "") +
+        `) = ${(100 - denom * 100).toFixed(2)}% ≥ 100% — harga jual tak terdefinisi. Turunkan margin atau periksa fee.`,
       peringatan,
     };
+  }
+  if (mode === "nominal" && i.marginTarget < 0) {
+    return { ok: false, error: "Margin nominal tidak boleh negatif.", peringatan };
   }
   if (i.hpp < 0) return { ok: false, error: "HPP tidak boleh negatif.", peringatan };
   if (i.opexBulanan < 0) return { ok: false, error: "OPEX bulanan tidak boleh negatif.", peringatan };
@@ -88,7 +105,10 @@ export function hitungHargaJual(i: InputHarga): HasilHarga {
   const flatPerUnit = i.feeFlat.reduce((a, x) => a + x.flat, 0) / qty;
 
   const modalPerUnit = i.hpp + opexPerUnit + flatPerUnit;
-  const hargaSebelumBulat = modalPerUnit / denom;
+  // Persen: margin = porsi harga -> naikkan pembilang basis modal, bagi sisa persen.
+  // Nominal: margin = rupiah tetap -> tambahkan ke modal, bagi sisa persen saja.
+  const pembilang = mode === "nominal" ? modalPerUnit + i.marginTarget : modalPerUnit;
+  const hargaSebelumBulat = pembilang / denom;
   const harga = bulatkan(hargaSebelumBulat, i.pembulatan ?? 0);
 
   // ── Margin aktual (setelah pembulatan bisa sedikit beda dari target) ──
@@ -99,9 +119,16 @@ export function hitungHargaJual(i: InputHarga): HasilHarga {
   const marginPersen = harga > 0 ? (marginRupiah / harga) * 100 : 0;
 
   // ── Peringatan (tidak memblokir) ──
-  if (Math.abs(marginPersen - i.marginTarget) > 0.5) {
+  if (mode === "persen") {
+    if (Math.abs(marginPersen - i.marginTarget) > 0.5) {
+      peringatan.push(
+        `Margin hasil ${marginPersen.toFixed(2)}% berbeda dari target ${i.marginTarget.toFixed(2)}% (efek pembulatan).`
+      );
+    }
+  } else if (Math.abs(marginRupiah - i.marginTarget) > 1) {
     peringatan.push(
-      `Margin hasil ${marginPersen.toFixed(2)}% berbeda dari target ${i.marginTarget.toFixed(2)}% (efek pembulatan).`
+      `Margin hasil ${Math.round(marginRupiah).toLocaleString("id-ID")} berbeda dari target ` +
+      `${Math.round(i.marginTarget).toLocaleString("id-ID")} (efek pembulatan).`
     );
   }
   if (marginPersen < 0) peringatan.push("Harga menghasilkan margin negatif — periksa HPP/fee.");
@@ -126,9 +153,11 @@ export function hitungHargaJual(i: InputHarga): HasilHarga {
     flatPerUnit: Math.round(flatPerUnit),
     feePersenTotal: totalPersen,
     iklanPersen: i.iklanPersen,
+    marginMode: mode,
     marginPersen: Math.round(marginPersen * 100) / 100,
-    modalPerUnit: Math.round(modalPerUnit),
     marginRupiah: Math.round(marginRupiah),
+    marginTarget: i.marginTarget,
+    modalPerUnit: Math.round(modalPerUnit),
     rincian,
     peringatan,
   };
