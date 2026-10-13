@@ -16,6 +16,7 @@ interface CloudflareEnv {
   GEMINI_TOTAL_TIMEOUT_MS?: string;
   DASHBOARD_ALLOWED_ORIGINS?: string;
   DASHBOARD_SESSION_SECRET?: string;
+  AI_KEY_ENCRYPTION_KEY?: string;
 }
 
 // OpenNext menyalurkan `vars` wrangler ke process.env saat runtime Worker, jadi route

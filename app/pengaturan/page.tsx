@@ -8,6 +8,10 @@ import { TriangleAlert } from "lucide-react";
 
 import { PageHeader } from "@/components/dashboard/page-header";
 import { ButuhAkses } from "@/components/dashboard/butuh-akses";
+import { AiFallback } from "@/components/dashboard/ai-fallback";
+import { AiKredensial } from "@/components/dashboard/ai-kredensial";
+import { AiModel } from "@/components/dashboard/ai-model";
+import { AiTool } from "@/components/dashboard/ai-tool";
 import { KelolaAdmin } from "@/components/dashboard/kelola-admin";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
@@ -230,6 +234,15 @@ function Pengaturan() {
 
         {adalahStaff ? <PresetToko bolehUbah={bolehUbah} /> : null}
         {bolehUbah ? <KelolaAdmin /> : null}
+
+        {adalahStaff ? (
+          <>
+            <AiKredensial bolehUbah={bolehUbah} onBerubah={() => void muat()} />
+            <AiModel bolehUbah={bolehUbah} onBerubah={() => void muat()} />
+            <AiFallback bolehUbah={bolehUbah} onBerubah={() => void muat()} />
+            <AiTool bolehUbah={bolehUbah} onBerubah={() => void muat()} />
+          </>
+        ) : null}
       </div>
     </>
   );

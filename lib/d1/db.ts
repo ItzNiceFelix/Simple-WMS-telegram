@@ -16,13 +16,20 @@ export const getDb = cache((): D1Database => {
  * Lebih akurat: getCloudflareContext() membaca binding asli, sedangkan process.env
  * bergantung pada penyuntikan OpenNext. Dipakai route /api/baca?scope=ai.
  */
-export const getEnvAi = cache((): { AI_PROVIDER_TEXT?: string; GEMINI_TIMEOUT_MS?: string; GEMINI_TOTAL_TIMEOUT_MS?: string } => {
+export const getEnvAi = cache((): { AI_PROVIDER_TEXT?: string; GEMINI_TIMEOUT_MS?: string; GEMINI_TOTAL_TIMEOUT_MS?: string; AI_KEY_ENCRYPTION_KEY?: string } => {
   const { env } = getCloudflareContext();
   return {
     AI_PROVIDER_TEXT: env.AI_PROVIDER_TEXT as string | undefined,
     GEMINI_TIMEOUT_MS: env.GEMINI_TIMEOUT_MS as string | undefined,
     GEMINI_TOTAL_TIMEOUT_MS: env.GEMINI_TOTAL_TIMEOUT_MS as string | undefined,
+    AI_KEY_ENCRYPTION_KEY: env.AI_KEY_ENCRYPTION_KEY as string | undefined,
   };
+});
+
+/** Kunci enkripsi kredensial. Terpisah agar pemanggilnya jelas butuh rahasia ini. */
+export const getKunciEnkripsi = cache((): string => {
+  const { env } = getCloudflareContext();
+  return (env.AI_KEY_ENCRYPTION_KEY as string | undefined) ?? "";
 });
 
 /** Unix epoch detik saat ini. */

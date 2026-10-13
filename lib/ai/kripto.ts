@@ -25,9 +25,9 @@ function keB64(buf: ArrayBuffer | Uint8Array): string {
   return btoa(s);
 }
 
-function dariB64(s: string): Uint8Array {
+function dariB64(s: string): Uint8Array<ArrayBuffer> {
   const biner = atob(s);
-  const bytes = new Uint8Array(biner.length);
+  const bytes = new Uint8Array(new ArrayBuffer(biner.length));
   for (let i = 0; i < biner.length; i++) bytes[i] = biner.charCodeAt(i);
   return bytes;
 }
@@ -40,7 +40,7 @@ export function ambilKunci(b64 = ""): Promise<CryptoKey> {
       "AI_KEY_ENCRYPTION_KEY belum diset. Buat dengan: node -e \"console.log(require('crypto').randomBytes(32).toString('base64'))\" lalu `npx wrangler secret put AI_KEY_ENCRYPTION_KEY`."
     );
   }
-  let bytes: Uint8Array;
+  let bytes: Uint8Array<ArrayBuffer>;
   try {
     bytes = dariB64(mentah);
   } catch {
@@ -57,7 +57,7 @@ export async function enkripsi(plaintext: string, kunciB64: string): Promise<Ter
   const teks = String(plaintext ?? "").trim();
   if (!teks) throw new Error("Teks yang dienkripsi tidak boleh kosong.");
   const kunci = await ambilKunci(kunciB64);
-  const iv = crypto.getRandomValues(new Uint8Array(PANJANG_IV));
+  const iv = crypto.getRandomValues(new Uint8Array(new ArrayBuffer(PANJANG_IV)));
   // WebCrypto mengembalikan ciphertext||tag; pisahkan agar kolomnya eksplisit.
   const gabung = new Uint8Array(await crypto.subtle.encrypt({ name: "AES-GCM", iv }, kunci, new TextEncoder().encode(teks)));
   const ciphertext = gabung.slice(0, gabung.length - PANJANG_TAG);
@@ -75,7 +75,7 @@ export async function dekripsi(data: { ciphertext: string; iv: string; tag: stri
   const kunci = await ambilKunci(kunciB64);
   const ciphertext = dariB64(data.ciphertext);
   const tag = dariB64(data.tag);
-  const gabung = new Uint8Array(ciphertext.length + tag.length);
+  const gabung = new Uint8Array(new ArrayBuffer(ciphertext.length + tag.length));
   gabung.set(ciphertext, 0);
   gabung.set(tag, ciphertext.length);
   const iv = dariB64(data.iv);
