@@ -15,7 +15,8 @@ export type MovementType =
   | "koreksi_manual"
   | "sync_confirmed"
   | "jual_mp"
-  | "retur_mp";
+  | "retur_mp"
+  | "kirim_advance";
 
 export type MovementStatus =
   | "processed"
@@ -29,7 +30,8 @@ export type MovementSource =
   | "manual_chat_batch_produk_baru"
   | "manual_chat_produk_baru"
   | "sync"
-  | "web_dashboard";
+  | "web_dashboard"
+  | "advance";
 
 /** Koleksi `stock/{kode_barang}` */
 export interface StockDoc {

@@ -86,6 +86,7 @@ const LABEL_JENIS: Record<MovementType, string> = {
   sync_confirmed: "Sinkron dikonfirmasi",
   jual_mp: "Jual marketplace",
   retur_mp: "Retur marketplace",
+  kirim_advance: "Kirim advance",
 };
 
 const LABEL_SUMBER: Record<MovementSource, string> = {
@@ -96,6 +97,7 @@ const LABEL_SUMBER: Record<MovementSource, string> = {
   manual_chat_produk_baru: "Chat manual (produk baru)",
   sync: "Sinkron",
   web_dashboard: "Dashboard web",
+  advance: "Advance",
 };
 
 const DAFTAR_JENIS = Object.keys(LABEL_JENIS) as MovementType[];

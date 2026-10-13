@@ -8,10 +8,15 @@ import { getDb } from "@/lib/d1/db";
 import { ambilProduk } from "@/lib/d1/produk";
 import { ambilOrder, imporPesanan, listOrder, transisiFulfill, type BarisPesanan, type OrderDetail } from "@/lib/d1/order";
 import { transisiFulfillBatch, type KeFulfill } from "@/lib/d1/orderTransisi";
-import { buatPicklist } from "@/lib/d1/picklist";
+import { buatPicklist, buatPicklistPaket } from "@/lib/d1/picklist";
 import { bangunPdfPicklist } from "@/lib/d1/picklistPdf";
+import { bangunPdfPicklistPaket } from "@/lib/d1/picklistPaketPdf";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
-import { gabungkanSheetShopee, type ShopeeDisposition, type ShopeeOrderRow, type ShopeeAdvanceRow } from "@/lib/d1/orderImportShopee";
+import { normalisasiSheetShopee, normalisasiStatus, type GabunganOrder, type ShopeeAdvanceRow, type ShopeeOrderRow, type ShopeeBooking, type BarisBelumSku } from "@/lib/d1/orderImportShopee";
+import { hitungFingerprint, cekFileSudahAda, catatImportFile } from "@/lib/d1/importFingerprint";
+import { klasifikasikanImport, type OrderBaru } from "@/lib/d1/orderKlasifikasi";
+import { simpanBooking, tebakSku, tandaiBelumMp, compareNama, type TebakanSku } from "@/lib/d1/advanceBelumSku";
+import { isiResiGrup } from "@/lib/d1/resiGrup";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,6 +27,44 @@ const HEADER_PESANAN = ["NoPesanan*", "Marketplace*", "Tanggal*", "SKU*", "Qty*"
 const KE_VALID = ["pack", "kirim", "selesai", "batal"];
 // B5-A: cap 500 baris (konsisten excel produk); konfirmasi batch 50 tetap.
 const MAKS_BARIS = 500;
+const MODE_PICKLIST = ["per_paket", "pisah", "gabung"] as const;
+type ModePicklist = (typeof MODE_PICKLIST)[number];
+
+/** Ada resi gabungan (jumlah_order > 1) di antara targets → default picklist per paket (D3). */
+async function pakaiPerPaket(db: D1Database, targets: { mp: string; no: string }[]): Promise<boolean> {
+  const noList = [...new Set(targets.map((t) => t.no).filter(Boolean))];
+  if (noList.length === 0) return false;
+  for (let i = 0; i < noList.length; i += 50) {
+    const potong = noList.slice(i, i + 50);
+    const tanda = potong.map(() => "?").join(",");
+    const row = await db
+      .prepare(`SELECT COUNT(*) AS n FROM orders o JOIN resi_grup g ON g.no_resi = o.no_resi WHERE o.no_pesanan IN (${tanda}) AND g.jumlah_order > 1`)
+      .bind(...potong)
+      .first<{ n: number }>();
+    if ((row?.n ?? 0) > 0) return true;
+  }
+  return false;
+}
+
+/** Ringkasan review sebelum cetak: status fulfill + grup resi + sisa bayar COD (info saja). */
+async function ringkasReview(db: D1Database, targets: { mp: string; no: string }[]): Promise<{ no_pesanan: string; no_resi: string; status: string; grup: number; sesuaKriteria: number }[]> {
+  const noList = [...new Set(targets.map((t) => t.no).filter(Boolean))];
+  const keluar: { no_pesanan: string; no_resi: string; status: string; grup: number; sesuaKriteria: number }[] = [];
+  for (let i = 0; i < noList.length; i += 50) {
+    const potong = noList.slice(i, i + 50);
+    const tanda = potong.map(() => "?").join(",");
+    const { results } = await db
+      .prepare(
+        `SELECT o.no_pesanan, o.no_resi, o.status_fulfill, COALESCE(g.jumlah_order, 1) AS grup, COALESCE(g.sesuai_kriteria, 1) AS sesuaKriteria
+         FROM orders o LEFT JOIN resi_grup g ON g.no_resi = o.no_resi WHERE o.no_pesanan IN (${tanda})`,
+      )
+      .bind(...potong)
+      .all<{ no_pesanan: string; no_resi: string; status_fulfill: string; grup: number; sesuaKriteria: number }>();
+    for (const r of results) keluar.push({ no_pesanan: r.no_pesanan, no_resi: r.no_resi, status: r.status_fulfill, grup: r.grup, sesuaKriteria: r.sesuaKriteria });
+  }
+  return keluar;
+}
+
 type BarisGagal = { baris: number; pesan: string };
 function teks(v: unknown): string {
   return typeof v === "string" ? v.trim() : v == null ? "" : String(v).trim();
@@ -114,17 +157,41 @@ export async function GET(request: Request) {
     } catch {
       return json({ ok: false, error: "Parameter targets tidak valid." }, 400);
     }
-    const pick = await buatPicklist(db, targets);
-    if (!pick.ok) return json({ ok: false, error: pick.error }, pick.status);
-    const bytes = await bangunPdfPicklist(pick.rows, pick.orders);
-    return new Response(new Uint8Array(bytes), {
+    // D7-T7: per_paket = 1 lembar per no_resi (default utk resi gabungan); pisah = agregat per SKU (mode lama).
+    const modeMinta = (url.searchParams.get("mode") ?? "").trim();
+    if (modeMinta === "review") {
+      const ringkas = await ringkasReview(db, targets);
+      return json({ ok: true, ringkas });
+    }
+    const mode = modeMinta === "" ? ((await pakaiPerPaket(db, targets)) ? "per_paket" : "pisah") : modeMinta;
+    if (mode !== "per_paket" && mode !== "pisah" && mode !== "gabung") return json({ ok: false, error: "Mode harus per_paket/pisah/gabung." }, 400);
+    const namaFile = mode === "per_paket" ? "picklist-per-paket.pdf" : mode === "gabung" ? "picklist-gabung.pdf" : "picklist.pdf";
+    const header = {
       status: 200,
       headers: {
         "content-type": "application/pdf",
-        "content-disposition": `attachment; filename="picklist.pdf"`,
+        "content-disposition": `attachment; filename="${namaFile}"`,
         "cache-control": "no-store",
       },
-    });
+    };
+    if (mode === "gabung") {
+      const pick = await buatPicklistPaket(db, targets);
+      if (!pick.ok) return json({ ok: false, error: pick.error }, pick.status);
+      const semua = pick.paket.flatMap((p) => p.rows.map((r) => ({ sku: r.sku, nama: r.nama, qty: r.qty, variasi: r.variasi ?? "", no_resi: p.no_resi })));
+      if (semua.length === 0) return json({ ok: false, error: "Tak ada item untuk dicetak." }, 400);
+      const bytes = await bangunPdfPicklistPaket(semua, { mode: "gabung", judul: "PICKLIST ORDER — GABUNG PER PAKET", subjudul: `${pick.paket.length} paket`, gudang: "Gudang ONLINE" });
+      return new Response(new Uint8Array(bytes), header);
+    }
+    if (mode === "per_paket") {
+      const pick = await buatPicklistPaket(db, targets);
+      if (!pick.ok) return json({ ok: false, error: pick.error }, pick.status);
+      const bytes = await bangunPdfPicklistPaket(pick.paket, { mode: "per_paket", judul: "PICKLIST ORDER — PER PAKET", subjudul: "", gudang: "Gudang ONLINE" });
+      return new Response(new Uint8Array(bytes), header);
+    }
+    const pick = await buatPicklist(db, targets);
+    if (!pick.ok) return json({ ok: false, error: pick.error }, pick.status);
+    const bytes = await bangunPdfPicklist(pick.rows, pick.orders);
+    return new Response(new Uint8Array(bytes), header);
   }
   if (aksi !== "daftar") return json({ ok: true, header: HEADER_PESANAN });
   const f = filterDariQuery(url);
@@ -179,14 +246,75 @@ export async function POST(request: Request) {
     return json({ ok: true, status: hasil.status });
   }
   if (aksi === "preview-shopee") {
-    const orderRows = Array.isArray(body.ordersRows) ? body.ordersRows as ShopeeOrderRow[] : [];
-    const advanceRows = Array.isArray(body.advanceRows) ? body.advanceRows as ShopeeAdvanceRow[] : [];
+    const orderRows = Array.isArray(body.ordersRows) ? (body.ordersRows as ShopeeOrderRow[]) : [];
+    const advanceRows = Array.isArray(body.advanceRows) ? (body.advanceRows as ShopeeAdvanceRow[]) : [];
     if (orderRows.length === 0 && advanceRows.length === 0) return json({ ok: false, error: "Sheet orders/Advance Fulfilment kosong." }, 400);
-    const dispositions = body.dispositions && typeof body.dispositions === "object" ? body.dispositions as Record<string, ShopeeDisposition> : {};
-    const gabung = await gabungkanSheetShopee(orderRows, advanceRows, async (sku) => Boolean(await ambilProduk(db, sku)), dispositions);
     const file = typeof body.file === "string" ? body.file.trim().slice(0, 120) : "orders.xlsx";
-    const ins = await db.prepare("INSERT INTO import_batches (tipe, file, total, sukses, gagal, gudang_id, payload_json, status, at, by) VALUES ('pesanan_shopee', ?, ?, ?, ?, 'ONLINE', ?, 'preview', ?, ?)").bind(file, orderRows.length + advanceRows.length, gabung.orders.length, gabung.gagal.length, JSON.stringify(gabung.orders), Math.floor(Date.now() / 1000), user.tg_id).run();
-    return json({ ok: true, batch_id: Number(ins.meta.last_row_id), orders: gabung.orders, review: gabung.review, gagal: gabung.gagal });
+    // T2: fingerprint + 3a tolak file sama.
+    const hash = await hitungFingerprint([...orderRows, ...advanceRows], file);
+    const sudah = await cekFileSudahAda(db, "orders_toship", hash);
+    if (sudah && sudah.batch_id !== null) {
+      return json({ ok: false, error: `File ini sudah pernah diimpor (batch #${sudah.batch_id}, ${sudah.file}).` }, 409);
+    }
+    const cekSku = new Map<string, boolean>();
+    const adaSku = async (sku: string): Promise<boolean> => {
+      const lama = cekSku.get(sku);
+      if (lama !== undefined) return lama;
+      const ada = Boolean(await ambilProduk(db, sku));
+      cekSku.set(sku, ada);
+      return ada;
+    };
+    const skuAda = new Set<string>();
+    for (const r of [...orderRows, ...advanceRows]) {
+      const sku = String(r["Nomor Referensi SKU"] ?? r["SKU Induk"] ?? "").trim().toUpperCase();
+      if (sku) skuAda.add(sku);
+    }
+    for (const sku of skuAda) await adaSku(sku);
+    const normal = normalisasiSheetShopee(orderRows, advanceRows, (sku) => cekSku.get(sku) === true);
+    // Tebak SKU untuk baris belumSku (D1) — hanya cocok persis yang auto-isi; sisanya manual.
+    const belumSku: (BarisBelumSku & { tebakan: TebakanSku })[] = [];
+    for (const b of normal.belumSku.slice(0, 100)) belumSku.push({ ...b, tebakan: await tebakSku(db, b.nama_shopee, b.variasi) });
+    for (const b of normal.belumSku.slice(100)) belumSku.push({ ...b, tebakan: { sku: "", perlu_pilih_manual: true, kandidat: [] } });
+    // Klasifikasi T3/T3b (blokir/peringatan sebelum tulis).
+    const orderBaru: OrderBaru[] = normal.orders.map((o) => ({
+      no_pesanan: o.no_pesanan,
+      no_resi: o.noResi,
+      statusFile: o.statusFile,
+      jasaKirim: o.jasaKirim,
+      tipeLayanan: o.tipeLayanan,
+      cod: o.cod,
+      preorder: o.preorder,
+    }));
+    const klasifikasi = await klasifikasikanImport(db, orderBaru, normal.advance.map((a) => ({ booking_sn: a.booking_sn, no_resi: a.no_resi })));
+    // D3: compare nama (peringatan saja).
+    const pasangan = normal.orders.flatMap((o) => o.items.map((i) => ({ sku: i.sku, nama_shopee: i.nama_shopee })));
+    const compare = await compareNama(db, pasangan);
+    const payload = { orders: normal.orders, advance: normal.advance, hash, file };
+    const ins = await db
+      .prepare("INSERT INTO import_batches (tipe, file, total, sukses, gagal, gudang_id, payload_json, status, at, by) VALUES ('pesanan_shopee', ?, ?, ?, ?, 'ONLINE', ?, 'preview', ?, ?)")
+      .bind(file, orderRows.length + advanceRows.length, normal.orders.length, normal.gagal.length, JSON.stringify(payload), Math.floor(Date.now() / 1000), user.tg_id)
+      .run();
+    return json({
+      ok: true,
+      batch_id: Number(ins.meta.last_row_id),
+      hash,
+      file,
+      orders: normal.orders,
+      advance: normal.advance,
+      belumSku,
+      gagal: normal.gagal,
+      klasifikasi: {
+        baru: klasifikasi.baru.length,
+        update: klasifikasi.update.length,
+        skip: klasifikasi.skip.length,
+        mundur: klasifikasi.mundur,
+        resiMultiOrder: klasifikasi.resiMultiOrder,
+        gandaDalamFile: klasifikasi.gandaDalamFile,
+        kriteriaGabungan: klasifikasi.kriteriaGabungan,
+        advanceSkip: klasifikasi.advanceSkip,
+      },
+      compareNama: compare,
+    });
   }
   if (aksi === "preview") {
     const rows = body.rows;
@@ -230,20 +358,94 @@ export async function POST(request: Request) {
 
   if (aksi === "konfirmasi-shopee") {
     if (typeof body.batch_id !== "number") return json({ ok: false, error: "batch_id wajib angka." }, 400);
-    const batch = await db.prepare("SELECT id, payload_json FROM import_batches WHERE id = ? AND status = 'preview' AND tipe = 'pesanan_shopee'").bind(body.batch_id).first<{ id: number; payload_json: string }>();
+    const batch = await db
+      .prepare("SELECT id, file, payload_json, by FROM import_batches WHERE id = ? AND status = 'preview' AND tipe = 'pesanan_shopee'")
+      .bind(body.batch_id)
+      .first<{ id: number; file: string; payload_json: string; by: string | null }>();
     if (!batch) return json({ ok: false, error: "Batch tidak ditemukan / sudah diproses." }, 404);
-    let daftar: { no_pesanan: string; tanggal: number; buyer: string; noResi: string; statusAwal: "pending" | "kirim"; items: { sku: string; qty: number; hargaSatuan: number; subtotal: number }[] }[];
-    try { daftar = JSON.parse(batch.payload_json) as typeof daftar; } catch { return json({ ok: false, error: "Payload batch rusak." }, 500); }
-    if (!Array.isArray(daftar) || daftar.length === 0) return json({ ok: false, error: "Tak ada order valid untuk disimpan." }, 400);
-    const stmts: D1PreparedStatement[] = [];
-    for (const o of daftar) {
-      stmts.push(db.prepare("INSERT INTO orders (marketplace, no_pesanan, tanggal, buyer, status_fulfill, pajak_pph, pajak_ppn_persen, stok_dikurangi, no_resi) VALUES ('shopee', ?, ?, ?, ?, 0, 0, 0, ?) ON CONFLICT(marketplace, no_pesanan) DO UPDATE SET tanggal = excluded.tanggal, buyer = excluded.buyer, no_resi = excluded.no_resi, status_fulfill = CASE WHEN orders.status_fulfill = 'pending' THEN excluded.status_fulfill ELSE orders.status_fulfill END").bind(o.no_pesanan, o.tanggal, o.buyer, o.statusAwal, o.noResi));
-      stmts.push(db.prepare("DELETE FROM order_items WHERE marketplace = 'shopee' AND no_pesanan = ?").bind(o.no_pesanan));
-      for (const item of o.items) stmts.push(db.prepare("INSERT INTO order_items (marketplace, no_pesanan, sku, qty, harga_satuan, hpp_snapshot, subtotal) VALUES ('shopee', ?, ?, ?, ?, COALESCE((SELECT hpp FROM products WHERE sku = ?), 0), ?)").bind(o.no_pesanan, item.sku, item.qty, item.hargaSatuan, item.sku, item.subtotal));
+    let payload: { orders: GabunganOrder[]; advance: ShopeeBooking[]; hash?: string };
+    try {
+      payload = JSON.parse(batch.payload_json) as typeof payload;
+    } catch {
+      return json({ ok: false, error: "Payload batch rusak." }, 500);
     }
-    await db.batch(stmts);
-    await db.prepare("UPDATE import_batches SET status = 'done', sukses = ? WHERE id = ?").bind(daftar.reduce((n, o) => n + o.items.length, 0), batch.id).run();
-    return json({ ok: true, order: daftar.length, item: daftar.reduce((n, o) => n + o.items.length, 0) });
+    const orders = Array.isArray(payload.orders) ? payload.orders : [];
+    const advance = Array.isArray(payload.advance) ? payload.advance : [];
+    if (orders.length === 0 && advance.length === 0) return json({ ok: false, error: "Tak ada order valid untuk disimpan." }, 400);
+    // Tanpa hash asli, anti-dobel kosong → tolak. Jangan mengarang hash (hash array kosong
+    // akan identik untuk SEMUA file sehingga file berbeda ditolak sebagai "sudah diimpor").
+    if (typeof payload.hash !== "string" || payload.hash === "") {
+      return json({ ok: false, error: "Batch lama tanpa fingerprint — ulangi preview file ini." }, 409);
+    }
+    // SKU manual dari UI (baris tanpa SKU di MP) — dipetakan ke barisnya saat commit.
+    const skuManual = new Map<string, string>();
+    if (Array.isArray(body.skuManual)) {
+      for (const m of body.skuManual as Record<string, unknown>[]) {
+        const ref = teks(m.order_ref);
+        const nama = teks(m.nama_shopee);
+        const variasi = teks(m.variasi);
+        const sku = teks(m.sku).toUpperCase();
+        if (ref && sku) skuManual.set(`${ref}\u0000${nama}\u0000${variasi}`, sku);
+      }
+    }
+    if (Array.isArray(body.tandaiBelumMp)) {
+      for (const t of body.tandaiBelumMp as Record<string, unknown>[]) {
+        const namaShopee = teks(t.nama_shopee);
+        if (!namaShopee) continue;
+        await tandaiBelumMp(db, { namaShopee, variasi: teks(t.variasi), orderRef: teks(t.order_ref), oleh: String(user.tg_id) });
+      }
+    }
+    const stmts: D1PreparedStatement[] = [];
+    let nItem = 0;
+    const noList: string[] = [];
+    for (const o of orders) {
+      noList.push(o.no_pesanan);
+      stmts.push(
+        db
+          .prepare(
+            `INSERT INTO orders (marketplace, no_pesanan, tanggal, buyer, status_fulfill, pajak_pph, pajak_ppn_persen, stok_dikurangi, no_resi,
+              asal_import, opsi_kirim, antar_ke, status_mp, batch_import, jasa_kirim, tipe_layanan, cod, preorder, item_json)
+             VALUES ('shopee', ?, ?, ?, ?, 0, 0, 0, ?, 'orders_toship', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(marketplace, no_pesanan) DO UPDATE SET
+               tanggal = excluded.tanggal, buyer = excluded.buyer, no_resi = CASE WHEN excluded.no_resi = '' THEN orders.no_resi ELSE excluded.no_resi END,
+               opsi_kirim = excluded.opsi_kirim, antar_ke = excluded.antar_ke, status_mp = excluded.status_mp, batch_import = excluded.batch_import,
+               jasa_kirim = excluded.jasa_kirim, tipe_layanan = excluded.tipe_layanan, cod = excluded.cod, preorder = excluded.preorder, item_json = excluded.item_json,
+               asal_import = CASE WHEN orders.asal_import = '' THEN excluded.asal_import ELSE orders.asal_import END,
+               status_fulfill = CASE WHEN orders.status_fulfill = 'pending' THEN excluded.status_fulfill ELSE orders.status_fulfill END`,
+          )
+          .bind(
+            o.no_pesanan, o.tanggal, o.buyer, o.statusAwal, o.noResi,
+            o.opsiKirim, o.antarKe, o.statusMp, batch.id, o.jasaKirim, o.tipeLayanan, o.cod ? 1 : 0, o.preorder ? 1 : 0, JSON.stringify(o.items),
+          ),
+      );
+      stmts.push(db.prepare("DELETE FROM order_items WHERE marketplace = 'shopee' AND no_pesanan = ?").bind(o.no_pesanan));
+      for (const item of o.items) {
+        const skuFinal = skuManual.get(`${o.no_pesanan}\u0000${item.nama_shopee}\u0000${item.variasi}`) ?? item.sku;
+        const hpp = await ambilProduk(db, skuFinal);
+        if (!hpp) return json({ ok: false, error: `SKU ${skuFinal} belum ada di master stok (order ${o.no_pesanan}).` }, 400);
+        stmts.push(
+          db
+            .prepare(
+              "INSERT INTO order_items (marketplace, no_pesanan, sku, variasi, nama_shopee, qty, harga_satuan, hpp_snapshot, subtotal) VALUES ('shopee', ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(o.no_pesanan, skuFinal, item.variasi, item.nama_shopee, item.qty, item.harga_satuan, hpp.hpp ?? 0, item.subtotal),
+        );
+        nItem++;
+      }
+    }
+    for (let i = 0; i < stmts.length; i += 50) await db.batch(stmts.slice(i, i + 50));
+    const bookingBaru = await simpanBooking(db, advance, batch.id);
+    const jmlResi = await isiResiGrup(db, batch.id);
+    await catatImportFile(db, {
+      tipe: "orders_toship",
+      file: batch.file,
+      hash: payload.hash,
+      no_json: [...noList, ...advance.map((a) => a.booking_sn)],
+      batch_id: batch.id,
+      by: String(user.tg_id),
+    });
+    await db.prepare("UPDATE import_batches SET status = 'done', sukses = ? WHERE id = ?").bind(nItem, batch.id).run();
+    return json({ ok: true, order: orders.length, item: nItem, advance: bookingBaru, advance_skip: advance.length - bookingBaru, resi_grup: jmlResi, batch_id: batch.id });
   }
   if (aksi === "konfirmasi") {
     if (typeof body.batch_id !== "number") return json({ ok: false, error: "batch_id wajib angka." }, 400);

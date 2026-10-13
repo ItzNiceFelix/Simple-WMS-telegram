@@ -7,6 +7,7 @@ import { toast } from "sonner";
 import { FileDown, FileUp, PackageSearch, RotateCcw } from "lucide-react";
 
 import { DialogImportExcel } from "@/components/dashboard/dialog-import-excel";
+import { DialogImportOrder } from "@/components/dashboard/dialog-import-order";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { ButuhAkses } from "@/components/dashboard/butuh-akses";
 import { tampilkanGagalTulis } from "@/components/dashboard/umpan-tulis";
@@ -50,6 +51,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatRupiah } from "@/lib/dashboard/format";
 import type { OrderDetail } from "@/lib/d1/order";
 
@@ -76,17 +78,54 @@ const TRANSISI: Record<string, { ke: string; label: string }[]> = {
 
 const DAFTAR_STATUS = ["semua", "pending", "pack", "kirim", "selesai", "batal"];
 
+// Mode cetak picklist (F18/T7). per_paket = 1 lembar per no_resi (default resi gabungan).
+const MODE_PICKLIST = [
+  { mode: "per_paket", label: "Per Paket" },
+  { mode: "pisah", label: "Pisah" },
+  { mode: "gabung", label: "Gabung" },
+] as const;
+
+type ModePicklist = (typeof MODE_PICKLIST)[number]["mode"];
+
 export default function HalamanOrder() {
   return (
     <ButuhAkses href="/order">
-      <DaftarOrder />
+      <TabsOrder />
     </ButuhAkses>
+  );
+}
+
+/** Tab Order | Advance (Fase E3). Daftar order lama tetap utuh; advance = tautan halaman advance. */
+function TabsOrder() {
+  const [tab, setTab] = useState("order");
+  return (
+    <Tabs value={tab} onValueChange={(v) => typeof v === "string" && setTab(v)} className="gap-4">
+      <TabsList data-testid="tab-order">
+        <TabsTrigger value="order" data-testid="tab-order-order">Order</TabsTrigger>
+        <TabsTrigger value="advance" data-testid="tab-order-advance">Advance</TabsTrigger>
+      </TabsList>
+      <TabsContent value="order">
+        <DaftarOrder />
+      </TabsContent>
+      <TabsContent value="advance">
+        <div className="flex flex-col items-start gap-3 rounded-lg border border-border p-4">
+          <p className="text-sm text-muted-foreground">
+            Booking Advance Fulfilment dikelola di halaman terpisah: cetak picklist, kirim ke Shopee, atau batalkan.
+          </p>
+          <Button className="h-11 md:h-9" data-testid="buka-halaman-advance" onClick={() => window.open("/advance", "_self")}>
+            Buka halaman Advance
+          </Button>
+        </div>
+      </TabsContent>
+    </Tabs>
   );
 }
 
 function DaftarOrder() {
   const [orders, setOrders] = useState<RincianOrder[] | null>(null);
   const [importOpen, setImportOpen] = useState(false);
+  const [importOrderOpen, setImportOrderOpen] = useState(false);
+  const [modePicklist, setModePicklist] = useState<ModePicklist>("per_paket");
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState("semua");
   const [mp, setMp] = useState("");
@@ -145,7 +184,7 @@ function DaftarOrder() {
     const targets = orders
       .filter((o) => terpilih.has(kunciOrder(o)))
       .map((o) => ({ marketplace: o.marketplace, no_pesanan: o.no_pesanan }));
-    const q = new URLSearchParams({ aksi: "picklist-pdf", targets: JSON.stringify(targets) });
+    const q = new URLSearchParams({ aksi: "picklist-pdf", targets: JSON.stringify(targets), mode: modePicklist });
     window.open(`/api/order?${q}`, "_blank");
   }
 
@@ -220,6 +259,10 @@ function DaftarOrder() {
             <Button size="lg" variant="outline" className="h-11 md:h-8" data-testid="impor-pesanan" onClick={() => setImportOpen(true)}>
               <FileUp data-icon="inline-start" />
               Impor Pesanan
+            </Button>
+            <Button size="lg" variant="outline" className="h-11 md:h-8" data-testid="impor-order-shopee" onClick={() => setImportOrderOpen(true)}>
+              <FileUp data-icon="inline-start" />
+              Impor Shopee
             </Button>
             <Button size="lg" variant="outline" className="h-11 md:h-8" data-testid="muat-ulang-order" onClick={() => void muat()}>
               <RotateCcw data-icon="inline-start" />
@@ -300,6 +343,20 @@ function DaftarOrder() {
               <FileDown data-icon="inline-start" />
               Picklist PDF
             </Button>
+            <Select value={modePicklist} onValueChange={(v) => typeof v === "string" && setModePicklist(v as ModePicklist)}>
+              <SelectTrigger className="h-9 w-32" data-testid="mode-picklist-order">
+                <SelectValue>{(v: string | null) => MODE_PICKLIST.find((m) => m.mode === v)?.label ?? "Per Paket"}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  {MODE_PICKLIST.map((m) => (
+                    <SelectItem key={m.mode} value={m.mode}>
+                      {m.label}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
           </div>
         </div>
 
@@ -427,6 +484,7 @@ function DaftarOrder() {
         </AlertDialogContent>
       </AlertDialog>
       <DialogImportExcel open={importOpen} onOpenChange={setImportOpen} tipe="pesanan" onSukses={() => void muat()} />
+      <DialogImportOrder open={importOrderOpen} onOpenChange={setImportOrderOpen} onSukses={() => void muat()} />
     </>
   );
 }
