@@ -145,3 +145,20 @@ Ditambah teks penjelas: baris tanpa SKU di file Shopee → pilih SKU master ATAU
 ### Fitur — Rincian item per order
 Tombol "N item" pada baris order membuka dialog rincian (SKU, nama Shopee, variasi, qty, subtotal). Baris dengan SKU+variasi sama sudah digabung otomatis; variasi berbeda tetap terpisah (mis. MERAH vs BIRU = 2 item, bukan digabung).
 `ambilOrder` + `OrderItem` kini membawa `variasi` & `nama_shopee`.
+
+## Efisiensi Preview Import Order (2026-10-13)
+
+### Pengelompokan baris "Perlu SKU"
+**Masalah:** baris tanpa SKU tampil satu per satu — file nyata punya 176 baris, padahal hanya 20 produk unik. "PISAU SET DAPUR 3IN1" muncul di 128 order dan harus dipetakan 128 kali.
+
+**Fix:** `normalisasiSheetShopee` mengelompokkan per (nama_shopee, variasi) IDENTIK → satu baris preview mewakili semua order anggotanya.
+- `BarisBelumSku` dapat field baru: `order_refs` (semua No. Pesanan), `jumlah_order`, `qty_total`.
+- Kolom **Order** menampilkan `"128 order"` + `order_ref +127 lagi` (hover = daftar lengkap).
+- Kolom **Qty** menampilkan total qty grup.
+- Urut dari grup terbesar supaya yang paling menghemat tampil di atas.
+- SKU yang dipilih diterapkan ke SEMUA order anggota (`flatMap` di client); "Belum di MP" juga menandai semua anggota.
+- Variasi BEDA tetap terpisah (MERAH vs BIRU = 2 baris) — sengaja, supaya varian tidak tercampur.
+
+**Bonus:** tebakan SKU otomatis (`tebakSku`) turun dari 176 query → 20 query, karena satu grup = satu tebakan.
+
+**Hasil pada file nyata:** 176 baris → 20 baris preview (hemat 156 klik / 89%). Total order terwakili tetap 176 — tidak ada yang hilang.

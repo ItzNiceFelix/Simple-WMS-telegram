@@ -122,7 +122,10 @@ describe("normalisasiSheetShopee", () => {
   it("baris tanpa SKU masuk belumSku DAN order tetap dibuat (dulu order hilang)", () => {
     const r = normalisasiSheetShopee([{ ...HDR, "No. Pesanan": "O-11", Jumlah: 1, "Nama Produk": "Rak Makanan", "Nama Variasi": "MERAH,3 SSN" }], []);
     assert.equal(r.belumSku.length, 1);
-    assert.deepEqual(r.belumSku[0], { order_ref: "O-11", nama_shopee: "Rak Makanan", variasi: "MERAH,3 SSN" });
+    assert.equal(r.belumSku[0].order_ref, "O-11");
+    assert.equal(r.belumSku[0].nama_shopee, "Rak Makanan");
+    assert.equal(r.belumSku[0].variasi, "MERAH,3 SSN");
+    assert.deepEqual(r.belumSku[0].order_refs, ["O-11"]);
     // Order HARUS tetap ada dengan item sku kosong — supaya bisa dipetakan manual.
     assert.equal(r.orders.length, 1);
     assert.equal(r.orders[0].items.length, 1);
@@ -152,7 +155,52 @@ describe("normalisasiSheetShopee", () => {
     assert.equal(r.orders.length, 1);
     assert.equal(r.orders[0].items.length, 1);
     assert.equal(r.orders[0].items[0].qty, 4);
-    assert.equal(r.belumSku.length, 2);
+    assert.equal(r.belumSku.length, 1);
+    assert.equal(r.belumSku[0].qty_total, 4);
+  });
+
+  it("produk sama di banyak order dikelompokkan jadi SATU baris preview", () => {
+    const r = normalisasiSheetShopee(
+      [
+        { ...HDR, "No. Pesanan": "O-A", Jumlah: "2", "Nama Produk": "Pisau Set", "Nama Variasi": "" },
+        { ...HDR, "No. Pesanan": "O-B", Jumlah: "1", "Nama Produk": "Pisau Set", "Nama Variasi": "" },
+        { ...HDR, "No. Pesanan": "O-C", Jumlah: "3", "Nama Produk": "Pisau Set", "Nama Variasi": "" },
+      ],
+      []
+    );
+    assert.equal(r.belumSku.length, 1, "3 order produk sama = 1 baris");
+    assert.equal(r.belumSku[0].jumlah_order, 3);
+    assert.deepEqual(r.belumSku[0].order_refs, ["O-A", "O-B", "O-C"]);
+    assert.equal(r.belumSku[0].qty_total, 6);
+    assert.equal(r.belumSku[0].nama_shopee, "Pisau Set");
+    // ketiga order tetap dibuat (masing-masing 1 item tanpa SKU)
+    assert.equal(r.orders.length, 3);
+  });
+
+  it("variasi BEDA tidak digabung walau nama produknya sama", () => {
+    const r = normalisasiSheetShopee(
+      [
+        { ...HDR, "No. Pesanan": "O-D", Jumlah: "1", "Nama Produk": "Rak Makanan", "Nama Variasi": "MERAH" },
+        { ...HDR, "No. Pesanan": "O-E", Jumlah: "1", "Nama Produk": "Rak Makanan", "Nama Variasi": "BIRU" },
+      ],
+      []
+    );
+    assert.equal(r.belumSku.length, 2, "variasi beda harus tetap terpisah");
+    const varian = r.belumSku.map((b) => b.variasi).sort();
+    assert.deepEqual(varian, ["BIRU", "MERAH"]);
+  });
+
+  it("baris yg sama tak dihitung dua kali bila order sama (dedup refs)", () => {
+    const r = normalisasiSheetShopee(
+      [
+        { ...HDR, "No. Pesanan": "O-F", Jumlah: "1", "Nama Produk": "X", "Nama Variasi": "v" },
+        { ...HDR, "No. Pesanan": "O-F", Jumlah: "1", "Nama Produk": "X", "Nama Variasi": "v" },
+      ],
+      []
+    );
+    assert.equal(r.belumSku.length, 1);
+    assert.equal(r.belumSku[0].jumlah_order, 1, "order sama tidak dihitung 2x");
+    assert.equal(r.belumSku[0].qty_total, 2, "tapi qty tetap dijumlah");
   });
 
   it("SKU tak dikenal master → gagal", () => {

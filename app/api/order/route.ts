@@ -271,7 +271,8 @@ export async function POST(request: Request) {
     }
     for (const sku of skuAda) await adaSku(sku);
     const normal = normalisasiSheetShopee(orderRows, advanceRows, (sku) => cekSku.get(sku) === true);
-    // Tebak SKU untuk baris belumSku (D1) — hanya cocok persis yang auto-isi; sisanya manual.
+    // Tebak SKU per GRUP (nama+variasi identik), bukan per baris: satu grup = satu tebakan.
+    // Sebelum pengelompokan ini, 176 baris = 176 query (dipotong 100); kini ~20 grup = 20 query.
     const belumSku: (BarisBelumSku & { tebakan: TebakanSku })[] = [];
     for (const b of normal.belumSku.slice(0, 100)) belumSku.push({ ...b, tebakan: await tebakSku(db, b.nama_shopee, b.variasi) });
     for (const b of normal.belumSku.slice(100)) belumSku.push({ ...b, tebakan: { sku: "", perlu_pilih_manual: true, kandidat: [] } });

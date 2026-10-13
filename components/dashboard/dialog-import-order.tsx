@@ -39,9 +39,15 @@ import { tampilkanGagalTulis } from "@/components/dashboard/umpan-tulis"
 
 type Kandidat = { sku: string; nama: string; skor: number }
 type BarisBelumSku = {
+  /** No. Pesanan pertama pada grup (kompat). */
   order_ref: string
+  /** Seluruh No. Pesanan yang memuat produk sama ini. */
+  order_refs: string[]
+  /** Banyak order yang terkena — inilah yang tampil di kolom Order. */
+  jumlah_order: number
   nama_shopee: string
   variasi: string
+  qty_total: number
   tebakan: { sku: string; perlu_pilih_manual: boolean; kandidat: Kandidat[] }
 }
 type Mundur = { no_pesanan: string; no_resi: string; wms: string; file: string }
@@ -160,13 +166,20 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
     if (!preview) return
     setMengirim(true)
     try {
-      const skuManual = Object.entries(manual).map(([k, sku]) => {
+      const skuManual = Object.entries(manual).flatMap(([k, sku]) => {
         const [order_ref, nama_shopee, variasi] = k.split("\u0000")
-        return { order_ref, nama_shopee, variasi, sku }
+        // Baris preview mewakili beberapa order sekaligus — terapkan ke semuanya.
+        const baris = preview.belumSku.find(
+          (b) => b.order_ref === order_ref && b.nama_shopee === nama_shopee && b.variasi === variasi
+        )
+        const refs = baris?.order_refs ?? [order_ref]
+        return refs.map((ref) => ({ order_ref: ref, nama_shopee, variasi, sku }))
       })
       const tandaiBelumMp = preview.belumSku
         .filter((b) => tandai.has(kunciBaris(b)))
-        .map((b) => ({ order_ref: b.order_ref, nama_shopee: b.nama_shopee, variasi: b.variasi }))
+        .flatMap((b) =>
+          (b.order_refs ?? [b.order_ref]).map((ref) => ({ order_ref: ref, nama_shopee: b.nama_shopee, variasi: b.variasi }))
+        )
       const res = await fetch("/api/order", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -270,6 +283,7 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
                         <TableHead>Order</TableHead>
                         <TableHead>Nama Shopee</TableHead>
                         <TableHead>Variasi</TableHead>
+                        <TableHead>Qty</TableHead>
                         <TableHead>SKU</TableHead>
                         <TableHead>Belum di MP</TableHead>
                       </TableRow>
@@ -277,11 +291,26 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
                     <TableBody>
                       {belumSkuList.map((b) => {
                         const k = kunciBaris(b)
+                        const refs = b.order_refs ?? [b.order_ref]
                         return (
                           <TableRow key={k} data-testid={`belum-sku-${b.order_ref}`}>
-                            <TableCell className="tabular-nums">{b.order_ref}</TableCell>
-                            <TableCell>{b.nama_shopee}</TableCell>
+                            <TableCell className="tabular-nums">
+                              <span
+                                className="block font-medium"
+                                title={refs.join("\n")}
+                                data-testid={`jumlah-order-${b.order_ref}`}
+                              >
+                                {b.jumlah_order > 1 ? `${b.jumlah_order} order` : b.order_ref}
+                              </span>
+                              {b.jumlah_order > 1 && (
+                                <span className="block text-[11px] text-muted-foreground">
+                                  {b.order_ref} +{b.jumlah_order - 1} lagi
+                                </span>
+                              )}
+                            </TableCell>
+                            <TableCell className="max-w-64 truncate" title={b.nama_shopee}>{b.nama_shopee}</TableCell>
                             <TableCell>{b.variasi || "-"}</TableCell>
+                            <TableCell className="text-right tabular-nums">{b.qty_total}</TableCell>
                             <TableCell>
                               <Select value={manual[k] ?? ""} onValueChange={(v) => typeof v === "string" && pilihSku(b, v)}>
                                 <SelectTrigger className="h-9 w-52" data-testid={`pilih-sku-${b.order_ref}`}>

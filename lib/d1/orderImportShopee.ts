@@ -52,8 +52,21 @@ export type ShopeeBooking = {
 
 export type GagalShopee = { no_pesanan: string; sku?: string; pesan: string };
 
-/** Tombol "Belum ada SKU di MP" (sku_belum_mp) — diteruskan ke hasil untuk tagging UI. */
-export type BarisBelumSku = { order_ref: string; nama_shopee: string; variasi: string };
+/**
+ * Tombol "Belum ada SKU di MP" (sku_belum_mp) — diteruskan ke hasil untuk tagging UI.
+ *
+ * Dikelompokkan per (nama_shopee, variasi) IDENTIK: satu baris preview mewakili
+ * semua order yang memuat produk sama, supaya SKU dipetakan sekali saja.
+ * `order_refs` = seluruh No. Pesanan yang terkena; `order_ref` = yang pertama (kompat).
+ */
+export type BarisBelumSku = {
+  order_ref: string;
+  order_refs: string[];
+  jumlah_order: number;
+  nama_shopee: string;
+  variasi: string;
+  qty_total: number;
+};
 
 export type HasilImportShopee = {
   orders: GabunganOrder[];
@@ -131,7 +144,8 @@ export function normalisasiSheetShopee(
   hasSku: (sku: string) => boolean = () => true,
 ): HasilImportShopee {
   const gagal: GagalShopee[] = [];
-  const belumSku: BarisBelumSku[] = [];
+  // Kumpulan mentah baris tanpa SKU; dikelompokkan di akhir per (nama, variasi).
+  const belumSkuMentah: { order_ref: string; nama_shopee: string; variasi: string; qty: number }[] = [];
 
   if (!namaProdukTerisi(ordersRows)) {
     return { orders: [], advance: [], belumSku: [], gagal: [{ no_pesanan: "", pesan: "File export tidak lengkap (kolom Nama Produk kosong >90%)." }] };
@@ -164,7 +178,7 @@ export function normalisasiSheetShopee(
       // Baris tanpa SKU: order TETAP dibuat (jangan hilang), item disimpan dengan sku ""
       // agar bisa dipetakan manual saat konfirmasi. Tanpa ini, order yang seluruh barisnya
       // tanpa SKU hilang total padahal barangnya ada di file.
-      belumSku.push({ order_ref: no, nama_shopee: namaShopee, variasi });
+      belumSkuMentah.push({ order_ref: no, nama_shopee: namaShopee, variasi, qty });
       const kunciKosong = `\u0000${namaShopee}\u0000${variasi}`;
       const lamaKosong = g.items.get(kunciKosong);
       g.items.set(kunciKosong, {
@@ -253,5 +267,35 @@ export function normalisasiSheetShopee(
     });
   }
 
-  return { orders, advance, gagal, belumSku };
+  return { orders, advance, gagal, belumSku: kelompokkanBelumSku(belumSkuMentah) };
+}
+
+/**
+ * Kelompokkan baris tanpa SKU per (nama_shopee, variasi) IDENTIK.
+ * Satu produk yang muncul di banyak order jadi SATU baris preview: pemetaan SKU
+ * cukup sekali, lalu diterapkan ke semua order anggotanya.
+ * Urut dari yang paling banyak order (paling menghemat) lalu nama.
+ */
+function kelompokkanBelumSku(mentah: { order_ref: string; nama_shopee: string; variasi: string; qty: number }[]): BarisBelumSku[] {
+  const peta = new Map<string, { nama: string; variasi: string; refs: string[]; qty: number }>();
+  for (const b of mentah) {
+    const k = `${b.nama_shopee}\u0000${b.variasi}`;
+    let e = peta.get(k);
+    if (!e) {
+      e = { nama: b.nama_shopee, variasi: b.variasi, refs: [], qty: 0 };
+      peta.set(k, e);
+    }
+    if (!e.refs.includes(b.order_ref)) e.refs.push(b.order_ref);
+    e.qty += b.qty;
+  }
+  return [...peta.values()]
+    .map((e) => ({
+      order_ref: e.refs[0] ?? "",
+      order_refs: e.refs,
+      jumlah_order: e.refs.length,
+      nama_shopee: e.nama,
+      variasi: e.variasi,
+      qty_total: e.qty,
+    }))
+    .sort((a, b) => b.jumlah_order - a.jumlah_order || a.nama_shopee.localeCompare(b.nama_shopee) || a.variasi.localeCompare(b.variasi));
 }
