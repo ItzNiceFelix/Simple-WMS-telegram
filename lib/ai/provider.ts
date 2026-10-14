@@ -195,7 +195,7 @@ export async function panggilGambar(
     /** Jumlah gambar yang diminta (1..4). Kosong = 1. */
     jumlah?: number;
   }
-): Promise<Hasil<{ base64: string; mime: string; provider: string; model: string }>> {
+): Promise<Hasil<{ base64: string; mime: string; provider: string; model: string; dilewati?: string }>> {
   const catatan: Catatan[] = [];
   if (!ctx.kunci && !ctx.env?.AI_KEY_ENCRYPTION_KEY) return gagal(500, "AI_KEY_ENCRYPTION_KEY belum diset.");
 
@@ -228,14 +228,14 @@ export async function panggilGambar(
     const tanpaKred = catatan.filter((c) => c.error.includes("tidak ada kredensial"));
     if (tanpaKred.length === catatan.length && catatan.length > 0) {
       const perlu = [...new Set(tanpaKred.map((c) => c.provider))];
-      return gagal<{ base64: string; mime: string; provider: string; model: string }>(
+      return gagal<{ base64: string; mime: string; provider: string; model: string; dilewati?: string }>(
         400,
         `Tidak ada kredensial aktif untuk: ${perlu.join(", ")}. ` +
           `Isi API key provider itu di Pengaturan → Kredensial Provider, ` +
           `atau pilih provider yang kredensialnya sudah ada (mis. di Model Default).`
       );
     }
-    return gagal<{ base64: string; mime: string; provider: string; model: string }>(502, ringkasGagal(catatan));
+    return gagal<{ base64: string; mime: string; provider: string; model: string; dilewati?: string }>(502, ringkasGagal(catatan));
   };
 
   for (const provider of rantaiGambar) {
@@ -277,7 +277,11 @@ export async function panggilGambar(
         continue;
       }
       await catatPemakaian(ctx.db, { provider, model, jenis: "gambar" });
-      return { ok: true, base64: h.data.base64, mime: h.data.mime, provider, model };
+      // Bila ada percobaan yang dilewati sebelum model ini berhasil, sertakan di
+      // respons supaya user tahu model pilihannya bermasalah (tidak diam-diam jatuh
+      // ke model lain dan membingungkan).
+      const dilewati = catatan.length > 0 ? ` Dilewati: ${ringkasGagal(catatan)}` : "";
+      return { ok: true, base64: h.data.base64, mime: h.data.mime, provider, model, dilewati };
     }
   }
   return gagalSemua();

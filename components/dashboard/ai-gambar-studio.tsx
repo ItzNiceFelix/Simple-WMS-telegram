@@ -31,7 +31,7 @@ const MAKS_REFERENSI = 5
 
 type PresetPrompt = { id: number; nama: string; kategori: string; prompt: string; aktif: number }
 type Referensi = { id: number; mime: string; base64: string; nama: string }
-type Hasil = { base64: string; mime: string; provider: string; model: string }
+type Hasil = { base64: string; mime: string; provider: string; model: string; dilewati?: string }
 
 let idBerikut = 1
 
@@ -126,15 +126,23 @@ export function AiGambarStudio() {
         }),
       })
       const d = (await res.json().catch(() => null)) as
-        | { ok?: boolean; base64?: string; mime?: string; provider?: string; model?: string; error?: string }
+        | { ok?: boolean; base64?: string; mime?: string; provider?: string; model?: string; dilewati?: string; error?: string }
         | null
       if (!res.ok || !d?.ok || !d.base64) {
         tampilkanGagalTulis(d?.error ?? `Gagal membuat gambar (${res.status}).`)
         return
       }
-      setHasil({ base64: d.base64, mime: d.mime ?? "image/png", provider: d.provider ?? "-", model: d.model ?? "-" })
+      setHasil({
+        base64: d.base64,
+        mime: d.mime ?? "image/png",
+        provider: d.provider ?? "-",
+        model: d.model ?? "-",
+        dilewati: d.dilewati,
+      })
       setArea([])
       toast.success(`Gambar dibuat oleh ${d.provider ?? "-"}.`)
+      // Model pilihan yang gagal tidak boleh diam-diam tergantikan — beri tahu apa adanya.
+      if (d.dilewati) toast.warning(`Model pilihan dilewati: ${d.dilewati}`, { duration: 12000 })
     } catch (e) {
       tampilkanGagalTulis(e instanceof Error ? e.message : "Gagal menghubungi server.")
     } finally {
@@ -251,6 +259,11 @@ export function AiGambarStudio() {
                   <span className="text-xs text-muted-foreground">
                     Hasil: {hasil.provider} · {hasil.model}
                   </span>
+                  {hasil.dilewati ? (
+                    <span className="text-[11px] text-amber-700" data-testid="model-dilewati">
+                      Model pilihan dilewati: {hasil.dilewati}
+                    </span>
+                  ) : null}
                 </div>
               </>
             ) : (

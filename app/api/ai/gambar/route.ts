@@ -135,5 +135,14 @@ export async function POST(request: Request) {
   });
   if (!hasil.ok) return json({ ok: false, error: hasil.error }, hasil.status);
 
-  return json({ ok: true, base64: hasil.base64, mime: hasil.mime, provider: hasil.provider, model: hasil.model });
+  return json({
+    ok: true,
+    base64: hasil.base64,
+    mime: hasil.mime,
+    provider: hasil.provider,
+    model: hasil.model,
+    // Info model yang dilewati sebelum berhasil — supaya model pilihan yang bermasalah
+    // tidak diam-diam tergantikan tanpa user sadar.
+    dilewati: hasil.dilewati || undefined,
+  });
 }
