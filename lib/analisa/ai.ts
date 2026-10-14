@@ -32,6 +32,10 @@ ATURAN YANG TIDAK BOLEH DILANGGAR:
    (GMV MAX, AUTO ROAS), dan DILARANG menyarankan angka setelan tertentu.
 5. Bahasa Indonesia sederhana, tanpa istilah teknis. Pemilik toko bukan programmer.
 6. Ringkas. Paling banyak 5 temuan, masing-masing 1-3 kalimat.
+7. JANGAN membalik arah temuan. Setiap temuan sudah menyatakan sifatnya (rugi, tipis,
+   terlalu bergantung, dst). Menyebut konsentrasi laba yang tinggi sebagai pencapaian
+   BAIK adalah kesalahan — konsentrasi tinggi itu RISIKO. Bila ragu, kutip judul temuan
+   apa adanya dan jangan menambahkan penilaian sendiri.
 
 Bentuk jawaban:
 - Satu paragraf ringkasan keadaan toko periode ini.
@@ -63,7 +67,10 @@ export function susunBahan(h: HasilAnalisa): string {
   } else {
     baris.push("TEMUAN (sudah dihitung, kutip apa adanya):");
     for (const t of h.temuan) {
-      baris.push(`- [${t.keparahan}] ${t.judul}: ${t.penjelasan}`);
+      // Arah temuan dinyatakan EKSPLISIT supaya model tidak bisa membalik artinya
+      // (mis. menyebut konsentrasi laba tinggi sebagai pencapaian baik).
+      const arah = t.keparahan === "kritis" ? "masalah serius" : t.keparahan === "peringatan" ? "perlu diperhatikan" : "catatan";
+      baris.push(`- [${arah}] ${t.judul}: ${t.penjelasan}`);
       baris.push(`    angka: ${t.angka.nilai} ${t.angka.satuan}; ${t.angka.jumlahTerkena} SKU terkena`);
       if (t.contohSku.length > 0) {
         const contoh = t.contohSku.slice(0, 5).map((s) => `${s.sku}=${s.nilai}`).join(", ");

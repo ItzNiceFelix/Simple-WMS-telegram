@@ -91,6 +91,26 @@ describe("susunBahan", () => {
     assert.match(b, /0543/);
   });
 
+  it("menyatakan ARAH temuan secara eksplisit (model tidak bisa membalik arti)", () => {
+    // Tanpa ini, model pernah menulis "10 SKU teratas HANYA menanggung 65,5% laba" —
+    // kalimat itu membalik arti temuan konsentrasi (yang sebenarnya RISIKO) menjadi
+    // seolah pencapaian rendah. Arah dinyatakan di bahan supaya tidak bergantung tebakan.
+    const b = susunBahan(hasilUji());
+    assert.match(b, /\[masalah serius\]/, "temuan kritis ditandai arahnya");
+  });
+
+  it("temuan peringatan ditandai 'perlu diperhatikan', catatan ditandai 'catatan'", () => {
+    const h = hasilUji({
+      temuan: [
+        { ...temuanUji(), kode: "a", keparahan: "peringatan", judul: "Margin tipis" },
+        { ...temuanUji(), kode: "b", keparahan: "catatan", judul: "Catatan kecil" },
+      ],
+    });
+    const b = susunBahan(h);
+    assert.match(b, /\[perlu diperhatikan\] Margin tipis/);
+    assert.match(b, /\[catatan\] Catatan kecil/);
+  });
+
   it("menyebut ROAS impas per SKU", () => {
     const b = susunBahan(hasilUji());
     assert.match(b, /ROAS impas 2\.33/);

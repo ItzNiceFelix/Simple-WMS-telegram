@@ -43,9 +43,22 @@ export async function GET(request: Request) {
 
   if (aksi === "preset") {
     const preset = await daftarPresetAnalisa(db);
-    const pertama = preset[0]?.id ?? 0;
-    const tanggal = pertama > 0 ? await daftarTanggalSnapshot(db, pertama) : [];
-    return json({ ok: true, preset, tanggal });
+    // Tanggal dikembalikan PER PRESET, bukan hanya untuk preset pertama. Snapshot tidak
+    // selalu ada di preset pertama (di produksi: preset 1 kosong, preset 2 punya 3 snapshot),
+    // dan mengasumsikan preset pertama membuat halaman tampil kosong padahal datanya ada.
+    const petaTanggal: Record<string, string[]> = {};
+    for (const p of preset) {
+      petaTanggal[String(p.id)] = await daftarTanggalSnapshot(db, p.id);
+    }
+    const pertamaDenganData = preset.find((p) => (petaTanggal[String(p.id)] ?? []).length > 0) ?? preset[0];
+    const idAwal = pertamaDenganData?.id ?? 0;
+    return json({
+      ok: true,
+      preset,
+      tanggal: idAwal > 0 ? (petaTanggal[String(idAwal)] ?? []) : [],
+      presetAwal: idAwal,
+      tanggalPerPreset: petaTanggal,
+    });
   }
 
   const presetId = Number(url.searchParams.get("presetId"));

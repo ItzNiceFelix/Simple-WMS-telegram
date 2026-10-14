@@ -120,6 +120,7 @@ function Analisa() {
   const [presetId, setPresetId] = useState<number>(0);
   const [tanggal, setTanggal] = useState<string>("");
   const [tanggalAda, setTanggalAda] = useState<string[]>([]);
+  const [tanggalPerPreset, setTanggalPerPreset] = useState<Record<string, string[]>>({});
   const [hasil, setHasil] = useState<Hasil | null>(null);
   const [iklan, setIklan] = useState<SaranIklan | null>(null);
   const [mendalam, setMendalam] = useState<{ narasi: string; model: string; reasoning: string } | null>(null);
@@ -133,21 +134,34 @@ function Analisa() {
     void (async () => {
       try {
         const res = await fetch("/api/analisa?aksi=preset", { credentials: "include" });
-        const d = (await res.json().catch(() => null)) as { ok?: boolean; preset?: Preset[]; tanggal?: string[]; error?: string } | null;
+        const d = (await res.json().catch(() => null)) as {
+          ok?: boolean; preset?: Preset[]; tanggal?: string[]; presetAwal?: number;
+          tanggalPerPreset?: Record<string, string[]>; error?: string;
+        } | null;
         if (!res.ok || !d?.ok) throw new Error(d?.error ?? `Gagal memuat (${res.status}).`);
-        const p = d.preset ?? [];
-        setPreset(p);
-        setTanggalAda(d.tanggal ?? []);
-        if (p.length > 0 && p[0].id > 0) {
-          setPresetId(p[0].id);
-          setTanggal((d.tanggal ?? [])[0] ?? "");
-        }
+        setPreset(d.preset ?? []);
+        setTanggalPerPreset(d.tanggalPerPreset ?? {});
+        // Preset awal dipilih SERVER: yang benar-benar punya data. Kalau halaman memilih
+        // preset pertama sendiri, dan preset itu kosong, user melihat halaman kosong
+        // padahal data ada di preset lain.
+        const idAwal = d.presetAwal ?? 0;
+        setPresetId(idAwal);
+        setTanggal((d.tanggalPerPreset?.[String(idAwal)] ?? d.tanggal ?? [])[0] ?? "");
       } catch (e) {
         tampilkanGagalTulis(e instanceof Error ? e.message : "Gagal memuat daftar preset.");
         setMemuat(false);
       }
     })();
   }, []);
+
+  // Ganti preset: tanggal ikut berganti ke yang tersedia di preset itu, karena
+  // snapshot per preset berbeda-beda.
+  useEffect(() => {
+    if (!presetId) return;
+    const ada = tanggalPerPreset[String(presetId)];
+    if (!ada) return;
+    if (!ada.includes(tanggal)) setTanggal(ada[0] ?? "");
+  }, [presetId, tanggalPerPreset, tanggal]);
 
   const muatAnalisa = useCallback(async (pid: number, tgl: string) => {
     if (!pid || !tgl) return;
@@ -161,7 +175,12 @@ function Analisa() {
       const d = (await res.json().catch(() => null)) as Hasil | null;
       if (!res.ok || !d?.ok) throw new Error(d?.error ?? `Gagal memuat analisa (${res.status}).`);
       setHasil(d);
-      setTanggalAda(d.tanggalTersedia ?? []);
+      // Hanya perbarui daftar tanggal bila server memang mengirimnya; menimpanya dengan
+      // daftar kosong membuat pemilih tanggal hilang tanpa sebab yang terlihat.
+      if ((d.tanggalTersedia ?? []).length > 0) {
+        setTanggalAda(d.tanggalTersedia);
+        setTanggalPerPreset((s) => ({ ...s, [String(pid)]: d.tanggalTersedia }));
+      }
     } catch (e) {
       tampilkanGagalTulis(e instanceof Error ? e.message : "Gagal memuat analisa.");
       setHasil(null);
