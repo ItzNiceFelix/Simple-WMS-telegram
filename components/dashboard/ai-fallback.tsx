@@ -15,7 +15,6 @@ import { Input } from "@/components/ui/input"
 import { Spinner } from "@/components/ui/spinner"
 import { tampilkanGagalTulis } from "@/components/dashboard/umpan-tulis"
 import { LABEL_PROVIDER, PROVIDER_AI } from "@/components/dashboard/ai-kredensial"
-import type { ModelAi } from "@/components/dashboard/ai-model"
 
 type Pengaturan = {
   textProvider: string
@@ -51,7 +50,6 @@ type Pemakaian = {
 
 export function AiFallback({ bolehUbah, onBerubah }: Props) {
   const [p, setP] = useState<Pengaturan | null>(null)
-  const [model, setModel] = useState<ModelAi[]>([])
   const [mengirim, setMengirim] = useState(false)
   const [maksRiwayat, setMaksRiwayat] = useState("10")
   const [maksLoopTool, setMaksLoopTool] = useState("5")
@@ -59,9 +57,8 @@ export function AiFallback({ bolehUbah, onBerubah }: Props) {
 
   const muat = useCallback(async () => {
     try {
-      const [r1, r2, r3] = await Promise.all([
+      const [r1, r3] = await Promise.all([
         fetch("/api/pengaturan/ai?aksi=ringkas", { credentials: "include" }),
-        fetch("/api/pengaturan/ai?aksi=model", { credentials: "include" }),
         fetch("/api/pengaturan/ai?aksi=pemakaian", { credentials: "include" }),
       ])
       const d1 = (await r1.json().catch(() => null)) as { ok?: boolean; pengaturan?: Pengaturan; error?: string } | null
@@ -69,8 +66,6 @@ export function AiFallback({ bolehUbah, onBerubah }: Props) {
       setP(d1.pengaturan)
       setMaksRiwayat(String(d1.pengaturan.maksRiwayat))
       setMaksLoopTool(String(d1.pengaturan.maksLoopTool))
-      const d2 = (await r2.json().catch(() => null)) as { ok?: boolean; model?: ModelAi[] } | null
-      if (d2?.ok) setModel(d2.model ?? [])
       const d3 = (await r3.json().catch(() => null)) as { ok?: boolean } & Partial<Pemakaian> | null
       setPemakaian(d3?.ok && d3.totalPanggilan ? (d3 as Pemakaian) : null)
     } catch (e) {
@@ -126,15 +121,6 @@ export function AiFallback({ bolehUbah, onBerubah }: Props) {
     if (await kirim({ chainTeks: baru })) onBerubah?.()
   }
 
-  async function setModelUtama(provider: string, nilai: string) {
-    if (!bolehUbah || !p) return
-    const baru = { ...p.modelTeks }
-    if (nilai) baru[provider] = nilai
-    else delete baru[provider]
-    setP({ ...p, modelTeks: baru })
-    if (await kirim({ modelTeks: baru })) onBerubah?.()
-  }
-
   async function simpanHemat() {
     if (!bolehUbah) return
     setMengirim(true)
@@ -157,13 +143,13 @@ export function AiFallback({ bolehUbah, onBerubah }: Props) {
           <CardTitle>Fallback Provider</CardTitle>
           <CardDescription>
             Bila provider utama gagal (kunci salah, limit, gangguan), sistem mencoba provider berikutnya dalam urutan
-            ini. Model untuk tiap provider diatur di daftar bawah.
+            ini. Model mana yang dipakai tiap provider diatur di kartu <b>Model Default</b> di atas.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
           <ol className="flex flex-col divide-y divide-border rounded-lg border border-border" data-testid="rantai-teks">
             {p.chainTeks.map((prov, i) => {
-              const opsi = model.filter((m) => m.provider === prov && m.jenis === "teks" && m.aktif === 1)
+              const dipilih = p.modelTeks[prov] ?? ""
               return (
                 <li key={prov} className="flex flex-wrap items-center justify-between gap-3 p-3">
                   <div className="flex min-w-40 items-center gap-2">
@@ -171,40 +157,9 @@ export function AiFallback({ bolehUbah, onBerubah }: Props) {
                     <span className="font-medium">{LABEL_PROVIDER[prov] ?? prov}</span>
                     {i === 0 ? <Badge>utama</Badge> : null}
                   </div>
-                  <div className="flex min-w-56 flex-1 items-center gap-2">
-                    <Field className="w-full">
-                      <FieldLabel className="sr-only" htmlFor={`model-${prov}`}>
-                        Model {prov}
-                      </FieldLabel>
-                      {opsi.length > 0 ? (
-                        <select
-                          id={`model-${prov}`}
-                          className="h-11 w-full rounded-md border border-input bg-transparent px-2 text-sm md:h-8"
-                          value={p.modelTeks[prov] ?? ""}
-                          disabled={!bolehUbah}
-                          onChange={(e) => void setModelUtama(prov, e.target.value)}
-                          data-testid={`model-utama-${prov}`}
-                        >
-                          <option value="">(model aktif pertama)</option>
-                          {opsi.map((m) => (
-                            <option key={m.id} value={m.model_id}>
-                              {m.model_id}
-                            </option>
-                          ))}
-                        </select>
-                      ) : (
-                        <Input
-                          className="h-11 md:h-8"
-                          value={p.modelTeks[prov] ?? ""}
-                          disabled={!bolehUbah}
-                          onChange={(e) => setP({ ...p, modelTeks: { ...p.modelTeks, [prov]: e.target.value } })}
-                          onBlur={(e) => void setModelUtama(prov, e.target.value)}
-                          placeholder="nama model (mis. openai/gpt-oss-120b)"
-                          data-testid={`model-utama-${prov}`}
-                        />
-                      )}
-                    </Field>
-                  </div>
+                  <p className="min-w-56 flex-1 text-xs text-muted-foreground" data-testid={`model-utama-${prov}`}>
+                    Model: {dipilih || "(aktif pertama di katalog)"}
+                  </p>
                   <div className="flex shrink-0 gap-1">
                     <Button
                       variant="outline"

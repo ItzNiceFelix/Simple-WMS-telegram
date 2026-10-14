@@ -87,6 +87,10 @@ export function AiModel({ bolehUbah, onBerubah }: AiModelProps) {
   const [daftar, setDaftar] = useState<ModelAi[]>([])
   const [memuat, setMemuat] = useState(true)
   const [ringkas, setRingkas] = useState<RingkasKapabilitas | null>(null)
+  /** Provider yang katalognya sedang ditampilkan. Sengaja default ke provider pertama. */
+  const [providerFilter, setProviderFilter] = useState<string>("groq")
+  /** Saringan jenis di dalam provider terpilih: semua | teks | gambar | vision. */
+  const [jenisFilter, setJenisFilter] = useState<string>("semua")
   const [provider, setProvider] = useState<string>("groq")
   const [jenis, setJenis] = useState<string>("teks")
   const [modelId, setModelId] = useState("")
@@ -101,13 +105,17 @@ export function AiModel({ bolehUbah, onBerubah }: AiModelProps) {
   const [draf, setDraf] = useState<Record<string, DrafKapabilitas>>({})
   const [menyimpanKap, setMenyimpanKap] = useState<Record<string, boolean>>({})
 
-  const muat = useCallback(async () => {
+  const muat = useCallback(async (prov: string) => {
     setMemuat(true)
     try {
-      const res = await fetch("/api/pengaturan/ai?aksi=model", { credentials: "include" })
+      // Selalu filter per provider — tanpa ini katalog menampilkan ratusan model
+      // dari semua provider sekaligus dan halamannya jadi sangat panjang.
+      const qs = prov ? `&provider=${encodeURIComponent(prov)}` : ""
+      const res = await fetch(`/api/pengaturan/ai?aksi=model${qs}`, { credentials: "include" })
       const d = (await res.json().catch(() => null)) as { ok?: boolean; model?: ModelAi[]; error?: string } | null
       if (!res.ok || !d?.ok) throw new Error(d?.error ?? `Gagal memuat (${res.status}).`)
       setDaftar(d.model ?? [])
+      setJenisFilter("semua")
     } catch (e) {
       tampilkanGagalTulis(e instanceof Error ? e.message : "Gagal memuat model.")
     } finally {
@@ -130,9 +138,9 @@ export function AiModel({ bolehUbah, onBerubah }: AiModelProps) {
   }, [])
 
   useEffect(() => {
-    void muat()
+    void muat(providerFilter)
     void muatRingkas()
-  }, [muat, muatRingkas])
+  }, [muat, muatRingkas, providerFilter])
 
   async function kirim(body: Record<string, unknown>): Promise<boolean> {
     const res = await fetch("/api/pengaturan/ai", {
@@ -160,7 +168,7 @@ export function AiModel({ bolehUbah, onBerubah }: AiModelProps) {
         toast.success("Model ditambahkan.")
         setModelId("")
         setLabel("")
-        await muat()
+        await muat(providerFilter)
         await muatRingkas()
         onBerubah?.()
       }
@@ -172,7 +180,7 @@ export function AiModel({ bolehUbah, onBerubah }: AiModelProps) {
   async function toggleAktif(m: ModelAi) {
     if (!bolehUbah) return
     if (await kirim({ aksi: "model-aktif", id: m.id, aktif: m.aktif !== 1 })) {
-      await muat()
+      await muat(providerFilter)
       onBerubah?.()
     }
   }
@@ -182,7 +190,7 @@ export function AiModel({ bolehUbah, onBerubah }: AiModelProps) {
     if (!window.confirm(`Hapus model ${m.model_id}?`)) return
     if (await kirim({ aksi: "model-hapus", id: m.id })) {
       toast.success("Model dihapus.")
-      await muat()
+      await muat(providerFilter)
       await muatRingkas()
       onBerubah?.()
     }
@@ -203,7 +211,7 @@ export function AiModel({ bolehUbah, onBerubah }: AiModelProps) {
         return
       }
       toast.success(`Ditarik ${d.jumlah ?? 0} model dari ${LABEL_PROVIDER[providerTarik] ?? providerTarik} · ${d.ditambah ?? 0} baru, ${d.dilewati ?? 0} sudah ada.`)
-      await muat()
+      await muat(providerFilter)
       await muatRingkas()
       onBerubah?.()
     } finally {
@@ -283,7 +291,7 @@ export function AiModel({ bolehUbah, onBerubah }: AiModelProps) {
         return next
       })
       // Muat ulang supaya badge sumber=manual muncul.
-      await muat()
+      await muat(providerFilter)
       await muatRingkas()
       onBerubah?.()
     } finally {
@@ -291,12 +299,15 @@ export function AiModel({ bolehUbah, onBerubah }: AiModelProps) {
     }
   }
 
+  // Model yang benar-benar ditampilkan: provider terpilih + saringan jenis.
+  const daftarTampil = jenisFilter === "semua" ? daftar : daftar.filter((m) => m.jenis === jenisFilter)
+
   return (
     <Card data-testid="kartu-model">
       <CardHeader>
         <CardTitle>Katalog Model</CardTitle>
         <CardDescription>
-          Daftar model per provider. Bisa ditarik otomatis dari provider (Fase B) atau ditambah manual di sini.
+          Menampilkan model milik provider yang dipilih di bawah. Tarik otomatis dari provider atau tambah manual.
         </CardDescription>
       </CardHeader>
       {bolehUbah && (
@@ -335,16 +346,62 @@ export function AiModel({ bolehUbah, onBerubah }: AiModelProps) {
           </p>
         ) : null}
 
+        {/* Filter: hanya tampilkan model milik provider terpilih. Tanpa ini daftarnya
+            bisa ratusan baris dari semua provider sekaligus. */}
+        <div className="flex flex-col gap-2 rounded-lg border border-border p-3 sm:flex-row sm:items-center">
+          <div className="flex w-full flex-col gap-1 sm:w-56">
+            <span className="text-xs text-muted-foreground">Tampilkan model dari</span>
+            <Select value={providerFilter} onValueChange={(v) => typeof v === "string" && v && setProviderFilter(v)}>
+              <SelectTrigger className="h-11 w-full md:h-8" data-testid="filter-provider">
+                <SelectValue>{(v: string | null) => (v ? (LABEL_PROVIDER[v] ?? v) : "Pilih provider")}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  {PROVIDER_AI.map((p) => (
+                    <SelectItem key={p} value={p}>
+                      {LABEL_PROVIDER[p] ?? p}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex flex-wrap items-center gap-1">
+            <span className="text-xs text-muted-foreground">Jenis:</span>
+            {["semua", "teks", "gambar", "vision"].map((j) => (
+              <Button
+                key={j}
+                variant={jenisFilter === j ? "default" : "outline"}
+                size="sm"
+                className="h-9 md:h-7"
+                onClick={() => setJenisFilter(j)}
+                data-testid={`filter-jenis-${j}`}
+              >
+                {j}
+              </Button>
+            ))}
+            <span className="ml-1 text-xs text-muted-foreground tabular-nums" data-testid="jumlah-tampil">
+              {daftarTampil.length} dari {daftar.length}
+            </span>
+          </div>
+        </div>
+
         {memuat ? (
           <p className="text-sm text-muted-foreground">Memuat…</p>
         ) : daftar.length === 0 ? (
           <p className="text-sm text-muted-foreground" data-testid="model-kosong">
-            Belum ada model. Tambahkan di bawah — mis. <code className="rounded bg-muted px-1">openai/gpt-oss-120b</code>{" "}
-            untuk Groq, atau <code className="rounded bg-muted px-1">gemini-3.8-flash</code> untuk Gemini.
+            Belum ada model untuk {LABEL_PROVIDER[providerFilter] ?? providerFilter}. Klik{" "}
+            <b>Muat dari provider</b> di atas, atau tambahkan manual di bawah — mis.{" "}
+            <code className="rounded bg-muted px-1">openai/gpt-oss-120b</code> untuk Groq.
+          </p>
+        ) : daftarTampil.length === 0 ? (
+          <p className="text-sm text-muted-foreground" data-testid="filter-kosong">
+            Tidak ada model berjenis <b>{jenisFilter}</b> dari {LABEL_PROVIDER[providerFilter] ?? providerFilter}.
+            Pilih jenis lain atau tombol <b>semua</b>.
           </p>
         ) : (
           <ul className="flex flex-col gap-3">
-            {daftar.map((m) => {
+            {daftarTampil.map((m) => {
               const d = drafModel(m)
               const kunci = `${m.provider}/${m.model_id}`
               const pilihan =
