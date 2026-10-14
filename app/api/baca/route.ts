@@ -1,6 +1,6 @@
 // app/api/baca/route.ts — GET baca server D1 untuk dashboard (Fase 1 cutover).
 // Menggantikan baca Firestore client SDK (real.ts). Scope: ?scope=stok|
-// produk|gudang|opname|transfer|daily|admin|akses|histori|keyword|ai|ringkasan.
+// produk|gudang|opname|transfer|daily|admin|akses|histori|ai|ringkasan.
 // Auth: cookie swt_sesi (D1). Filter gudang ditegakkan di server (RBAC scope).
 import { getDb, getEnvAi } from "@/lib/d1/db";
 import { bacaQtyPerGudang } from "@/lib/d1/stok";
@@ -10,7 +10,6 @@ import { listTransfer } from "@/lib/d1/transfer";
 import { ambilDaily, tanggalHariIni } from "@/lib/d1/permintaan";
 import { listAdmins } from "@/lib/d1/admin";
 import { listAkses } from "@/lib/d1/akses";
-import { listKeywords } from "@/lib/d1/kamus";
 import { listMovements } from "@/lib/d1/ledger";
 import { ambilPengaturanAI } from "@/lib/d1/pengaturan";
 import { json, sesiRoute } from "@/lib/d1/route";
@@ -211,19 +210,6 @@ export async function GET(request: Request) {
         created_by: m.created_by, created_by_username: null, created_by_name: null,
         requested_by: null, requested_by_username: null, requested_by_name: null,
         confirmed_by: null, resolved_by: null, penanda: null,
-      })),
-    });
-  }
-
-  if (scope === "keyword") {
-    if (!user.is_admin) return json({ ok: false, error: "Akses ditolak." }, 403);
-    const daftar = await listKeywords(db);
-    return json({
-      ok: true,
-      rows: daftar.map((k) => ({
-        id: String(k.id), raw_text: k.raw_text, interpreted_as: k.interpreted_as,
-        confidence: k.confidence, usage_count: k.usage_count, last_used: null,
-        first_seen: null, confirmed_by: null, confirmed_at: null,
       })),
     });
   }

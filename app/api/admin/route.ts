@@ -1,11 +1,10 @@
 // app/api/admin/route.ts — POST aksi admin gabungan (Fase 1: D1 cutover).
-// aksi: kata-kunci (owner) | approve-akses/tolak-akses (owner) |
+// aksi: approve-akses/tolak-akses (owner) |
 //       tambah-produk (owner+admin) | set-gudang-user/set-jabatan (owner)
 // konfirmasi-draft (butuh bot/Sheets) DITUNDA ke Fase 2 → 501.
 import { getDb } from "@/lib/d1/db";
 import { hapusAdmin, setGudangUser, setJabatan, tambahAdmin, ubahNama, ubahRole } from "@/lib/d1/admin";
 import { putuskanAkses } from "@/lib/d1/akses";
-import { konfirmasiKeyword } from "@/lib/d1/kamus";
 import { normalisasiNama, tambahProduk } from "@/lib/d1/produk";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
 
@@ -41,26 +40,13 @@ export async function POST(request: Request) {
   const sesi = await sesiRoute(request, 40);
   if (!sesi.ok) return json({ ok: false, error: sesi.error }, sesi.status);
   const { user } = sesi;
-  if (!user.is_admin && !(await bacaBody(request).then((b) => b.aksi === "kata-kunci").catch(() => false))) {
-    // guest ditolak kecuali handler spesifik di bawah
-  }
+  if (!user.is_admin) return json({ ok: false, error: "Akses ditolak." }, 403);
 
   const body = await bacaBody(request);
   const aksi = body.aksi as string;
   const db = getDb();
   const uid = user.tg_id;
 
-  if (aksi === "kata-kunci") {
-    if (!user.is_owner) return json({ ok: false, error: "Hanya owner yang dapat mengubah penanda." }, 403);
-    const id = Number(body.id);
-    const interp = body.interpreted_as as "STOK" | "MINTA" | "MINTA_SISA";
-    if (!Number.isInteger(id) || !["STOK", "MINTA", "MINTA_SISA"].includes(interp)) {
-      return json({ ok: false, error: "Data tidak valid." }, 400);
-    }
-    const h = await konfirmasiKeyword(db, id, interp, uid);
-    if (!h.ok) return json({ ok: false, error: h.error }, h.status);
-    return json({ ok: true, note: h.keyword });
-  }
   if (aksi === "approve-akses" || aksi === "tolak-akses") {
     if (!user.is_owner) return json({ ok: false, error: "Hanya owner yang dapat memproses permintaan akses." }, 403);
     const target = Number(body.target_user_id);

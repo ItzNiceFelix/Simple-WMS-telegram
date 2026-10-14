@@ -254,17 +254,6 @@ export function makeRealDataSource(_getRole: () => Role): DataSource {
       return data as never;
     },
 
-    async listKeywordNotes() {
-      const data = await bacaServer<{ rows: import("../types").KeywordNoteDoc[] }>("keyword");
-      return data.rows;
-    },
-
-    async konfirmasiKeywordNote(req) {
-      const data = await kirimTulis("/api/admin", { aksi: "kata-kunci", id: req.id, interpreted_as: req.interpreted_as });
-      if (!data.ok) return { ok: false, error: data.error ?? "Gagal menyimpan." } as never;
-      return data as never;
-    },
-
     async setujuiAkses(req) {
       const data = await kirimTulis("/api/admin", { aksi: "approve-akses", ...req });
       return data as never;

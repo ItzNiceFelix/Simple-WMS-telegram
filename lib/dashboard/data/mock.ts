@@ -15,10 +15,6 @@ import type {
   DailyRequestDoc,
   DailyRequestItem,
   GudangDoc,
-  InterpretasiKeyword,
-  KeywordNoteDoc,
-  KonfirmasiKeywordRequest,
-  KonfirmasiKeywordResponse,
   PutusAksesRequest,
   PutusAksesResponse,
   TambahProdukRequest,
@@ -90,7 +86,6 @@ import {
   MOCK_DAILY_REQUESTS,
   MOCK_GUDANG,
   MOCK_PERMINTAAN_GUDANG,
-  MOCK_KEYWORD_NOTES,
   MOCK_OPNAME_GUDANG,
   MOCK_MOVEMENTS,
   MOCK_OPNAME_DRAFTS,
@@ -119,7 +114,6 @@ const store = {
   aiSettings: { ...MOCK_AI_SETTINGS },
   // Store mutable v3a: deep-ish clone items supaya mutasi tidak bocor ke konstanta mock.
   dailyRequests: MOCK_DAILY_REQUESTS.map((d) => ({ ...d, items: d.items.map((it) => ({ ...it })) })),
-  keywordNotes: MOCK_KEYWORD_NOTES.map((n) => ({ ...n })),
   // Store mutable v3b: A7 mengubah status permintaan akses (refetch melihat hasilnya).
   accessRequests: MOCK_ACCESS_REQUESTS.map((r) => ({ ...r })),
   // Store mutable v3b Fase B (A2): draft + movement picking ikut berubah saat konfirmasi,
@@ -914,16 +908,6 @@ export function makeMockDataSource(getRole: () => Role): DataSource {
       );
     },
 
-    async listKeywordNotes(): Promise<KeywordNoteDoc[]> {
-      await delay();
-      const role = getRole();
-      // Paritas rules `staff()`: owner+admin boleh baca; guest tidak.
-      if (role !== "owner" && role !== "admin") throw new Error("Akses ditolak. Hubungi owner.");
-      return store.keywordNotes
-        .map((n) => ({ ...n }))
-        .sort((a, b) => (b.last_used ?? "").localeCompare(a.last_used ?? ""));
-    },
-
     // ---- Tulis v3a — guard = paritas server (PRD §5.1/§6.5). ----
 
     async sesuaikanQtyPermintaan(req: SesuaikanQtyRequest): Promise<SesuaikanQtyResponse> {
@@ -1089,23 +1073,6 @@ export function makeMockDataSource(getRole: () => Role): DataSource {
       };
       tulisDokumen(baru);
       return { ok: true, tanggal: req.tanggal, status: "selesai", selesai_at: sekarang };
-    },
-
-    async konfirmasiKeywordNote(req: KonfirmasiKeywordRequest): Promise<KonfirmasiKeywordResponse> {
-      await delay(300);
-      if (mockSesiKedaluwarsa()) return { ok: false, error: SESI_KEDALUWARSA };
-      // Paritas route: owner only, pesan persis §6.5.
-      if (getRole() !== "owner") return { ok: false, error: "Hanya owner yang dapat mengubah penanda." };
-      const VALID: InterpretasiKeyword[] = ["STOK", "MINTA", "MINTA_SISA"];
-      if (!VALID.includes(req.interpreted_as)) return { ok: false, error: "Interpretasi tidak dikenal." };
-      const note = store.keywordNotes.find((n) => n.id === req.id);
-      if (!note) return { ok: false, error: "Penanda tidak ditemukan." };
-      note.interpreted_as = req.interpreted_as;
-      note.confidence = "confirmed";
-      note.last_used = new Date().toISOString();
-      note.confirmed_by = MOCK_SESSION.user.id;
-      note.confirmed_at = new Date().toISOString();
-      return { ok: true, note: { ...note } };
     },
 
     // ---- Tulis v3b Fase A (A7 + A5). Guard = paritas server (PRD v3b §5.2/§5.3). ----

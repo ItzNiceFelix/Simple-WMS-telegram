@@ -9,7 +9,6 @@ import type {
   DailyRequestDoc,
   DailyRequestStatus,
   GudangDoc,
-  KeywordNoteDoc,
   MovementDoc,
   MovementSource,
   MovementStatus,
@@ -537,55 +536,6 @@ export const MOCK_DAILY_REQUESTS: DailyRequestSeed[] = [
     ],
     status: "selesai",
     created_at: hariLalu(1),
-  },
-];
-
-// ------------------------------------------------------------------- keyword_notes
-// Campuran `guessed` (Belum dikonfirmasi) & `confirmed` (Terkonfirmasi) utk uji filter + badge.
-export const MOCK_KEYWORD_NOTES: KeywordNoteDoc[] = [
-  {
-    id: "kw-001",
-    raw_text: "sisa gdg",
-    interpreted_as: "MINTA_SISA",
-    confidence: "guessed",
-    usage_count: 12,
-    last_used: menitLalu(20),
-    first_seen: hariLalu(20),
-    confirmed_by: null,
-    confirmed_at: null,
-  },
-  {
-    id: "kw-002",
-    raw_text: "toko",
-    interpreted_as: "MINTA",
-    confidence: "confirmed",
-    usage_count: 48,
-    last_used: menitLalu(120),
-    first_seen: hariLalu(60),
-    confirmed_by: "900001",
-    confirmed_at: hariLalu(30),
-  },
-  {
-    id: "kw-003",
-    raw_text: "gudang online",
-    interpreted_as: "STOK",
-    confidence: "confirmed",
-    usage_count: 31,
-    last_used: hariLalu(1),
-    first_seen: hariLalu(45),
-    confirmed_by: "900001",
-    confirmed_at: hariLalu(40),
-  },
-  {
-    id: "kw-004",
-    raw_text: "brg rusak",
-    interpreted_as: null,
-    confidence: "guessed",
-    usage_count: 3,
-    last_used: hariLalu(3),
-    first_seen: hariLalu(3),
-    confirmed_by: null,
-    confirmed_at: null,
   },
 ];
 

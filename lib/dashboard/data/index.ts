@@ -14,12 +14,9 @@ import type {
   DailyRequestDoc,
   HapusAdminRequest,
   HapusAdminResponse,
-  KeywordNoteDoc,
   KonfirmasiDraftRequest,
   KonfirmasiDraftResponse,
-  KonfirmasiKeywordRequest,
   OpnameGudangStatus,
-  KonfirmasiKeywordResponse,
   KirimFormRequest,
   KirimFormResponse,
   MovementDoc,
@@ -126,10 +123,6 @@ export interface DataSource {
   tandaiPermintaanDatang(req: TandaiDatangRequest): Promise<TandaiDatangResponse>;
   /** `selesai` — Selesai manual. */
   selesaikanPermintaan(req: SelesaikanRequest): Promise<SelesaikanResponse>;
-  /** F2 — daftar penanda (owner + admin). */
-  listKeywordNotes(): Promise<KeywordNoteDoc[]>;
-  /** F2 — konfirmasi interpretasi penanda (owner only). */
-  konfirmasiKeywordNote(req: KonfirmasiKeywordRequest): Promise<KonfirmasiKeywordResponse>;
 
   // ---- Tulis v3b Fase A (A7 permintaan akses + A5 tambah produk). Kontrak BEKU. ----
   /** A7 — pprove-akses (owner only). */

@@ -1,6 +1,7 @@
 ﻿// components/dashboard/nav-config.ts
 import {
   ChartColumn,
+  ChartNoAxesCombined,
   ClipboardCheck,
   ClipboardList,
   History,
@@ -12,7 +13,6 @@ import {
   ShieldCheck,
   Sparkles,
   Tag,
-  Tags,
   UserRound,
   Warehouse,
   type LucideIcon,
@@ -42,7 +42,7 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/opname-gudang", label: "Opname", icon: ClipboardCheck, roles: ["owner", "admin"] },
   { href: "/permintaan-gudang", label: "Permintaan Gudang", icon: Send, roles: ["owner", "admin"] },
   { href: "/permintaan", label: "Permintaan", icon: Send, roles: ["owner", "admin"] },
-  { href: "/kata-kunci", label: "Kata Kunci", icon: Tags, roles: ["owner", "admin"] },
+  { href: "/analisa", label: "Analisa", icon: ChartNoAxesCombined, roles: ["owner", "admin"] },
   { href: "/admin", label: "Admin", icon: ShieldCheck, roles: ["owner", "admin"] },
   { href: "/pengaturan", label: "Pengaturan", icon: Settings, roles: ["owner", "admin"], utama: true },
   { href: "/profil", label: "Profil", icon: UserRound, roles: ["owner", "admin", "guest"] },

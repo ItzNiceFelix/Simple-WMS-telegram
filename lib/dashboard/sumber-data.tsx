@@ -244,8 +244,6 @@ function dataKosong(): DataSource {
     kirimFormPermintaan: tolak,
     tandaiPermintaanDatang: tolak,
     selesaikanPermintaan: tolak,
-    listKeywordNotes: tolak,
-    konfirmasiKeywordNote: tolak,
     // v3b Fase A (A-W3/A-W4): satisfies DataSource menagih 3 method ini.
     setujuiAkses: tolak,
     tolakAkses: tolak,

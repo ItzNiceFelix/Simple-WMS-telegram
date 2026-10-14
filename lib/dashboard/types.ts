@@ -296,22 +296,6 @@ export interface DailyRequestDoc {
   perubahan?: PerubahanQty[];
 }
 
-/** `keyword_notes/{autoId}` — kamus penanda picking list (PRD —6.1). */
-export type InterpretasiKeyword = "STOK" | "MINTA" | "MINTA_SISA";
-export type ConfidenceKeyword = "guessed" | "confirmed";
-
-export interface KeywordNoteDoc {
-  id: string;
-  raw_text: string;
-  interpreted_as: InterpretasiKeyword | null;
-  confidence: ConfidenceKeyword;
-  usage_count: number;
-  last_used: string | null;
-  first_seen?: string | null;
-  confirmed_by?: string | null;
-  confirmed_at?: string | null;
-}
-
 /** `opname_drafts/{autoId}` */
 export interface OpnameDraftDoc {
   id: string;
@@ -518,8 +502,8 @@ export type HapusAdminResponse =
   | { ok: false; error: string };
 
 
-// ---- Kontrak tulis v3a (F1 permintaan harian + F2 keyword notes) ----
-// Route: `POST /api/permintaan` (4 aksi) + `POST /api/admin` (aksi `kata-kunci`).
+// ---- Kontrak tulis v3a (F1 permintaan harian) ----
+// Route: `POST /api/permintaan` (4 aksi).
 // Semua respons: sukses `{ ok: true, ... }`, gagal `{ ok: false, error }` — pola v2.
 
 /** Identitas item (T1/S3.7): kode + variasi + buffer. WAJIB dikirim di payload item. */
@@ -590,15 +574,6 @@ export type SelesaikanResponse =
   | { ok: true; tanggal: string; status: "selesai"; selesai_at: string | null }
   | { ok: false; error: string };
 
-/** F2 `POST /api/admin` aksi `kata-kunci` (owner only). */
-export interface KonfirmasiKeywordRequest {
-  id: string;
-  interpreted_as: InterpretasiKeyword;
-}
-
-export type KonfirmasiKeywordResponse =
-  | { ok: true; note: KeywordNoteDoc }
-  | { ok: false; error: string };
 // ---- Kontrak tulis v3b (Fase A: A7 permintaan akses + A5 tambah produk) ----
 // Route: `POST /api/admin` (aksi titip, budget function tetap). Pola v2/v3a:
 // sukses `{ ok: true, ... }`, gagal `{ ok: false, error }` dengan pesan server APA ADANYA.
