@@ -85,7 +85,10 @@ export function makeRealDataSource(_getRole: () => Role): DataSource {
   async function rowsStok(opts: StockFilter = {}): Promise<StockRow[]> {
     const data = await bacaServer<{ rows: StockRow[] }>("stok", {
       ...(opts.gudang_id ? { gudang_id: opts.gudang_id } : {}),
-      ...(opts.is_online === false ? { is_online: "false" } : {}),
+      // Hanya `true` yang mengirim param: server memperlakukan ketiadaan param sebagai
+      // "jangan saring". Mengirim "false" akan sia-sia (server tidak mengenal arti
+      // "hanya non-online") dan justru menyamarkan niat pemanggil.
+      ...(opts.is_online === true ? { is_online: "true" } : {}),
     });
     // Satu sumber kebenaran filter (paritas dengan mock.ts).
     const baris = data.rows.map((r) => ({

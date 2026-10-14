@@ -14,14 +14,22 @@ const baris = [
   { kode_barang: "D", is_online_product: true, stok_gudang_online: null, qty_per_gudang: {} },
 ];
 
-test("default (tanpa filter) -> hanya online", () => {
+test("tanpa filter -> SEMUA produk (online maupun non-online)", () => {
+  // Aturan 2026-10-14: penyaringan online OPT-IN. Dulu default-nya true, sehingga halaman
+  // yang tidak mengirim is_online diam-diam kehilangan produk non-online — dan pencariannya
+  // pun gagal karena penyaringan terjadi di server (q digabung AND dengan syarat online).
   const out = terapkanFilter(baris, undefined);
-  assert.deepEqual(out.map((r) => r.kode_barang), ["A", "B", "D"]);
+  assert.deepEqual(out.map((r) => r.kode_barang), ["A", "B", "C", "D"]);
 });
 
 test("is_online 'semua' -> semua produk", () => {
   const out = terapkanFilter(baris, { is_online: "semua" });
   assert.equal(out.length, 4);
+});
+
+test("is_online true -> hanya online", () => {
+  const out = terapkanFilter(baris, { is_online: true });
+  assert.deepEqual(out.map((r) => r.kode_barang), ["A", "B", "D"]);
 });
 
 test("is_online false -> hanya non-online", () => {
@@ -34,9 +42,9 @@ test("filter gudang D12 -> hanya yang punya key D12", () => {
   assert.deepEqual(out.map((r) => r.kode_barang), ["A", "C"]);
 });
 
-test("filter gudang + default online -> hanya A (C non-online)", () => {
+test("filter gudang tanpa is_online -> ikut non-online juga (C tidak hilang)", () => {
   const out = terapkanFilter(baris, { gudang_id: "D12" });
-  assert.deepEqual(out.map((r) => r.kode_barang), ["A"]);
+  assert.deepEqual(out.map((r) => r.kode_barang), ["A", "C"]);
 });
 
 test("gudang tanpa key + sertakan_tanpa_gudang -> semua baris lolos", () => {

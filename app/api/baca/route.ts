@@ -32,7 +32,12 @@ export async function GET(request: Request) {
 
   if (scope === "stok") {
     const gudangFilter = url.searchParams.get("gudang_id");
-    const onlineSaja = url.searchParams.get("is_online") !== "false";
+    // is_online harus OPT-IN: hanya menyaring bila caller benar-benar minta "true".
+    // Sebelumnya `!== "false"` membuat param yang TIDAK dikirim dianggap true, sehingga
+    // halaman yang sengaja tidak mengirim is_online tetap menerima subset online-saja
+    // (692 dari 1174 produk hilang, termasuk semua hasil sinkron Kledo) — dan pencarian
+    // pun ikut gagal karena q digabung AND dengan syarat itu.
+    const onlineSaja = url.searchParams.get("is_online") === "true";
     // B5-A: cari server-side (hemat rows-read); tanpa q = perilaku lama (cap 2000).
     const q = (url.searchParams.get("q") ?? "").trim().toLowerCase();
     let sql = `SELECT p.sku, p.nama_accurate, p.hpp, p.is_online_product, p.stok_min, p.kategori, p.tier_override, p.pre_order, p.ukuran_khusus, p.go_override, b.warehouse_id, b.qty
