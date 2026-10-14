@@ -5,6 +5,9 @@
 // spesifik export Shopee 2-sheet: ringkasan, Perlu SKU + tebakan, Compare Nama, dan
 // blok peringatan (MUNDUR / resi gabungan / kriteria / gagal). dialog-import-excel
 // tetap dipakai template generik 7 kolom supaya jalur lama tidak berubah perilaku.
+// Sejak dukungan multi-seller: banyak berkas dipilih sekaligus, dipreview & dikonfirmasi
+// BERURUTAN per batch_id supaya server tetap idempoten dan satu berkas gagal tidak
+// membatalkan berkas lain.
 import { useState } from "react"
 import * as XLSX from "xlsx"
 import { toast } from "sonner"
@@ -62,6 +65,26 @@ type Preview = {
   compareNama: Compare[]
 }
 
+/** Satu baris "Perlu SKU" + asal berkasnya; indeks file dipakai supaya kunci tetap unik antar berkas. */
+type BarisGabungan = BarisBelumSku & { berkas: string }
+
+/** Hasil preview satu berkas. `gagal: true` = preview berkas ini tidak jalan, berkas lain lanjut. */
+type HasilBerkas =
+  | { nama: string; gagal: true; pesan: string }
+  | {
+      nama: string
+      gagal: false
+      batch_id: number
+      totalBaris: number
+      orderCount: number
+      advanceCount: number
+      gagalCount: number
+      ringkas: Preview["klasifikasi"]
+      belumSku: BarisBelumSku[]
+      compareNama: Compare[]
+      gagalBaris: Gagal[]
+    }
+
 interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -76,9 +99,10 @@ function opsiUntuk(b: BarisBelumSku, master: OpsiSku[]): OpsiSku[] {
 }
 
 export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
-  const [file, setFile] = useState<File | null>(null)
-  const [preview, setPreview] = useState<Preview | null>(null)
+  const [files, setFiles] = useState<File[]>([])
+  const [hasil, setHasil] = useState<HasilBerkas[] | null>(null)
   const [mengirim, setMengirim] = useState(false)
+  const [progres, setProgres] = useState<{ nama: string; ke: number; dari: number } | null>(null)
   const [manual, setManual] = useState<Record<string, string>>({})
   const [master, setMaster] = useState<OpsiSku[]>([])
   const [tandai, setTandai] = useState<Set<string>>(new Set())
@@ -90,8 +114,9 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
   function tutup(v: boolean) {
     if (mengirim) return
     if (!v) {
-      setFile(null)
-      setPreview(null)
+      setFiles([])
+      setHasil(null)
+      setProgres(null)
       setManual({})
       setTandai(new Set())
     }
@@ -99,45 +124,78 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
   }
 
   async function unggah() {
-    if (!file) return
+    if (files.length === 0) return
     setMengirim(true)
+    setHasil([])
     try {
-      const buf = await file.arrayBuffer()
-      const wb = XLSX.read(buf, { type: "array" })
-      const ordersWs = wb.Sheets["orders"]
-      const advanceWs = wb.Sheets["Advance Fulfilment"]
-      if (!ordersWs) { tampilkanGagalTulis('Workbook wajib memiliki sheet "orders".'); return }
-      const ordersRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ordersWs, { defval: "" })
-      const advanceRows = advanceWs ? XLSX.utils.sheet_to_json<Record<string, unknown>>(advanceWs, { defval: "" }) : []
-      const res = await fetch("/api/order", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ aksi: "preview-shopee", ordersRows, advanceRows, file: file.name }),
-        credentials: "include",
-      })
-      const raw = (await res.json().catch(() => null)) as (Preview & { ok?: boolean; error?: string }) | null
-      if (!res.ok || !raw?.ok) { tampilkanGagalTulis(raw?.error ?? `Gagal preview (${res.status}).`); return }
-      setPreview({ ...raw, totalBaris: ordersRows.length + advanceRows.length })
       // Daftar SKU master untuk pemilih manual. Endpoint: /api/baca?scope=produk
-      // (tidak ada /api/produk — dulu 404 sehingga daftar selalu kosong).
+      // (tidak ada /api/produk — dulu 404 sehingga daftar selalu kosong). Cukup sekali
+      // per unggahan walau berkasnya banyak.
       const resMaster = await fetch("/api/baca?scope=produk", { credentials: "include" })
       const dataMaster = (await resMaster.json().catch(() => null)) as
         | { ok?: boolean; rows?: { sku: string; nama_accurate?: string }[] }
         | null
       setMaster((dataMaster?.rows ?? []).map((p) => ({ sku: p.sku, nama: p.nama_accurate ?? "" })))
       if (!dataMaster?.ok) tampilkanGagalTulis("Daftar SKU master gagal dimuat — pemilih SKU hanya berisi tebakan.")
+
+      const daftar: HasilBerkas[] = []
+      for (const [i, f] of files.entries()) {
+        setProgres({ nama: f.name, ke: i + 1, dari: files.length })
+        try {
+          const buf = await f.arrayBuffer()
+          const wb = XLSX.read(buf, { type: "array" })
+          const ordersWs = wb.Sheets["orders"]
+          const advanceWs = wb.Sheets["Advance Fulfilment"]
+          if (!ordersWs) throw new Error('Workbook wajib memiliki sheet "orders".')
+          const ordersRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ordersWs, { defval: "" })
+          const advanceRows = advanceWs
+            ? XLSX.utils.sheet_to_json<Record<string, unknown>>(advanceWs, { defval: "" })
+            : []
+          const res = await fetch("/api/order", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ aksi: "preview-shopee", ordersRows, advanceRows, file: f.name }),
+            credentials: "include",
+          })
+          const raw = (await res.json().catch(() => null)) as (Preview & { ok?: boolean; error?: string }) | null
+          if (!res.ok || !raw?.ok) {
+            daftar.push({ nama: f.name, gagal: true, pesan: raw?.error ?? `Gagal preview (${res.status}).` })
+          } else {
+            daftar.push({
+              nama: f.name,
+              gagal: false,
+              batch_id: raw.batch_id,
+              totalBaris: ordersRows.length + advanceRows.length,
+              orderCount: raw.orders.length,
+              advanceCount: raw.advance.length,
+              gagalCount: raw.gagal.length,
+              ringkas: raw.klasifikasi,
+              belumSku: raw.belumSku,
+              compareNama: raw.compareNama ?? [],
+              gagalBaris: raw.gagal,
+            })
+          }
+        } catch (e) {
+          // Satu berkas rusak/gagal jaringan tidak boleh menghentikan berkas berikutnya.
+          daftar.push({ nama: f.name, gagal: true, pesan: e instanceof Error ? e.message : "Berkas gagal dibaca." })
+        }
+        // Tampilkan hasil sejauh ini supaya user melihat kemajuan, bukan layar diam.
+        setHasil([...daftar])
+      }
+      if (daftar.every((h) => h.gagal)) tampilkanGagalTulis("Semua berkas gagal dipreview. Lihat rincian di daftar.")
     } catch {
       tampilkanGagalTulis("Jaringan gagal. Coba lagi.")
     } finally {
+      setProgres(null)
       setMengirim(false)
     }
   }
 
-  function pilihSku(b: BarisBelumSku, sku: string): void {
+  function pilihSku(b: BarisGabungan, sku: string): void {
     setManual((lama) => ({ ...lama, [kunciBaris(b)]: sku }))
   }
 
-  function toggleTandai(b: BarisBelumSku): void {
+  function toggleTandai(b: BarisGabungan): void {
     const k = kunciBaris(b)
     setTandai((lama) => {
       const baru = new Set(lama)
@@ -147,11 +205,19 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
     })
   }
 
+  /** BelumSku dari SEMUA berkas; kunci baris diberi nama berkas karena kunci bisa bertabrakan antar seller. */
+  const barisGabungan: BarisGabungan[] = (hasil ?? []).flatMap((h) =>
+    h.gagal ? [] : h.belumSku.map((b) => ({ ...b, berkas: h.nama }))
+  )
+
+  /** Baris yang belum dipilih SKU dan belum ditandai — penyebab tombol Konfirmasi mati. */
+  const belumLengkap = barisGabungan.filter((b) => !manual[kunciBaris(b)] && !tandai.has(kunciBaris(b)))
+
   /** Tandai semua baris yang masih kosong sebagai "belum ada di MP" (sekali klik). */
   function tandaiSemuaSisa(): void {
     setTandai((lama) => {
       const baru = new Set(lama)
-      for (const b of preview?.belumSku ?? []) {
+      for (const b of barisGabungan) {
         const k = kunciBaris(b)
         if (!manual[k]) baru.add(k)
       }
@@ -160,51 +226,111 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
   }
 
   function siapCommit(): boolean {
-    if (!preview) return false
-    return preview.belumSku.every((b) => manual[kunciBaris(b)] || tandai.has(kunciBaris(b)))
+    if (!hasil || hasil.every((h) => h.gagal)) return false
+    return belumLengkap.length === 0
   }
 
-  /** Baris yang belum dipilih SKU dan belum ditandai — penyebab tombol Konfirmasi mati. */
-  const belumLengkap = (preview?.belumSku ?? []).filter((b) => !manual[kunciBaris(b)] && !tandai.has(kunciBaris(b)))
-
   async function konfirmasi() {
-    if (!preview) return
+    const siap = (hasil ?? []).filter((h): h is Extract<HasilBerkas, { gagal: false }> => !h.gagal)
+    if (siap.length === 0) return
     setMengirim(true)
     try {
-      const skuManual = Object.entries(manual).flatMap(([k, sku]) => {
-        const [order_ref, nama_shopee, variasi] = k.split("\u0000")
-        // Baris preview mewakili beberapa order sekaligus — terapkan ke semuanya.
-        const baris = preview.belumSku.find(
-          (b) => b.order_ref === order_ref && b.nama_shopee === nama_shopee && b.variasi === variasi
-        )
-        const refs = baris?.order_refs ?? [order_ref]
-        return refs.map((ref) => ({ order_ref: ref, nama_shopee, variasi, sku }))
-      })
-      const tandaiBelumMp = preview.belumSku
-        .filter((b) => tandai.has(kunciBaris(b)))
-        .flatMap((b) =>
-          (b.order_refs ?? [b.order_ref]).map((ref) => ({ order_ref: ref, nama_shopee: b.nama_shopee, variasi: b.variasi }))
-        )
-      const res = await fetch("/api/order", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ aksi: "konfirmasi-shopee", batch_id: preview.batch_id, skuManual, tandaiBelumMp }),
-        credentials: "include",
-      })
-      const raw = (await res.json().catch(() => null)) as { ok?: boolean; error?: string; order?: number; item?: number; advance?: number } | null
-      if (!res.ok || !raw?.ok) { tampilkanGagalTulis(raw?.error ?? `Gagal konfirmasi (${res.status}).`); return }
-      toast.success(`Import selesai: ${raw.order ?? 0} order, ${raw.item ?? 0} item, ${raw.advance ?? 0} booking advance.`)
+      // Peta baris per berkas: baris preview mewakili beberapa order sekaligus dan kunci
+      // hanya unik di dalam berkasnya sendiri.
+      const petaBaris = new Map<string, BarisGabungan>()
+      for (const b of barisGabungan) petaBaris.set(`${b.berkas}\u0000${kunciBaris(b)}`, b)
+
+      const total = { order: 0, item: 0, advance: 0 }
+      const sukses: string[] = []
+      const gagal: string[] = []
+      for (const [i, h] of siap.entries()) {
+        setProgres({ nama: h.nama, ke: i + 1, dari: siap.length })
+        const skuManual = Object.entries(manual).flatMap(([k, sku]) => {
+          const [order_ref, nama_shopee, variasi] = k.split("\u0000")
+          const baris = petaBaris.get(`${h.nama}\u0000${k}`)
+          if (!baris) return []
+          // Terapkan ke seluruh order pada grup produk yang sama.
+          const refs = baris.order_refs ?? [order_ref]
+          return refs.map((ref) => ({ order_ref: ref, nama_shopee, variasi, sku }))
+        })
+        const tandaiBelumMp = h.belumSku
+          .filter((b) => tandai.has(kunciBaris(b)))
+          .flatMap((b) =>
+            (b.order_refs ?? [b.order_ref]).map((ref) => ({
+              order_ref: ref,
+              nama_shopee: b.nama_shopee,
+              variasi: b.variasi,
+            }))
+          )
+        try {
+          const res = await fetch("/api/order", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ aksi: "konfirmasi-shopee", batch_id: h.batch_id, skuManual, tandaiBelumMp }),
+            credentials: "include",
+          })
+          const raw = (await res.json().catch(() => null)) as
+            | { ok?: boolean; error?: string; order?: number; item?: number; advance?: number }
+            | null
+          if (!res.ok || !raw?.ok) {
+            gagal.push(`${h.nama} (${raw?.error ?? `HTTP ${res.status}`})`)
+            continue
+          }
+          total.order += raw.order ?? 0
+          total.item += raw.item ?? 0
+          total.advance += raw.advance ?? 0
+          sukses.push(h.nama)
+        } catch (e) {
+          // Batch yang sudah sukses tetap sukses; yang gagal hanya disebut namanya.
+          gagal.push(`${h.nama} (${e instanceof Error ? e.message : "jaringan gagal"})`)
+        }
+      }
+
+      if (sukses.length === 0) {
+        tampilkanGagalTulis(`Semua konfirmasi gagal: ${gagal.join("; ")}`)
+        return
+      }
+      toast.success(
+        `Import selesai: ${total.order} order, ${total.item} item, ${total.advance} booking advance. ` +
+          `${sukses.length} berkas sukses${gagal.length > 0 ? `, ${gagal.length} gagal: ${gagal.join("; ")}` : ""}.`
+      )
       tutup(false)
       onSukses?.()
     } catch {
       tampilkanGagalTulis("Jaringan gagal. Coba lagi.")
     } finally {
+      setProgres(null)
       setMengirim(false)
     }
   }
 
-  const belumSkuList = preview?.belumSku ?? []
-  const compareBeda = (preview?.compareNama ?? []).filter((c) => !c.sama)
+  const daftarHasil = hasil ?? []
+  const suksesList = daftarHasil.filter((h): h is Extract<HasilBerkas, { gagal: false }> => !h.gagal)
+  const gagalList = daftarHasil.filter((h) => h.gagal)
+  const total = suksesList.reduce(
+    (t, h) => ({
+      baris: t.baris + h.totalBaris,
+      order: t.order + h.orderCount,
+      advance: t.advance + h.advanceCount,
+      gagal: t.gagal + h.gagalCount,
+      baru: t.baru + h.ringkas.baru,
+      update: t.update + h.ringkas.update,
+      skip: t.skip + h.ringkas.skip,
+      advanceSkip: t.advanceSkip + h.ringkas.advanceSkip.length,
+    }),
+    { baris: 0, order: 0, advance: 0, gagal: 0, baru: 0, update: 0, skip: 0, advanceSkip: 0 }
+  )
+  // Peringatan digabung lintas berkas — tiap baris menyebut nama berkas agar bisa dilacak.
+  const peringatan = <T,>(jenis: "mundur" | "resiMultiOrder" | "kriteriaGabungan" | "gandaDalamFile") =>
+    suksesList.flatMap((h) => (h.ringkas[jenis] as T[]).map((x) => ({ ...x, berkas: h.nama })))
+  const semuaMundur = peringatan<Mundur>("mundur")
+  const semuaResi = peringatan<ResiMulti>("resiMultiOrder")
+  const semuaKriteria = peringatan<Kriteria>("kriteriaGabungan")
+  const semuaGanda = peringatan<{ no_pesanan: string; jumlah: number }>("gandaDalamFile")
+  const compareBeda = suksesList
+    .flatMap((h) => h.compareNama.filter((c) => !c.sama).map((c) => ({ ...c, berkas: h.nama })))
+    .filter((c, i, a) => a.findIndex((x) => x.berkas === c.berkas && x.sku === c.sku) === i)
+  const gagalBaris = suksesList.flatMap((h) => h.gagalBaris.map((g) => ({ ...g, berkas: h.nama })))
 
   return (
     <Dialog open={open} onOpenChange={tutup}>
@@ -212,73 +338,103 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
         <DialogHeader className="shrink-0">
           <DialogTitle>Import Order Shopee (Order.toship)</DialogTitle>
           <DialogDescription>
-            Sheet <b>orders</b> + <b>Advance Fulfilment</b>. File sama ditolak (fingerprint). Status yang sudah
-            lebih maju di WMS tidak diturunkan.
+            Sheet <b>orders</b> + <b>Advance Fulfilment</b>. Bisa pilih beberapa berkas sekaligus (satu per akun
+            seller) — diproses berurutan. File sama ditolak (fingerprint). Status yang sudah lebih maju di WMS
+            tidak diturunkan.
           </DialogDescription>
         </DialogHeader>
 
         {/* Isi scroll sendiri (flex-1) supaya footer tetap terjangkau di HP. */}
         <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pr-1">
-        {!preview ? (
+        {daftarHasil.length === 0 ? (
           <div className="space-y-3">
             <Input
               type="file"
+              multiple
               accept=".xlsx,.xls"
               data-testid="berkas-import-order"
-              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+              onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
             />
-            {file && <p className="text-sm text-muted-foreground">{file.name} ({Math.round(file.size / 1024)} KB)</p>}
+            {files.length > 0 && (
+              <p className="text-sm text-muted-foreground">
+                {files.length} berkas: {files.map((f) => f.name).join(", ")}
+              </p>
+            )}
           </div>
         ) : (
           <div className="space-y-4">
-            <p className="text-sm" data-testid="ringkas-import-order">
-              {preview.totalBaris} baris dibaca: <b className="text-emerald-600">{preview.orders.length} order</b>,{" "}
-              <b>{preview.advance.length} booking advance</b>
-              {preview.gagal.length > 0 && <>, <b className="text-red-600">{preview.gagal.length} gagal</b></>} ·{" "}
-              baru {preview.klasifikasi.baru}, update {preview.klasifikasi.update}, skip {preview.klasifikasi.skip}
-              {preview.klasifikasi.advanceSkip.length > 0 && <> · advance skip {preview.klasifikasi.advanceSkip.length}</>}
-            </p>
+            <div className="space-y-1">
+              <p className="text-sm" data-testid="ringkas-import-order-gabungan">
+                {daftarHasil.length} berkas · {total.baris} baris dibaca:{" "}
+                <b className="text-emerald-600">{total.order} order</b>, <b>{total.advance} booking advance</b>
+                {total.gagal > 0 && <>, <b className="text-red-600">{total.gagal} gagal</b></>} · baru {total.baru},
+                update {total.update}, skip {total.skip}
+                {total.advanceSkip > 0 && <> · advance skip {total.advanceSkip}</>}
+                {gagalList.length > 0 && <>, <b className="text-red-600">{gagalList.length} berkas gagal</b></>}
+              </p>
+              {/* Daftar per berkas: inilah yang dipakai user melacak seller mana yang bermasalah. */}
+              <ul className="divide-y divide-border rounded-lg border border-border text-xs" data-testid="daftar-berkas-import-order">
+                {daftarHasil.map((h) => (
+                  <li key={h.nama} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2">
+                    <b className="mr-auto truncate min-w-0">{h.nama}</b>
+                    {h.gagal ? (
+                      <span className="text-red-600">gagal — {h.pesan}</span>
+                    ) : (
+                      <span className="text-muted-foreground" data-testid="ringkas-import-order">
+                        {h.totalBaris} baris · {h.orderCount} order · {h.advanceCount} booking advance · baru{" "}
+                        {h.ringkas.baru}, update {h.ringkas.update}, skip {h.ringkas.skip}
+                        {h.gagalCount > 0 && <span className="text-red-600"> · {h.gagalCount} gagal</span>}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
 
-            {preview.klasifikasi.mundur.length > 0 && (
+            {semuaMundur.length > 0 && (
               <div className="rounded-lg bg-amber-50 p-3 text-xs text-amber-900" data-testid="peringatan-mundur">
                 <b>Beberapa no resi status belum update, silakan dicek dulu.</b>
                 <ul className="mt-1 space-y-0.5">
-                  {preview.klasifikasi.mundur.slice(0, 20).map((m) => (
-                    <li key={m.no_pesanan}>{m.no_pesanan} — resi {m.no_resi || "-"} (WMS: {m.wms}, file: {m.file})</li>
+                  {semuaMundur.slice(0, 20).map((m) => (
+                    <li key={`${m.berkas}-${m.no_pesanan}`}>
+                      [{m.berkas}] {m.no_pesanan} — resi {m.no_resi || "-"} (WMS: {m.wms}, file: {m.file})
+                    </li>
                   ))}
                 </ul>
               </div>
             )}
 
-            {preview.klasifikasi.gandaDalamFile.length > 0 && (
+            {semuaGanda.length > 0 && (
               <div className="rounded-lg bg-red-50 p-3 text-xs text-red-900">
                 <b>No. Pesanan ganda dalam file (tolak perbaiki export):</b>{" "}
-                {preview.klasifikasi.gandaDalamFile.map((g) => `${g.no_pesanan}×${g.jumlah}`).join(", ")}
+                {semuaGanda.map((g) => `[${g.berkas}] ${g.no_pesanan}×${g.jumlah}`).join(", ")}
               </div>
             )}
 
-            {preview.klasifikasi.resiMultiOrder.length > 0 && (
+            {semuaResi.length > 0 && (
               <div className="rounded-lg bg-sky-50 p-3 text-xs text-sky-900" data-testid="peringatan-gabungan">
-                <b>Pesanan Gabungan terdeteksi ({preview.klasifikasi.resiMultiOrder.length} resi).</b> Picklist default per paket.
+                <b>Pesanan Gabungan terdeteksi ({semuaResi.length} resi).</b> Picklist default per paket.
                 <ul className="mt-1 space-y-0.5">
-                  {preview.klasifikasi.resiMultiOrder.slice(0, 20).map((r) => (
-                    <li key={r.no_resi}>Resi {r.no_resi} — {r.jumlah_order} order: {r.no_pesanan.join(", ")}</li>
+                  {semuaResi.slice(0, 20).map((r) => (
+                    <li key={`${r.berkas}-${r.no_resi}`}>
+                      [{r.berkas}] Resi {r.no_resi} — {r.jumlah_order} order: {r.no_pesanan.join(", ")}
+                    </li>
                   ))}
                 </ul>
               </div>
             )}
 
-            {preview.klasifikasi.kriteriaGabungan.length > 0 && (
+            {semuaKriteria.length > 0 && (
               <div className="rounded-lg bg-amber-50 p-3 text-xs text-amber-900" data-testid="peringatan-kriteria">
                 <b>Tidak sesuai kriteria gabungan Shopee</b> (tidak memblokir):{" "}
-                {preview.klasifikasi.kriteriaGabungan.map((k) => `${k.no_resi} (${k.alasan.join(", ")})`).join("; ")}
+                {semuaKriteria.map((k) => `[${k.berkas}] ${k.no_resi} (${k.alasan.join(", ")})`).join("; ")}
               </div>
             )}
 
-            {belumSkuList.length > 0 && (
+            {barisGabungan.length > 0 && (
               <div className="space-y-2">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-sm font-medium">Perlu SKU ({belumSkuList.length} produk)</p>
+                  <p className="text-sm font-medium">Perlu SKU ({barisGabungan.length} produk)</p>
                   {belumLengkap.length > 0 && (
                     <Button
                       variant="outline"
@@ -307,12 +463,12 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
                     <span className="text-center">Belum di MP</span>
                   </div>
                   <ul className="divide-y divide-border">
-                    {belumSkuList.map((b) => {
+                    {barisGabungan.map((b) => {
                       const k = kunciBaris(b)
                       const refs = b.order_refs ?? [b.order_ref]
                       return (
                         <li
-                          key={k}
+                          key={`${b.berkas}\u0000${k}`}
                           className="grid gap-2 p-3 md:grid-cols-[9rem_minmax(0,1fr)_7rem_4rem_minmax(0,20rem)_5rem] md:items-center md:gap-3"
                           data-testid={`belum-sku-${b.order_ref}`}
                         >
@@ -323,6 +479,9 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
                             {b.jumlah_order > 1 && (
                               <span className="ml-2 text-[11px] text-muted-foreground">{b.order_ref} +{b.jumlah_order - 1}</span>
                             )}
+                            <span className="block truncate text-[11px] text-muted-foreground" title={b.berkas}>
+                              {b.berkas}
+                            </span>
                           </div>
                           <div className="min-w-0">
                             <span className="block truncate text-sm" title={b.nama_shopee}>{b.nama_shopee}</span>
@@ -369,18 +528,20 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
                 <p className="text-sm font-medium">Compare Nama ({compareBeda.length} beda)</p>
                 <ul className="max-h-40 space-y-1 overflow-y-auto rounded-lg bg-muted p-3 text-xs" data-testid="compare-nama">
                   {compareBeda.slice(0, 50).map((c) => (
-                    <li key={c.sku}>
-                      <b>{c.sku}</b> — Shopee: {c.nama_shopee} · D1: {c.nama_d1}
+                    <li key={`${c.berkas}-${c.sku}`}>
+                      <b>{c.sku}</b> — Shopee: {c.nama_shopee} · D1: {c.nama_d1} <i>({c.berkas})</i>
                     </li>
                   ))}
                 </ul>
               </div>
             )}
 
-            {preview.gagal.length > 0 && (
+            {gagalBaris.length > 0 && (
               <ul className="max-h-32 space-y-1 overflow-y-auto rounded-lg bg-muted p-3 text-xs" data-testid="gagal-import-order">
-                {preview.gagal.slice(0, 50).map((g, i) => (
-                  <li key={`${i}-${g.pesan.slice(0, 24)}`}>{g.no_pesanan || "-"}: {g.pesan}</li>
+                {gagalBaris.slice(0, 50).map((g, i) => (
+                  <li key={`${i}-${g.berkas}-${g.pesan.slice(0, 24)}`}>
+                    [{g.berkas}] {g.no_pesanan || "-"}: {g.pesan}
+                  </li>
                 ))}
               </ul>
             )}
@@ -389,9 +550,9 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
         </div>
 
         <DialogFooter className="shrink-0">
-          {!preview ? (
-            <Button onClick={unggah} disabled={!file || mengirim} data-testid="unggah-import-order">
-              {mengirim && <Spinner />} Upload & preview
+          {daftarHasil.length === 0 ? (
+            <Button onClick={unggah} disabled={files.length === 0 || mengirim} data-testid="unggah-import-order">
+              {mengirim && <Spinner />} Upload &amp; preview
             </Button>
           ) : (
             <>
@@ -400,7 +561,12 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
                   {belumLengkap.length} produk belum dipetakan (pilih SKU atau centang "Belum di MP").
                 </p>
               )}
-              <Button variant="secondary" onClick={() => setPreview(null)} disabled={mengirim}>
+              {progres && (
+                <p className="mr-auto self-center text-xs text-muted-foreground">
+                  {progres.nama} — {progres.ke}/{progres.dari}
+                </p>
+              )}
+              <Button variant="secondary" onClick={() => { setHasil(null); setManual({}); setTandai(new Set()) }} disabled={mengirim}>
                 Ganti file
               </Button>
               <Button onClick={konfirmasi} disabled={mengirim || !siapCommit()} data-testid="konfirmasi-import-order">

@@ -83,6 +83,22 @@ function buatDbOrder() {
             for (let i = fees.length - 1; i >= 0; i--) if (fees[i]["marketplace"] === a[0] && fees[i]["no_pesanan"] === a[1]) fees.splice(i, 1);
             return { meta: {} };
           }
+          if (sql.startsWith("DELETE FROM order_items")) {
+            let n = 0;
+            for (const k of Object.keys(items)) {
+              if (items[k]["marketplace"] === a[0] && items[k]["no_pesanan"] === a[1]) {
+                delete items[k];
+                n++;
+              }
+            }
+            return { meta: { changes: n } };
+          }
+          if (sql.startsWith("DELETE FROM orders")) {
+            const k = kunciOrder(String(a[0]), String(a[1]));
+            const ada = Boolean(orders[k]);
+            delete orders[k];
+            return { meta: { changes: ada ? 1 : 0 } };
+          }
           if (sql.startsWith("INSERT INTO order_fees")) {
             feeSeq += 1;
             fees.push({ id: feeSeq, marketplace: a[0], no_pesanan: a[1], jenis: a[2], basis: a[3], nilai: a[4], amount: a[5] });
@@ -117,8 +133,12 @@ function buatDbOrder() {
       return st;
     },
     async batch(stmts: { _sql: string; _args: unknown[] }[]) {
-      for (const s of stmts) await this.prepare(s._sql).bind(...s._args).run();
-      return [];
+      // D1 asli mengembalikan hasil per statement (termasuk meta.changes). Mock dulu
+      // mengembalikan [] sehingga kode yang membaca meta.changes terlihat "lolos"
+      // padahal selalu 0 — itu menyembunyikan bug, jadi sekarang hasilnya diteruskan.
+      const hasil: { meta: { changes?: number } }[] = [];
+      for (const s of stmts) hasil.push(await this.prepare(s._sql).bind(...s._args).run());
+      return hasil;
     },
   };
   return db as unknown as D1Database & { data: { products: Record<string, Row>; bins: Record<string, number>; moves: Row[]; orders: Record<string, Row>; items: Record<string, Row>; fees: Row[]; presets: Row[] } };
@@ -205,6 +225,51 @@ describe("transisiFulfillBatch", () => {
     const r = await transisiFulfillBatch(db, [{ mp: "shopee", no: "B-6", ke: "pack" }, { mp: "shopee", no: "B-6", ke: "pack" }], null);
     assert.equal(r.ok, true);
     if (r.ok) assert.equal(r.count, 1);
+  });
+});
+
+describe("hapus order (koreksi salah impor)", () => {
+  /** Meniru aksi `hapus` di app/api/order/route.ts: anak dulu, lalu header. */
+  async function hapus(db: D1Database, targets: { mp: string; no: string }[]): Promise<number> {
+    let dihapus = 0;
+    const stmts: D1PreparedStatement[] = [];
+    for (const t of targets) {
+      stmts.push(db.prepare("DELETE FROM order_items WHERE marketplace = ? AND no_pesanan = ?").bind(t.mp, t.no));
+      stmts.push(db.prepare("DELETE FROM order_fees WHERE marketplace = ? AND no_pesanan = ?").bind(t.mp, t.no));
+      stmts.push(db.prepare("DELETE FROM orders WHERE marketplace = ? AND no_pesanan = ?").bind(t.mp, t.no));
+    }
+    const hasil = await db.batch(stmts);
+    for (let j = 2; j < hasil.length; j += 3) dihapus += hasil[j].meta.changes ?? 0;
+    return dihapus;
+  }
+
+  it("hapus order menghilangkan header + item, order lain utuh", async () => {
+    const db = buatDbOrder();
+    await imporPesanan(db, [barisA("D-1", 2), barisA("D-2", 3)], null);
+    assert.equal((await listOrder(db, {})).length, 2);
+    const n = await hapus(db, [{ mp: "shopee", no: "D-1" }]);
+    assert.equal(n, 1);
+    const sisa = await listOrder(db, {});
+    assert.equal(sisa.length, 1);
+    assert.equal(sisa[0]?.no_pesanan, "D-2");
+    const d2 = await ambilOrder(db, "shopee", "D-2");
+    assert.equal(d2?.items.length, 1, "item order lain tidak boleh ikut terhapus");
+    assert.equal(d2?.items[0]?.qty, 3);
+  });
+
+  it("hapus order tanpa item tidak melempar error", async () => {
+    const db = buatDbOrder();
+    assert.equal(await hapus(db, [{ mp: "shopee", no: "TAK-ADA" }]), 0);
+  });
+
+  it("hapus TIDAK menyentuh stok maupun ledger", async () => {
+    const db = buatDbOrder();
+    await imporPesanan(db, [barisA("D-3", 1)], null);
+    const binSebelum = db.data.bins["A|ONLINE"];
+    const movesSebelum = db.data.moves.length;
+    await hapus(db, [{ mp: "shopee", no: "D-3" }]);
+    assert.equal(db.data.bins["A|ONLINE"], binSebelum);
+    assert.equal(db.data.moves.length, movesSebelum);
   });
 });
 

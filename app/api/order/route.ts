@@ -2,6 +2,7 @@
 // POST { aksi:'preview', rows } → validasi per baris → import_batches(tipe='pesanan') + import_errors → { batch_id, total, sukses, gagal, peringatan }.
 // POST { aksi:'konfirmasi', batch_id } → imporPesanan → { ok, order, item }.
 // POST { aksi:'transisi', marketplace, no_pesanan, ke } → transisiFulfill.
+// POST { aksi:'hapus', targets:[{ marketplace, no_pesanan }] } → hapus baris order (koreksi salah impor).
 // GET ?aksi=daftar&dari=&sampai=&mp=&status=&sku=&limit= → { ok, orders } (header+item+fee, tanpa laba).
 // Semua owner/admin.
 import { getDb } from "@/lib/d1/db";
@@ -463,6 +464,35 @@ export async function POST(request: Request) {
     });
     await db.prepare("UPDATE import_batches SET status = 'done', sukses = ? WHERE id = ?").bind(nItem, batch.id).run();
     return json({ ok: true, order: orders.length, item: nItem, advance: bookingBaru, advance_skip: advance.length - bookingBaru, resi_grup: jmlResi, batch_id: batch.id });
+  }
+  if (aksi === "hapus") {
+    const daftar = Array.isArray(body.targets) ? body.targets : [];
+    if (daftar.length === 0) return json({ ok: false, error: "Daftar order kosong." }, 400);
+    if (daftar.length > 200) return json({ ok: false, error: "Maksimal 200 order per aksi." }, 400);
+    const targets: { mp: string; no: string }[] = [];
+    for (const t of daftar as Record<string, unknown>[]) {
+      const mp = teks(t.marketplace).toLowerCase();
+      const no = teks(t.no_pesanan);
+      if (!mp || !no) return json({ ok: false, error: "Marketplace + NoPesanan wajib diisi." }, 400);
+      targets.push({ mp, no });
+    }
+    // Hapus = koreksi salah impor: hanya baris order (header + anak). Jalur laba (fee dihitung
+    // ulang dari preset saat /laba) dan jalur stok (potong stok ada di Kledo, bukan di sini)
+    // tidak disentuh — jadi tak ada angka yang perlu dikembalikan.
+    // Anak (order_items, order_fees) dihapus lebih dulu: FK-nya ON DELETE CASCADE ke orders.
+    let dihapus = 0;
+    for (let i = 0; i < targets.length; i += 50) {
+      const batch = targets.slice(i, i + 50);
+      const stmts: D1PreparedStatement[] = [];
+      for (const t of batch) {
+        stmts.push(db.prepare("DELETE FROM order_items WHERE marketplace = ? AND no_pesanan = ?").bind(t.mp, t.no));
+        stmts.push(db.prepare("DELETE FROM order_fees WHERE marketplace = ? AND no_pesanan = ?").bind(t.mp, t.no));
+        stmts.push(db.prepare("DELETE FROM orders WHERE marketplace = ? AND no_pesanan = ?").bind(t.mp, t.no));
+      }
+      const hasil = await db.batch(stmts);
+      for (let j = 2; j < hasil.length; j += 3) dihapus += hasil[j].meta.changes ?? 0;
+    }
+    return json({ ok: true, dihapus });
   }
   if (aksi === "konfirmasi") {
     if (typeof body.batch_id !== "number") return json({ ok: false, error: "batch_id wajib angka." }, 400);

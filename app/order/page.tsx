@@ -140,6 +140,7 @@ function DaftarOrder() {
   const [status, setStatus] = useState("semua");
   const [mp, setMp] = useState("");
   const [target, setTarget] = useState<Target | null>(null);
+  const [hapusTarget, setHapusTarget] = useState<Target[] | null>(null);
   const [rincian, setRincian] = useState<RincianOrder | null>(null);
   const [mengirim, setMengirim] = useState(false);
   const [terpilih, setTerpilih] = useState<Set<string>>(new Set());
@@ -181,6 +182,36 @@ function DaftarOrder() {
         return;
       }
       toast.success(`${data.count ?? targets.length} order → ${ke}.`);
+      setTerpilih(new Set());
+      await muat();
+    } catch {
+      toast.error("Jaringan gagal. Coba lagi.");
+    } finally {
+      setMengirim(false);
+    }
+  }
+
+  async function hapusOrder(targets: Target[]): Promise<void> {
+    if (targets.length === 0) return;
+    setMengirim(true);
+    try {
+      const res = await fetch("/api/order", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          aksi: "hapus",
+          targets: targets.map((t) => ({ marketplace: t.mp, no_pesanan: t.no })),
+        }),
+      });
+      const data = (await res.json().catch(() => null)) as { ok?: boolean; error?: string; dihapus?: number } | null;
+      if (!res.ok || !data?.ok) {
+        tampilkanGagalTulis(data?.error ?? `Gagal (${res.status}).`);
+        return;
+      }
+      const n = data.dihapus ?? targets.length;
+      toast.success(`${n} order dihapus.`);
+      setHapusTarget(null);
       setTerpilih(new Set());
       await muat();
     } catch {
@@ -346,6 +377,20 @@ function DaftarOrder() {
             ))}
             <Button
               size="sm"
+              variant="destructive"
+              className="h-9"
+              data-testid="hapus-order-borongan"
+              disabled={mengirim || terpilih.size === 0}
+              onClick={() =>
+                setHapusTarget(
+                  (orders ?? []).filter((o) => terpilih.has(kunciOrder(o))).map((o) => ({ mp: o.marketplace, no: o.no_pesanan, ke: "" })),
+                )
+              }
+            >
+              Hapus
+            </Button>
+            <Button
+              size="sm"
               className="h-9"
               data-testid="download-picklist-order"
               disabled={terpilih.size === 0}
@@ -461,6 +506,16 @@ function DaftarOrder() {
                             {t.label}
                           </Button>
                         ))}
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          className="h-9 md:h-7"
+                          data-testid={`hapus-${o.no_pesanan}`}
+                          disabled={mengirim}
+                          onClick={() => setHapusTarget([{ mp: o.marketplace, no: o.no_pesanan, ke: "" }])}
+                        >
+                          Hapus
+                        </Button>
                       </div>
                     </TableCell>
                   </TableRow>
@@ -505,6 +560,43 @@ function DaftarOrder() {
             >
               {mengirim ? <Spinner data-icon="inline-start" /> : null}
               {mengirim ? "Memproses…" : "Ya, lanjut"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog
+        open={hapusTarget !== null}
+        onOpenChange={(v) => {
+          if (!mengirim && !v) setHapusTarget(null);
+        }}
+      >
+        <AlertDialogContent data-testid="dialog-hapus-order">
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {hapusTarget && hapusTarget.length === 1 ? `Hapus order ${hapusTarget[0].no}?` : `Hapus ${hapusTarget?.length ?? 0} order?`}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              Order hilang dari daftar ini dan dari picklist. Bila salah hapus, order harus diimpor ULANG dari file marketplace.
+              Stok di WMS tidak berubah — koreksi stok tetap dilakukan di Kledo. Lanjut hapus?
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel
+              className="h-11 md:h-9"
+              disabled={mengirim}
+              data-testid="batal-hapus-order"
+              onClick={() => setHapusTarget(null)}
+            >
+              Batal
+            </AlertDialogCancel>
+            <AlertDialogAction
+              className="h-11 md:h-9"
+              disabled={mengirim}
+              data-testid="konfirmasi-hapus-order"
+              onClick={() => void hapusOrder(hapusTarget ?? [])}
+            >
+              {mengirim ? <Spinner data-icon="inline-start" /> : null}
+              {mengirim ? "Menghapus…" : "Ya, hapus"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
