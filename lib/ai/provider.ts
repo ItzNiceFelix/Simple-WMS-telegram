@@ -207,10 +207,36 @@ export async function panggilGambar(
   // Provider pilihan user (bila sah) dipindah ke depan rantai — bukan mengganti rantai,
   // supaya fallback tetap jalan saat provider pilihan sedang bermasalah.
   const pilihan = String(minta.provider ?? "").trim();
+  // Provider yang PUNYA model gambar terpilih juga harus ikut rantai.
+  // MASALAH YANG DIPERBAIKI: sebelumnya rantai hanya dari chainGambar. Bila user
+  // sudah memilih model gambar (atau memakai pengaturan global) untuk provider yang
+  // tidak ada di chainGambar, model itu tidak pernah dicoba — dan yang muncul hanya
+  // "tidak ada kredensial aktif" untuk provider lain yang belum diisi kuncinya.
+  const berModelGambar = Object.keys(set.modelGambar).filter(
+    (p): p is ProviderNama => semuaProvider.includes(p) && !!String(set.modelGambar[p] ?? "").trim()
+  );
+  const dasarLengkap = [...dasar, ...berModelGambar.filter((p) => !dasar.includes(p))];
   const rantaiGambar =
     pilihan && semuaProvider.includes(pilihan)
-      ? [pilihan as ProviderNama, ...dasar.filter((p) => p !== pilihan)]
-      : dasar;
+      ? [pilihan as ProviderNama, ...dasarLengkap.filter((p) => p !== pilihan)]
+      : dasarLengkap;
+
+  const gagalSemua = () => {
+    // Bila SEMUA kandidat gagal karena kredensial, pesannya harus menuntun user
+    // ke tindakan: provider mana yang perlu diisi kuncinya. Pesan "tidak ada
+    // kredensial aktif" saja membingungkan karena user sudah mengisi satu provider.
+    const tanpaKred = catatan.filter((c) => c.error.includes("tidak ada kredensial"));
+    if (tanpaKred.length === catatan.length && catatan.length > 0) {
+      const perlu = [...new Set(tanpaKred.map((c) => c.provider))];
+      return gagal<{ base64: string; mime: string; provider: string; model: string }>(
+        400,
+        `Tidak ada kredensial aktif untuk: ${perlu.join(", ")}. ` +
+          `Isi API key provider itu di Pengaturan → Kredensial Provider, ` +
+          `atau pilih provider yang kredensialnya sudah ada (mis. di Model Default).`
+      );
+    }
+    return gagal<{ base64: string; mime: string; provider: string; model: string }>(502, ringkasGagal(catatan));
+  };
 
   for (const provider of rantaiGambar) {
     const kred = await ambilKredensial(ctx.db, provider, ctx.kunci);
@@ -254,5 +280,5 @@ export async function panggilGambar(
       return { ok: true, base64: h.data.base64, mime: h.data.mime, provider, model };
     }
   }
-  return gagal(502, ringkasGagal(catatan));
+  return gagalSemua();
 }

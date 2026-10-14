@@ -5,6 +5,7 @@
 // Satu-satunya sumber model gambar untuk studio — studio tidak lagi punya state model.
 import { useCallback, useEffect, useState } from "react"
 import { Save } from "lucide-react"
+import { toast } from "sonner"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -134,6 +135,9 @@ export function AiGambarSetting({ awal, onBerubah }: Props) {
       setSetting(d.setting)
       setPilihanReasoning(d.reasoning_pilihan ?? [])
       onBerubah?.(d.setting)
+      // Notif sukses: tanpa ini user tidak tahu simpan berhasil (tidak ada perubahan
+      // visual yang jelas), dan mengira tombolnya rusak.
+      toast.success("Pengaturan studio gambar disimpan.")
     } catch (e) {
       tampilkanGagalTulis(e instanceof Error ? e.message : "Gagal menghubungi server.")
     } finally {

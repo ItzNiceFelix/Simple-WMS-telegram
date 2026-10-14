@@ -94,31 +94,34 @@ export function AiFallback({ bolehUbah, onBerubah }: Props) {
 
   if (!p) return null
 
-  async function ubahUrutan(arah: "naik" | "turun", i: number) {
+  /** Kunci rantai yang bisa disunting: teks (bot) dan gambar (studio). */
+  type KunciRantai = "chainTeks" | "chainGambar"
+
+  async function ubahUrutan(kunci: KunciRantai, arah: "naik" | "turun", i: number) {
     if (!bolehUbah || !p) return
-    const baru = geser(p.chainTeks, i, arah === "naik" ? i - 1 : i + 1)
-    if (baru === p.chainTeks) return
-    setP({ ...p, chainTeks: baru })
-    if (await kirim({ chainTeks: baru })) onBerubah?.()
+    const baru = geser(p[kunci], i, arah === "naik" ? i - 1 : i + 1)
+    if (baru === p[kunci]) return
+    setP({ ...p, [kunci]: baru })
+    if (await kirim({ [kunci]: baru })) onBerubah?.()
   }
 
-  async function tambahKeChain(provider: string) {
+  async function tambahKeChain(kunci: KunciRantai, provider: string) {
     if (!bolehUbah || !p) return
-    if (p.chainTeks.includes(provider)) return
-    const baru = [...p.chainTeks, provider]
-    setP({ ...p, chainTeks: baru })
-    if (await kirim({ chainTeks: baru })) onBerubah?.()
+    if (p[kunci].includes(provider)) return
+    const baru = [...p[kunci], provider]
+    setP({ ...p, [kunci]: baru })
+    if (await kirim({ [kunci]: baru })) onBerubah?.()
   }
 
-  async function hapusDariChain(provider: string) {
+  async function hapusDariChain(kunci: KunciRantai, provider: string) {
     if (!bolehUbah || !p) return
-    const baru = p.chainTeks.filter((x) => x !== provider)
+    const baru = p[kunci].filter((x) => x !== provider)
     if (baru.length === 0) {
       toast.error("Minimal satu provider harus ada di rantai.")
       return
     }
-    setP({ ...p, chainTeks: baru })
-    if (await kirim({ chainTeks: baru })) onBerubah?.()
+    setP({ ...p, [kunci]: baru })
+    if (await kirim({ [kunci]: baru })) onBerubah?.()
   }
 
   async function simpanHemat() {
@@ -135,6 +138,7 @@ export function AiFallback({ bolehUbah, onBerubah }: Props) {
   }
 
   const sisaProvider = PROVIDER_AI.filter((x) => !p.chainTeks.includes(x))
+  const sisaProviderGambar = PROVIDER_AI.filter((x) => !p.chainGambar.includes(x))
 
   return (
     <>
@@ -166,7 +170,7 @@ export function AiFallback({ bolehUbah, onBerubah }: Props) {
                       size="sm"
                       className="h-9 md:h-7"
                       disabled={!bolehUbah || i === 0}
-                      onClick={() => void ubahUrutan("naik", i)}
+                      onClick={() => void ubahUrutan("chainTeks", "naik", i)}
                       data-testid={`naik-${prov}`}
                     >
                       <ArrowUp />
@@ -176,7 +180,7 @@ export function AiFallback({ bolehUbah, onBerubah }: Props) {
                       size="sm"
                       className="h-9 md:h-7"
                       disabled={!bolehUbah || i === p.chainTeks.length - 1}
-                      onClick={() => void ubahUrutan("turun", i)}
+                      onClick={() => void ubahUrutan("chainTeks", "turun", i)}
                       data-testid={`turun-${prov}`}
                     >
                       <ArrowDown />
@@ -186,7 +190,7 @@ export function AiFallback({ bolehUbah, onBerubah }: Props) {
                       size="sm"
                       className="h-9 md:h-7"
                       disabled={!bolehUbah || p.chainTeks.length <= 1}
-                      onClick={() => void hapusDariChain(prov)}
+                      onClick={() => void hapusDariChain("chainTeks", prov)}
                       data-testid={`hapus-rantai-${prov}`}
                     >
                       Hapus
@@ -206,7 +210,7 @@ export function AiFallback({ bolehUbah, onBerubah }: Props) {
                   variant="outline"
                   size="sm"
                   className="h-9 md:h-7"
-                  onClick={() => void tambahKeChain(x)}
+                  onClick={() => void tambahKeChain("chainTeks", x)}
                   data-testid={`tambah-rantai-${x}`}
                 >
                   + {LABEL_PROVIDER[x] ?? x}
@@ -214,6 +218,83 @@ export function AiFallback({ bolehUbah, onBerubah }: Props) {
               ))}
             </div>
           ) : null}
+
+          {/* Rantai GAMBAR — sebelumnya tidak punya UI sama sekali, sehingga selalu
+              berisi default ["gemini"]. Akibatnya model gambar yang sudah dipilih
+              untuk provider lain tidak pernah dicoba dan muncul error
+              "tidak ada kredensial aktif" padahal kredensial provider itu ada. */}
+          <div className="flex flex-col gap-2 border-t border-border pt-4">
+            <div>
+              <p className="text-sm font-medium">Rantai Gambar</p>
+              <p className="text-xs text-muted-foreground">
+                Provider yang dicoba untuk studio gambar, berurutan. Provider yang punya model gambar terpilih di
+                Model Default otomatis ikut dicoba.
+              </p>
+            </div>
+            <ol className="flex flex-col divide-y divide-border rounded-lg border border-border" data-testid="rantai-gambar">
+              {p.chainGambar.map((prov, i) => (
+                <li key={prov} className="flex flex-wrap items-center justify-between gap-3 p-3">
+                  <div className="flex min-w-40 items-center gap-2">
+                    <span className="w-5 text-xs text-muted-foreground tabular-nums">{i + 1}.</span>
+                    <span className="font-medium">{LABEL_PROVIDER[prov] ?? prov}</span>
+                    {i === 0 ? <Badge>utama</Badge> : null}
+                  </div>
+                  <p className="min-w-56 flex-1 text-xs text-muted-foreground" data-testid={`model-gambar-${prov}`}>
+                    Model: {p.modelGambar[prov] || "(aktif pertama di katalog)"}
+                  </p>
+                  <div className="flex shrink-0 gap-1">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-9 md:h-7"
+                      disabled={!bolehUbah || i === 0}
+                      onClick={() => void ubahUrutan("chainGambar", "naik", i)}
+                      data-testid={`naik-gambar-${prov}`}
+                    >
+                      <ArrowUp />
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-9 md:h-7"
+                      disabled={!bolehUbah || i === p.chainGambar.length - 1}
+                      onClick={() => void ubahUrutan("chainGambar", "turun", i)}
+                      data-testid={`turun-gambar-${prov}`}
+                    >
+                      <ArrowDown />
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-9 md:h-7"
+                      disabled={!bolehUbah || p.chainGambar.length <= 1}
+                      onClick={() => void hapusDariChain("chainGambar", prov)}
+                      data-testid={`hapus-rantai-gambar-${prov}`}
+                    >
+                      Hapus
+                    </Button>
+                  </div>
+                </li>
+              ))}
+            </ol>
+            {sisaProviderGambar.length > 0 && bolehUbah ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-muted-foreground">Tambah ke rantai gambar:</span>
+                {sisaProviderGambar.map((x) => (
+                  <Button
+                    key={x}
+                    variant="outline"
+                    size="sm"
+                    className="h-9 md:h-7"
+                    onClick={() => void tambahKeChain("chainGambar", x)}
+                    data-testid={`tambah-rantai-gambar-${x}`}
+                  >
+                    + {LABEL_PROVIDER[x] ?? x}
+                  </Button>
+                ))}
+              </div>
+            ) : null}
+          </div>
         </CardContent>
       </Card>
 
