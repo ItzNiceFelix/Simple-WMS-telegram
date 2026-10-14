@@ -167,7 +167,43 @@ Konsekuensi: pemetaan **WAJIB mengumpulkan dari SELURUH baris** per `Kode Produk
 tidak boleh membaca per baris. Angka pesanan/omzet hanya ada di baris **induk** —
 jadi penggabungan harus hati-hati agar tidak menghitung ganda.
 
-### 1.4 Bahaya SKU kembar di master (masih relevan)
+### 1.5 KEPUTUSAN: `[6]` dulu, `[7]` cadangan
+
+Kedua kolom **sering berbeda**, dan itu **bukan konflik — beda tingkat**:
+
+```
+[7] SKU Induk   = SKU produk INDUK        (satu, generik)      -> 48 produk, 20,9% omzet
+[6] Kode Variasi = SKU per VARIASI        (banyak, spesifik)  -> 79 produk, 78,9% omzet
+```
+
+Bukti dari master:
+
+```
+001485  "Piring 9 super"                HPP 7500   <- INDUK (dari [7])
+  100012 "Piring 9 Super Hijau - SY"    HPP 7093   <- VARIASI (dari [6])
+  100013 "Piring 9 Super Biru - SY"     HPP 7000   <- VARIASI (dari [6])
+  100345 "Piring 9 Super Merah - SY"    HPP 7000   <- VARIASI (dari [6])
+```
+
+Terukur pada file nyata (7-13 Okt):
+
+| Strategi | Produk terpetakan | Pesanan | Omzet |
+|---|---|---|---|
+| `[7]` saja | 48 | 32,7% | **20,9%** |
+| `[6]` saja | 79 | 68,6% | 78,9% |
+| **`[6]` dulu, `[7]` cadangan** | **117** | **98,3%** | **97,6%** |
+
+**Keputusan user (2026-10-14): pakai `[6]` dulu, jatuh ke `[7]` bila `[6]` kosong.**
+
+Alasan tambahan: **`[6]` membawa HPP yang lebih akurat.** Variasi punya biaya
+sendiri-sendiri (Hijau 7093, Biru 7000), sedangkan induk hanya 7500 rata-rata.
+Untuk analisa margin, memakai HPP varian adalah satu-satunya cara menjawab
+"varian mana yang untung" dengan benar.
+
+**Keputusan user: HPP yang dipakai = HPP varian (`[6]`).**
+
+Kalau `[7]` saja yang dipakai: **79% omzet hilang** dari analisa dan harus dijawab
+satu per satu lewat tool tanya SKU. Perbedaan 4,7×.
 
 Meski cakupan 98%, **79 grup SKU "kembar"** tetap ada di master dan tetap berbahaya
 bila suatu saat dipakai untuk pencocokan longgar:
@@ -220,40 +256,78 @@ Pemicu 2  SKU ditemukan tapi TIDAK ADA di master
 **Kandidat tetap ditampilkan** (nama Shopee + variasi + jumlah terjual) agar keputusan
 cepat, tapi **hanya sebagai tampilan** — bukan dasar pemetaan.
 
-### 2.3 Bentuk dialog
+### 2.3 Bentuk UI: DUA KARTU (permintaan user)
 
-Bukan popup mengambang yang mengganggu. **Baris di daftar "Perlu Keputusan"**:
+User meminta tool tanya berbentuk **kolom isian yang bisa dijawab sekaligus (batch)**,
+bukan popup satu per satu. Bentuknya dua kartu bertumpuk:
 
 ```
-┌─ Perlu Keputusan (4) ────────────────────────────────────┐
-│ ⚠ SKU 1570 — 2 kemungkinan produk                       │
-│   [ 001570 tudung saji 4ssn... ]  [ 1570 ... ]  [ lain ] │
-│                                                          │
-│ ⚠ Kode 28753717561 — belum ada di master                │
-│   [ tambah produk baru ]  [ bukan produk kita ]          │
-└──────────────────────────────────────────────────────────┘
+┌─ PERTANYAAN ──────────────────────────────  [7 belum dijawab] ─┐
+│ Produk yang belum punya SKU. Isi kolom SKU, atau tandai        │
+│ "bukan produk kita". Jawaban tersimpan dan tidak ditanya lagi. │
+│                                                                 │
+│  #  Produk Shopee                         Terjual   Variasi     │
+│  1  Rak Buku Portable 5 Layer             23       TANPADUS    │
+│  2  Bubble Wrap Untuk Packing Aman        12       -            │
+│  3  Gayung Mandi Jumbo                     3       -            │
+└─────────────────────────────────────────────────────────────────┘
+┌─ JAWABAN ───────────────────────────────────────────────────────┐
+│  #  SKU                          SKU          Kandidat terdekat │
+│  1  [_______________]            (021)        [Rak Buku 5 Layer]│
+│  2  [_______________]            (022)        [Bubble Wrap 50cm]│
+│  3  [_______________]            (023)        [Gayung Jumbo]    │
+│                                                                 │
+│  [ Simpan semua ]   [ Tandai bukan produk kita ]                │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-Satu baris = satu keputusan. Dijawab sekali, **tersimpan**, tidak pernah ditanya lagi.
+Mengetik SKU, begitu terisi dan cocok master → baris **hijau** dan otomatis tersimpan
+pada baris pertama yang valid. Yang tidak diisi → baris tetap di daftar pertanyaan.
 
-### 2.4 Aturan yang mengikat
+Keunggulan bentuk ini dibanding popup satu-satu:
 
-- **Pemetaan HANYA lewat SKU eksplisit** dari kolom `[6]` dan `[7]`. Tidak ada pencocokan
-  nama sebagai penentu.
+- **Sekali lihat, semua jawab** — 22 pertanyaan selesai dalam satu sesi, bukan 22 popup.
+- **Bisa ditinggal** — jawaban yang sudah diisi tersimpan; sisanya menunggu sesi berikutnya.
+- **Mengetik SKU langsung** — user sudah tahu SKU-nya (dari sistem lama), tidak perlu
+  menelusuri kandidat.
+- **Kandidat tetap ditampilkan** untuk yang lupa SKU-nya.
+
+### 2.4 Pemicu pertanyaan (2 saja, terukur)
+
+```
+Pemicu 1  Kode Produk BERPESANAN tanpa SKU di kolom [6] maupun [7]
+          22 produk — terbesar 23 pesanan (Rp 1,07 jt), sisanya 1-12 pesanan
+          → masuk kartu PERTANYAAN
+
+Pemicu 2  SKU ditemukan (di [6] atau [7]) tapi TIDAK ADA di master
+          → masuk kartu PERTANYAAN dengan pilihan "tambah produk baru"
+```
+
+Semua yang punya SKU valid (98,3% pesanan) **tidak muncul sama sekali** — tidak perlu
+dilihat, tidak perlu dijawab.
+
+### 2.5 Aturan yang mengikat
+
+- **Urutan pengambilan SKU: `[6]` dulu, `[7]` cadangan.** `[6]` = SKU variasi (punya HPP
+  sendiri); `[7]` = SKU induk (hanya bila `[6]` kosong). Terukur: `[7]` saja = 20,9%
+  omzet, `[6]`+`[7]` = 97,6%.
+- **HPP yang dipakai = HPP varian** (dari `[6]`). Itu satu-satunya cara menjawab
+  "varian mana yang untung" dengan benar.
 - **DUA-DUANYA HARUS COCOK PERSIS** (setelah trim + uppercase) dengan `products.sku`.
   Tidak ada normalisasi longgar.
 - **Kanonik longgar (buang nol depan / awalan `SKU/`) DILARANG.** Terbukti berbahaya:
-  `1203` ≠ `001203` (§1.4). Bila perlu penyamaan, itu **harus** jadi pertanyaan ke user.
+  `1203` ≠ `001203`. Bila perlu penyamaan, itu **harus** jadi pertanyaan ke user.
+- **Importer membaca kolom berdasarkan POSISI**, bukan nama — karena ada dua kolom
+  bernama `Kode Variasi` (§1.3). Header dipakai sebagai **pemeriksa** (memastikan file
+  tidak bergeser), bukan sebagai dasar pengambilan nilai.
 - **Sistem TIDAK PERNAH menebak.** Tidak ada auto-pilih, tidak ada "kandidat terbaik".
 - **Data tidak dipakai sebelum dijawab.** Baris yang belum diputuskan **dikeluarkan** dari
   analisa, dan jumlahnya dilaporkan ("22 baris belum dipetakan, tidak dihitung").
   Bukan dihitung dengan asumsi, bukan juga dibuang diam-diam.
 - **Jawaban tersimpan permanen** per `Kode Produk`; tidak pernah ditanya lagi.
-- **Importer membaca kolom berdasarkan POSISI**, bukan nama — karena ada dua kolom
-  bernama `Kode Variasi` (§1.3). Nama kolom di header dipakai sebagai **pemeriksa**
-  (memastikan file tidak bergeser), bukan sebagai dasar pengambilan nilai.
+- **Jawaban bisa diubah** (manusia salah ketik) → analisa dihitung ulang.
 
-### 2.5 Kenapa ini bukan "AI tool"
+### 2.6 Kenapa ini bukan "AI tool"
 
 Tool tanya SKU **tidak memanggil AI sama sekali**. Ia pertanyaan deterministik dari
 kondisi data. AI hanya dipakai (opsional, fase akhir) untuk **mengusulkan urutan
@@ -287,33 +361,37 @@ boleh ada bagian yang tidak bisa ditelusuri.
 
 ```
 -- Jembatan Kode Produk Shopee → daftar SKU kita. Diisi dari file Performa (fakta Shopee).
--- Satu Kode Produk bisa punya BANYAK SKU (model varian sah — mis. Dispenser Beras 14 variasi).
+-- Satu Kode Produk bisa punya BANYAK SKU (model varian sah — Dispenser Beras 14 variasi).
 CREATE TABLE shopee_produk (
   kode_produk TEXT NOT NULL,             -- ID produk Shopee
   sku TEXT NOT NULL,                     -- products.sku
-  variasi TEXT,                          -- nama variasi (untuk tampilan)
+  tingkat TEXT NOT NULL CHECK (tingkat IN ('variasi','induk')),
+  variasi TEXT,                          -- nama variasi (tampilan)
   kode_variasi_shopee TEXT,              -- kolom [3], untuk jejak
-  sumber_kolom TEXT NOT NULL,            -- 'KodeVariasi6' | 'SKUInduk7' | 'manual'
   nama_shopee TEXT,                      -- nama produk Shopee (tampilan)
   at INTEGER NOT NULL DEFAULT (unixepoch()),
   PRIMARY KEY (kode_produk, sku)
 );
 CREATE INDEX idx_shopee_produk_sku ON shopee_produk(sku);
+-- Cari SKU variasi lebih dulu; kalau tidak ada, baru induk (aturan §2.5).
+CREATE INDEX idx_shopee_produk_tingkat ON shopee_produk(kode_produk, tingkat);
 
 -- Keputusan tak-pasti: satu baris per pertanyaan yang menunggu jawaban manusia.
+-- Diisi lewat UI DUA KARTU secara batch (permintaan user), bukan popup satu-satu.
 CREATE TABLE peta_putusan (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   jenis TEXT NOT NULL CHECK (jenis IN ('tanpa_sku','sku_tak_ada_master')),
   acuan TEXT NOT NULL,                   -- kode_produk yang dipertanyakan
   nama_shopee TEXT,                      -- untuk ditampilkan saat bertanya
-  pesanan INTEGER NOT NULL DEFAULT 0,    -- bobot prioritas
+  pesanan INTEGER NOT NULL DEFAULT 0,    -- bobot prioritas (terbesar dulu)
+  omzet INTEGER NOT NULL DEFAULT 0,
   kandidat_json TEXT NOT NULL DEFAULT '[]',
   diputuskan_sku TEXT,                   -- hasil; '' = bukan produk kita
   diputuskan_at INTEGER, diputuskan_oleh TEXT,
   at INTEGER NOT NULL DEFAULT (unixepoch()),
   UNIQUE (jenis, acuan)
 );
-CREATE INDEX idx_peta_putusan_belum ON peta_putusan(jenis, acuan) WHERE diputuskan_at IS NULL;
+CREATE INDEX idx_peta_putusan_belum ON peta_putusan(pesanan DESC) WHERE diputuskan_at IS NULL;
 
 -- Biaya iklan PER PRODUK per tanggal.
 CREATE TABLE ads_produk (
@@ -355,9 +433,26 @@ CREATE TABLE performa_produk (
 - **Konsentrasi**: persen laba dari 10 SKU teratas (>60% = risiko bergantung segelintir).
 - **HPP basi**: HPP naik setelah snapshot dibuat → margin sebenarnya kini lebih jelek.
 - **Tren antar periode**: 3 snapshot tersedia — SKU naik, turun, baru muncul, hilang.
-- **Silang stok**: kontribusi besar + stok menipis (risiko) / kontribusi rendah + stok
-  menumpuk (modal mati).
+- **Silang stok**: kontribusi besar + stok menipis (risiko) / kontribusi rendah +
+  stok menumpuk (modal mati).
 - **Retur**: (setelah importer menambahkan field) produk dengan retur tinggi.
+
+#### 5.1b Analisa tingkat VARIAN — baru, dan ini keunggulan utama
+
+Karena pemetaan memakai SKU variasi dengan HPP masing-masing, analisa bisa turun ke
+tingkat varian. Ini yang tidak bisa dilakukan sistem lama:
+
+- **Varian merugi di dalam produk yang untung.** Produk terlihat sehat, padahal satu
+  warnanya rugi tiap terjual. Contoh nyata: Piring 9 Super Hijau (HPP 7093) vs Biru
+  (HPP 7000) vs induk 7500 — selisih biaya per unit itulah yang menggerus margin.
+- **Warna/ukuran mana yang paling laku**, dan mana yang hanya menumpuk stok.
+- **Rekomendasi fokus**: tawarkan varian ber-margin terbaik; kurangi yang rugi.
+- **HPP varian vs HPP induk**: bandingkan harga jual aktual terhadap biaya varian
+  sesungguhnya, bukan rata-rata.
+
+Catatan kehati-hatian: `laba_snapshot.rincian_json` saat ini berisi **per SKU** (yang
+sudah tervariasi). Bila suatu varian belum pernah terjual, ia tidak muncul di sana —
+analisa varian harus menggabungkan rincian penjualan + master produk, bukan hanya rincian.
 
 ### 5.2 Saran iklan — **ROAS titik impas, dihitung bukan dikarang**
 
@@ -403,13 +498,13 @@ Prinsip: sistem hanya membuat pernyataan yang bisa dipertanggungjawabkan.
 | Berkas | Isi |
 |---|---|
 | `lib/analisa/tipe.ts` | tipe temuan (dipakai UI + AI, satu bentuk) |
-| `lib/analisa/hitung.ts` | analisa cepat + ROAS impas. **Fungsi murni, tanpa DB** |
-| `lib/analisa/peta.ts` | aturan pemetaan + deteksi 3 pemicu pertanyaan |
+| `lib/analisa/hitung.ts` | analisa cepat + analisa varian + ROAS impas. **Fungsi murni, tanpa DB** |
+| `lib/analisa/peta.ts` | aturan `[6]`→`[7]` + deteksi pemicu pertanyaan |
 | `lib/analisa/ai.ts` | prompt dari temuan → provider (`lib/ai/provider`), reasoning dari pengaturan |
-| `lib/d1/shopeePeta.ts` | CRUD `shopee_produk` + `peta_putusan` |
-| `lib/d1/adsProduk.ts` | importer CSV iklan + performa xlsx |
-| `app/api/analisa/route.ts` | GET (cepat) + POST (`mendalam`, `putusan`) |
-| `app/analisa/page.tsx` | halaman baru |
+| `lib/d1/shopeePeta.ts` | CRUD `shopee_produk` + `peta_putusan` (jawaban batch) |
+| `lib/d1/adsProduk.ts` | importer CSV iklan + performa xlsx (**baca per posisi kolom**) |
+| `app/api/analisa/route.ts` | GET (cepat) + POST (`mendalam`, `putusan`, `putusan-batch`) |
+| `app/analisa/page.tsx` | halaman baru + kartu PERTANYAAN/JAWABAN |
 
 ### 6.1 Pengaturan reasoning GLOBAL (diminta user)
 
@@ -432,15 +527,18 @@ Bila model tidak mendukung → **dicatat sebagai peringatan**, tidak diam-diam t
 | **T1** | `lib/analisa/hitung.ts` + uji (data yang sudah ada) | 5 angka cocok dengan SQL langsung |
 | **T2** | API GET + halaman (analisa cepat) | temuan nyata dari 3 snapshot tampil |
 | **T3** | Ganti menu "Kata Kunci" → "Analisa"; **hapus** halaman kata-kunci + `kamus.ts` + `catatKeyword` + `konfirmasiKeyword` | grep bersih |
-| **T4** | Migrasi + importer performa xlsx (**baca kolom POSISI 6 & 7**) + peta `Kode Produk → SKU` | 120/624 kode produk terpetakan; **98,3% pesanan / 97,6% omzet** |
-| **T5** | **Tool tanya SKU** + 2 pemicu + UI "Perlu Keputusan" | hanya **22 produk** jadi pertanyaan; sisanya otomatis |
+| **T4** | Migrasi + importer performa xlsx (**posisi kolom `[6]` lalu `[7]`**) + peta | 117/624 produk; **98,3% pesanan / 97,6% omzet** |
+| **T5** | **Tool tanya SKU: UI DUA KARTU (batch)** + 2 pemicu | 22 pertanyaan selesai dalam satu sesi |
 | **T6** | Importer CSV iklan + `ads_produk` | biaya iklan nyata masuk per SKU |
 | **T7** | ROAS impas + tab Saran Iklan + baris keterbatasan | angka impas cocok hitung tangan |
-| **T8** | `lib/analisa/ai.ts` + tombol "Analisa mendalam" + reasoning global | narasi memuat angka benar + menyebut data kurang |
+| **T8** | `lib/analisa/ai.ts` + tombol "Analisa Mendalam"+ reasoning global | narasi memuat angka benar + menyebut data kurang |
 
-T4 harus memakai **posisi kolom**, bukan nama: ada dua kolom bernama `Kode Variasi`,
-dan yang berisi SKU kita adalah **posisi 6**. Salah baca = cakupan jatuh dari 98% ke 10%.
-Header dipakai sebagai **pemeriksa** (memastikan file tidak bergeser), bukan sumber nilai.
+Tiga hal yang WAJIB benar di T4, ketiganya dari kesalahan yang sudah terbukti:
+
+1. **Baca kolom berdasarkan POSISI.** Ada dua kolom bernama `Kode Variasi`; yang berisi
+   SKU kita adalah **posisi 6**. Salah baca = cakupan jatuh dari 98% ke 10%.
+2. **`[6]` dulu, `[7]` cadangan.** `[7]` saja = 20,9% omzet; `[6]`+`[7]` = 97,6%.
+3. **HPP dari SKU varian**, bukan induk. Variasi punya biaya sendiri (7093 vs 7500).
 
 T4 sebelum T5: 98% selesai tanpa bertanya; pertanyaan hanya untuk 22 produk sisanya.
 T5 sebelum T7: tanpa SKU yang benar, saran iklan salah sasaran.
@@ -449,21 +547,33 @@ T5 sebelum T7: tanpa SKU yang benar, saran iklan salah sasaran.
 
 ## 8. Keputusan user (2026-10-14)
 
-1. **File iklan tanpa SKU** → ternyata **ada jembatan resmi** lewat `Kode Produk` →
-   file performa → `SKU Induk`. Pencocokan nama berbahaya **tidak dipakai**.
-2. **File performa perlu** → dipakai, dan ternyata **berisi SKU Induk**.
+1. **File iklan tanpa SKU** → ternyata **ada jembatan resmi**: `Kode Produk` (iklan) →
+   file performa → SKU. Pencocokan nama berbahaya **tidak dipakai**.
+2. **File performa perlu** → dipakai, dan berisi SKU di **dua** kolom.
 3. **Ambang margin tipis: 10%.**
 4. **Halaman Kata Kunci: HAPUS.**
 5. **Reasoning tertinggi**, diatur **global di halaman AI**.
-6. **Tool tanya SKU disetujui** — dipersempit jadi pertanyaan tertutup, 3 pemicu pasti.
+6. **Tool tanya SKU disetujui** — bentuknya **kolom isian batch (UI dua kartu)**,
+   bukan popup satu per satu.
+7. **Urutan kolom: `[6]` dulu, `[7]` cadangan** — setelah terbukti `[7]` saja hanya
+   menutup 20,9% omzet, sementara `[6]`+`[7]` menutup 97,6%.
+8. **HPP yang dipakai = HPP varian (`[6]`)**, bukan HPP induk — supaya analisa
+   "varian mana yang untung" benar.
 
 ### Peringatan user yang dipatuhi
 
 > "ini perlu informasi yang SANGAT terkini tentang iklan GMX MAX ROAS dan GMV MAX AUTO.
 > Jika analisa salah bisa bikin user rugi besar."
 
-→ Dijawab §5.4: sistem dibatasi pada **titik impas dari biaya sendiri**, dilarang
+→ Dijawab §5.2/§5.4: sistem dibatasi pada **titik impas dari biaya sendiri**, dilarang
 mengklaim tahu perilaku platform, dan wajib menyatakan keterbatasan.
+
+### Koreksi yang dicatat sebagai pelajaran
+
+Pemeriksaan awal hanya membaca `SKU Induk` dan menyimpulkan 61 produk tak bisa dipetakan.
+User menunjuk kolom lain → ternyata SKU ada di kolom ke-6 yang **bernama sama** dengan
+kolom ke-3. Pelajaran: **periksa bentuk data mentah sampai ke posisi kolom, jangan
+percaya nama kolom** — terutama pada ekspor pihak ketiga.
 
 ---
 
