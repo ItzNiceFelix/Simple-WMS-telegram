@@ -34,6 +34,9 @@ import type { HasilHttp, HasilModel } from "@/lib/ai/http";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
+/** Batas token untuk tes koneksi. Cukup besar agar model reasoning tetap menghasilkan teks. */
+const MAKS_UJI = 256;
+
 /** Body angka aman: kosong/NaN → undefined (biar lib yang memakai nilai lama). */
 function angkaOpsional(v: unknown): number | undefined {
   if (v === undefined || v === null || v === "") return undefined;
@@ -332,18 +335,21 @@ export async function POST(request: Request) {
     }
 
     const mulai = Date.now();
+    // Batas token sengaja lebih besar dari jawaban "OK": model reasoning (mis. Kenari
+    // `:free`) memakai token untuk berpikir dulu, sehingga dengan batas 16 responsnya
+    // kosong walau koneksinya sukses — membingungkan saat menguji.
     const pesan = [{ role: "user" as const, teks: "Balas satu kata: OK" }];
     if (jenis === "gambar") {
       return json({ ok: false, provider, model, latencyMs: 0, error: "Uji koneksi untuk model gambar belum didukung di sini." }, 400);
     }
     const h =
       provider === "gemini"
-        ? await chatGemini({ apiKey: kred.plaintext, timeoutMs: 30000 }, { model, pesan, maksToken: 16 })
+        ? await chatGemini({ apiKey: kred.plaintext, timeoutMs: 30000 }, { model, pesan, maksToken: MAKS_UJI })
         : await (async () => {
             const baseKred = String(kred.base_url ?? "").trim().replace(/\/+$/, "");
             const baseUrl = baseKred || (provider === "kenari" ? baseKenari(getEnvAi()) : BASE_OPENAI[provider]);
             if (!baseUrl) return { ok: false as const, status: 400, error: `Provider ${provider} tidak mendukung chat teks.`, latencyMs: 0 };
-            return chatOpenai({ baseUrl, apiKey: kred.plaintext, timeoutMs: 30000, provider }, { model, pesan, maksToken: 16 });
+            return chatOpenai({ baseUrl, apiKey: kred.plaintext, timeoutMs: 30000, provider }, { model, pesan, maksToken: MAKS_UJI });
           })();
 
     const latencyMs = h.ok ? h.latencyMs : h.latencyMs || Date.now() - mulai;
