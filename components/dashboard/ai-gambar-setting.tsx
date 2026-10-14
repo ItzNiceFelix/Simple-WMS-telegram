@@ -224,7 +224,8 @@ export function AiGambarSetting({ awal, onBerubah }: Props) {
                 onValueChange={(v) => typeof v === "string" && setSetting((s) => (s ? { ...s, aspek_rasio: v } : s))}
               >
                 <SelectTrigger id="pilih-rasio" className="h-11 w-full md:h-8" data-testid="pilih-rasio">
-                  <SelectValue />
+                  {/* Nilainya "1:1" dst — sudah teks yang benar, bukan id mentah. */}
+                  <SelectValue /> {/* selectvalue-ok */}
                 </SelectTrigger>
                 <SelectContent>
                   <SelectGroup>
@@ -245,7 +246,9 @@ export function AiGambarSetting({ awal, onBerubah }: Props) {
                 onValueChange={(v) => typeof v === "string" && setSetting((s) => (s ? { ...s, jumlah: Number(v) } : s))}
               >
                 <SelectTrigger id="pilih-jumlah" className="h-11 w-full md:h-8" data-testid="pilih-jumlah">
-                  <SelectValue />
+                  <SelectValue>
+                    {(v: string | null) => (v ? `${v} gambar` : "Pilih jumlah")}
+                  </SelectValue>
                 </SelectTrigger>
                 <SelectContent>
                   <SelectGroup>

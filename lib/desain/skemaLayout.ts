@@ -93,8 +93,12 @@ const JENIS_SAH: readonly JenisElemen[] = ["teks", "persegi", "lingkaran", "gari
 const PERATAAN_SAH: readonly ("kiri" | "tengah" | "kanan")[] = ["kiri", "tengah", "kanan"];
 const HEX = /^#[0-9a-fA-F]{6}$/;
 
-/** Hasil validasi: layout bersih, atau alasan penolakan. Tidak pernah melempar. */
-export type HasilValidasi = { ok: true; layout: LayoutBanner } | { ok: false; error: string };
+/** Hasil validasi: layout bersih, atau alasan penolakan. Tidak pernah melempar.
+ *  `dibuang` = jumlah elemen yang dibuang (jenis tak dikenal) supaya pemanggil bisa
+ *  melaporkan "3 elemen dilewati" tanpa menebak. Selalu ada, 0 pun ditulis. */
+export type HasilValidasi =
+  | { ok: true; layout: LayoutBanner; dibuang: number }
+  | { ok: false; error: string };
 
 /** Metadata template untuk UI pemilih template. `slot` = placeholder yang bisa diisi. */
 export type MetadataTemplate = { nama: string; label: string; slot: string[] };
@@ -215,10 +219,8 @@ export function validasiLayout(mentah: unknown): HasilValidasi {
       versi: 1,
       latarBelakang: warna(mentah.latarBelakang, "#ffffff"),
       elemen,
-      // @ts-expect-error field laporan di luar tipe LayoutBanner — disengaja agar tipe
-      // dokumen tetap ketat sementara pemanggil tahu berapa elemen yang hilang.
-      dibuang,
-    } as LayoutBanner & { dibuang: number },
+    },
+    dibuang,
   };
 }
 

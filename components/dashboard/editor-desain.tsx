@@ -8,8 +8,8 @@
 // Entry "fabric/es" dipilih: memetakan ke dist/fabric.min.mjs, barrel ESM murni (tanpa shim
 // jsdom/node-canvas) → hanya modul yang dipakai yang masuk bundel.
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react"
-import type { ChangeEvent } from "react"
-import { Circle, ImagePlus, Minus, Square, Type } from "lucide-react"
+import type { ChangeEvent, JSX, KeyboardEvent as KeyboardEventReact } from "react"
+import { Circle, Download, ImagePlus, Minus, Redo2, Square, Type, Undo2 } from "lucide-react"
 import type * as FabricEsModule from "fabric/es"
 import type { Canvas as FabricCanvas, FabricObject } from "fabric"
 
@@ -22,11 +22,16 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import {
+  EditorExportDialog,
+  type FormatEkspor,
+} from "@/components/dashboard/editor-export-dialog"
+import {
   EditorPanelProperti,
   type JenisProperti,
   type NilaiProperti,
   type PerubahanProperti,
 } from "@/components/dashboard/editor-panel-properti"
+import { EditorPickerAset } from "@/components/dashboard/editor-picker-aset"
 
 /** Preset ukuran dokumen kanvas (piksel). Label ramah untuk pengguna non-desainer. */
 const PRESET = [
@@ -43,6 +48,12 @@ const MAKS_GAMBAR = 4 * 1024 * 1024
 /** Kunci yang ikut diserialisasi; tanpa ini `id`/`namaLapisan` hilang saat muat ulang. */
 const PROP_SERIAL = ["id", "namaLapisan", "selectable", "evented"]
 
+/**
+ * Batas riwayat undo/redo. Snapshot memuat data URL gambar, jadi entri ke-51 ke atas
+ * dibuang dari ujung lama; 50 langkah lebih dari cukup untuk menyunting satu banner.
+ */
+const MAKS_RIWAYAT = 50
+
 /** Handle untuk Fase 5 (simpan/buka) dan Fase 7 (Edit di Editor). */
 export type EditorDesainHandle = {
   /** JSON dokumen saat ini (canvas.toObject + PROP_SERIAL agar id/namaLapisan ikut). */
@@ -51,6 +62,11 @@ export type EditorDesainHandle = {
   muatDokumen: (json: string) => Promise<void>
   /** Tempel hasil generate AI sebagai latar terkunci di tumpukan paling bawah. */
   tambahLatarGambar: (base64: string, mime: string) => Promise<void>
+}
+
+/** Props editor. `presetId` = preset TOKO (bukan ukuran kanvas) untuk picker aset. */
+export type EditorDesainProps = {
+  presetId: number
 }
 
 /**
@@ -117,8 +133,8 @@ const NAMA_TIPE: Record<JenisProperti, string> = {
   lain: "Objek",
 }
 
-export const EditorDesain = forwardRef<EditorDesainHandle>(function EditorDesain(_props, ref) {
-  const [presetId, setPresetId] = useState<PresetId>("1080x1080")
+export const EditorDesain = forwardRef<EditorDesainHandle, EditorDesainProps>(function EditorDesain({ presetId }, ref): JSX.Element {
+  const [ukuranId, setUkuranId] = useState<PresetId>("1080x1080")
   const [terpilih, setTerpilih] = useState<NilaiProperti | null>(null)
   const [dokumenJson, setDokumenJson] = useState("")
   const wadahRef = useRef<HTMLDivElement>(null)
@@ -131,6 +147,39 @@ export const EditorDesain = forwardRef<EditorDesainHandle>(function EditorDesain
   const urutRef = useRef(0)
   // Ukuran dokumen aktif dibaca resize-observer; ref agar tidak ikut siklus render.
   const presetRef = useRef<(typeof PRESET)[number]>(PRESET[0])
+
+  // --- Riwayat undo/redo (Fase 3) ---
+  // Kanvas TIDAK menyimpan riwayat; yang disimpan adalah snapshot JSON dokumen. Semua di ref
+  // supaya menyimpan snapshot tidak memicu render (yang penting: jangan render per pointermove).
+  const riwayatRef = useRef<string[]>([""])
+  const riwayatIdxRef = useRef(0)
+  // Versi disimpan di state karena tombol undo/redo harus tahu kapan disable-nya berubah.
+  const [versiRiwayat, setVersiRiwayat] = useState(0)
+
+  // --- Ekspor (Fase 6) ---
+  const [dialogEkspor, setDialogEkspor] = useState(false)
+
+  /**
+   * Catat keadaan dokumen SEKARANG sebagai satu langkah undo. Dipanggil dari event fabric yang
+   * hanya terpicu setelah aksi user selesai (`object:modified` tidak dipancarkan saat pointermove),
+   * jadi satu geseran = satu entri. Snapshot disimpan ke ref agar tidak memicu render.
+   */
+  const catatRiwayat = useCallback(() => {
+    const kanvas = fabricRef.current
+    if (!kanvas) return
+    const json = JSON.stringify(kanvas.toObject(PROP_SERIAL))
+    const list = riwayatRef.current
+    if (list[riwayatIdxRef.current] === json) return // tidak ada perubahan nyata
+    let idx = riwayatIdxRef.current + 1
+    if (idx === list.length) list.push(json)
+    else list.splice(idx, list.length, json) // edit baru setelah undo → buang cabang lama
+    if (list.length > MAKS_RIWAYAT) {
+      list.splice(0, list.length - MAKS_RIWAYAT)
+      idx = list.length - 1
+    }
+    riwayatIdxRef.current = idx
+    setVersiRiwayat((v) => v + 1)
+  }, [])
 
   /** Skalakan dokumen preset agar muat lebar kontainer; tinggi ikut rasio. */
   const sesuaikan = useCallback(() => {
@@ -186,6 +235,7 @@ export const EditorDesain = forwardRef<EditorDesainHandle>(function EditorDesain
       kanvas.on("object:modified", (e) => {
         lapor(e.target)
         setDokumenJson(JSON.stringify(kanvas.toObject(PROP_SERIAL)))
+        catatRiwayat()
       })
       // Ketikan langsung di kanvas (IText) juga harus menyegarkan panel.
       // Event ini hanya dipancarkan IText, jadi target bertipe objek teks.
@@ -194,7 +244,10 @@ export const EditorDesain = forwardRef<EditorDesainHandle>(function EditorDesain
       kanvas.on("object:removed", () => {
         if (kanvas.getActiveObjects().length === 0) lapor(undefined)
         setDokumenJson(JSON.stringify(kanvas.toObject(PROP_SERIAL)))
+        catatRiwayat()
       })
+      // Objek baru (tombol toolbar maupun muat dokumen) = satu langkah undo.
+      kanvas.on("object:added", () => catatRiwayat())
 
       sesuaikan()
       ro = new ResizeObserver(sesuaikan)
@@ -209,11 +262,11 @@ export const EditorDesain = forwardRef<EditorDesainHandle>(function EditorDesain
       modulRef.current = null
       if (kanvas) void kanvas.dispose()
     }
-  }, [sesuaikan])
+  }, [sesuaikan, catatRiwayat])
 
   // Ganti preset → perbarui ukuran dokumen + skala tampil.
   useEffect(() => {
-    const p = PRESET.find((x) => x.id === presetId) ?? PRESET[0]
+    const p = PRESET.find((x) => x.id === ukuranId) ?? PRESET[0]
     presetRef.current = p
     const kanvas = fabricRef.current
     const el = wadahRef.current
@@ -222,7 +275,108 @@ export const EditorDesain = forwardRef<EditorDesainHandle>(function EditorDesain
     kanvas.setDimensions({ width: p.lebar * skala, height: p.tinggi * skala })
     kanvas.setZoom(skala)
     kanvas.requestRenderAll()
-  }, [presetId])
+    // Riwayat mengikuti dokumen: ukuran berbeda = dokumen berbeda → mulai dari kosong.
+    riwayatRef.current = [JSON.stringify(kanvas.toObject(PROP_SERIAL))]
+    riwayatIdxRef.current = 0
+    setVersiRiwayat((v) => v + 1)
+  }, [ukuranId])
+
+  /**
+   * Terapkan snapshot riwayat ke kanvas. Lebar/tinggi canvas TIDAK
+   * ikut ditimpa (`loadFromJSON` memuat properti yang terserialisasi termasuk width/height):
+   * kalau ikut, zoom tampil jadi tidak sinkron dengan dimensi elemen canvas.
+   */
+  const terapkanRiwayat = useCallback(async (idx: number) => {
+    const kanvas = fabricRef.current
+    const fabric = modulRef.current
+    if (!kanvas || !fabric) return
+    const json = riwayatRef.current[idx]
+    if (json == null) return
+    const { width, height } = kanvas
+    await kanvas.loadFromJSON(json, (_serial, objek) => {
+      // Sama seperti muatDokumen: objek latar tetap terkunci setelah kembali dari riwayat.
+      if (!(objek instanceof fabric.FabricObject)) return
+      if (objek.selectable === false) {
+        objek.set({
+          selectable: false,
+          evented: false,
+          lockMovementX: true,
+          lockMovementY: true,
+          lockScalingX: true,
+          lockScalingY: true,
+          lockRotation: true,
+        })
+      }
+    })
+    kanvas.setDimensions({ width, height })
+    kanvas.setZoom(Math.min(1, (wadahRef.current?.clientWidth ?? width) / presetRef.current.lebar))
+    kanvas.discardActiveObject()
+    kanvas.requestRenderAll()
+    setTerpilih(null)
+    setDokumenJson(JSON.stringify(kanvas.toObject(PROP_SERIAL)))
+    riwayatIdxRef.current = idx
+    setVersiRiwayat((v) => v + 1)
+  }, [])
+
+  const bisaUndo = riwayatIdxRef.current > 0
+  const bisaRedo = riwayatIdxRef.current < riwayatRef.current.length - 1
+
+  const undo = useCallback(() => {
+    if (riwayatIdxRef.current <= 0) return
+    void terapkanRiwayat(riwayatIdxRef.current - 1)
+  }, [terapkanRiwayat])
+
+  const redo = useCallback(() => {
+    if (riwayatIdxRef.current >= riwayatRef.current.length - 1) return
+    void terapkanRiwayat(riwayatIdxRef.current + 1)
+  }, [terapkanRiwayat])
+
+  // Pintasan papan ketik dipasang di elemen kanvas (bukan window) supaya mengetik di kolom lain
+  // tidak ikut ter-undo. Saat IText sedang disunting, fabric punya undo teks internal sendiri →
+  // jangan rebut pintasannya.
+  const tombolPintasan = useCallback(
+    (e: KeyboardEventReact<HTMLDivElement>) => {
+      if (!(e.ctrlKey || e.metaKey) || e.key.toLowerCase() !== "z") return
+      // Sempatkan lewat variabel lokal: `kanvas?.getActiveObject()` menghasilkan union dengan
+      // undefined dan menyulitkan penyempitan tipe dari hasil instanceof.
+      const sasaran = fabricRef.current?.getActiveObject()
+      const teks = modulRef.current?.IText
+      if (teks && sasaran instanceof teks && sasaran.isEditing) return
+      e.preventDefault()
+      if (e.shiftKey) redo()
+      else undo()
+    },
+    [undo, redo]
+  )
+
+  /**
+   * Blob hasil ekspor pada ukuran PRESET, bukan ukuran tampilan.
+   * `toBlob` fabric menggambar ulang ke elemen canvas sementara berukuran
+   * `dokumen * multiplier`; zoom tampil (mis. 0.6) dikali balik lewat multiplier.
+   */
+  const buatBlobEkspor = useCallback(
+    async (format: FormatEkspor, kualitas: number, transparan: boolean): Promise<Blob | null> => {
+      const kanvas = fabricRef.current
+      if (!kanvas) return null
+      const { lebar, tinggi } = presetRef.current
+      const zoom = kanvas.getZoom() || 1
+      const asli = kanvas.backgroundColor
+      // Latar transparan hanya untuk PNG: JPEG tidak punya kanal alfa. Properti ini dibaca
+      // saat render, jadi menyetelnya kosong tidak menyentuh elemen DOM kanvas editor.
+      if (transparan) kanvas.backgroundColor = ""
+      try {
+        return await kanvas.toBlob({
+          format,
+          quality: kualitas,
+          multiplier: Math.max(lebar / kanvas.getWidth(), tinggi / kanvas.getHeight(), 1 / zoom),
+        })
+      } finally {
+        if (transparan) kanvas.backgroundColor = asli
+        kanvas.requestRenderAll()
+      }
+    },
+    []
+  )
 
   /** Tambah objek baru di TENGAH dokumen (bukan tengah tampilan) + langsung dipilih. */
   const tambahObjek = useCallback((o: FabricObject, jenis: JenisProperti) => {
@@ -381,7 +535,8 @@ export const EditorDesain = forwardRef<EditorDesainHandle>(function EditorDesain
     if (!kanvas.bringObjectForward(o)) return // sudah paling atas
     kanvas.requestRenderAll()
     setDokumenJson(JSON.stringify(kanvas.toObject(PROP_SERIAL)))
-  }, [])
+    catatRiwayat()
+  }, [catatRiwayat])
 
   const turunLapisan = useCallback(() => {
     const kanvas = fabricRef.current
@@ -390,7 +545,8 @@ export const EditorDesain = forwardRef<EditorDesainHandle>(function EditorDesain
     if (!kanvas.sendObjectBackwards(o)) return // sudah paling bawah
     kanvas.requestRenderAll()
     setDokumenJson(JSON.stringify(kanvas.toObject(PROP_SERIAL)))
-  }, [])
+    catatRiwayat()
+  }, [catatRiwayat])
 
   /**
    * Muat dokumen; reviver menempel ulang id/nama + mengunci objek latar.
@@ -420,6 +576,10 @@ export const EditorDesain = forwardRef<EditorDesainHandle>(function EditorDesain
     kanvas.requestRenderAll()
     setTerpilih(null)
     setDokumenJson(JSON.stringify(kanvas.toObject(PROP_SERIAL)))
+    // Dokumen yang dimuat jadi titik awal riwayat; langkah sebelumnya tidak lagi relevan.
+    riwayatRef.current = [JSON.stringify(kanvas.toObject(PROP_SERIAL))]
+    riwayatIdxRef.current = 0
+    setVersiRiwayat((v) => v + 1)
   }, [])
 
   /** Fase 7: hasil generate jadi latar terkunci di dasar tumpukan. */
@@ -452,7 +612,16 @@ export const EditorDesain = forwardRef<EditorDesainHandle>(function EditorDesain
     kanvas.sendObjectToBack(img)
     kanvas.requestRenderAll()
     setDokumenJson(JSON.stringify(kanvas.toObject(PROP_SERIAL)))
-  }, [])
+    catatRiwayat()
+  }, [catatRiwayat])
+
+  /** Picker aset → kanvas. Sama jalurnya dengan latar hasil AI: gambar terkunci di dasar. */
+  const pilihAsetLatar = useCallback(
+    (base64: string, mime: string) => {
+      void tambahLatarGambar(base64, mime)
+    },
+    [tambahLatarGambar]
+  )
 
   useImperativeHandle(
     ref,
@@ -490,6 +659,30 @@ export const EditorDesain = forwardRef<EditorDesainHandle>(function EditorDesain
           <ImagePlus />
           Gambar
         </Button>
+
+        {/* Undo/redo mengikuti riwayat dokumen (bukan riwayat node kanvas). */}
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={undo}
+          disabled={!bisaUndo}
+          title="Undo (Ctrl+Z)"
+          data-testid="undo-editor"
+        >
+          <Undo2 />
+          Undo
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={redo}
+          disabled={!bisaRedo}
+          title="Redo (Ctrl+Shift+Z)"
+          data-testid="redo-editor"
+        >
+          <Redo2 />
+          Redo
+        </Button>
         {/* Input berkas disembunyikan; tombol di atas yang memicunya. */}
         <input
           ref={berkasRef}
@@ -502,10 +695,14 @@ export const EditorDesain = forwardRef<EditorDesainHandle>(function EditorDesain
         />
 
         <div className="ml-auto flex items-center gap-2">
+          <Button variant="outline" size="sm" onClick={() => setDialogEkspor(true)} data-testid="ekspor-editor">
+            <Download />
+            Ekspor
+          </Button>
           <span className="text-muted-foreground text-xs" data-testid="info-dokumen">
             {dokumenJson ? "Dokumen siap disimpan" : "Dokumen kosong"}
           </span>
-          <Select value={presetId} onValueChange={(v) => setPresetId(v as PresetId)}>
+          <Select value={ukuranId} onValueChange={(v) => setUkuranId(v as PresetId)}>
             <SelectTrigger
               id="preset-ukuran-editor"
               className="h-11 w-full md:h-8 md:w-[200px]"
@@ -531,7 +728,9 @@ export const EditorDesain = forwardRef<EditorDesainHandle>(function EditorDesain
         {/* touchAction none + overscroll contain: seret objek tidak men-scroll halaman (WebView). */}
         <div
           ref={wadahRef}
-          className="min-w-[320px] flex-1 overflow-hidden rounded-md border bg-muted/30"
+          onKeyDown={tombolPintasan}
+          tabIndex={0}
+          className="min-w-[320px] flex-1 overflow-hidden rounded-md border bg-muted/30 outline-none"
           style={{ touchAction: "none", overscrollBehavior: "contain" }}
         >
           <canvas ref={kanvasRef} data-testid="kanvas-editor" />
@@ -547,6 +746,17 @@ export const EditorDesain = forwardRef<EditorDesainHandle>(function EditorDesain
           />
         </div>
       </div>
+
+      {/* Picker aset: latar + folder. Di bawah kanvas supaya kanvas tetap dapat lebar penuh. */}
+      <EditorPickerAset presetId={presetId} onPilihAset={pilihAsetLatar} />
+
+      <EditorExportDialog
+        open={dialogEkspor}
+        onOpenChange={setDialogEkspor}
+        buatBlob={buatBlobEkspor}
+        lebar={presetRef.current.lebar}
+        tinggi={presetRef.current.tinggi}
+      />
     </div>
   )
 })

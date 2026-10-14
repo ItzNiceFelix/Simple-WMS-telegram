@@ -344,7 +344,12 @@ function HitungHarga() {
                   <FieldLabel htmlFor="bulat">Pembulatan (Rp)</FieldLabel>
                   <Select value={pembulatan} onValueChange={(v) => typeof v === "string" && setPembulatan(v)}>
                     <SelectTrigger id="bulat" className="h-11 md:h-8" data-testid="pembulatan">
-                      <SelectValue />
+                      <SelectValue>
+                        {(v: string | null) =>
+                          ({ "0": "Tanpa pembulatan", "100": "ke 100", "500": "ke 500", "1000": "ke 1.000" })[v ?? "0"] ??
+                          "Tanpa pembulatan"
+                        }
+                      </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
                       <SelectGroup>

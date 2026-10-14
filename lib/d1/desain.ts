@@ -121,7 +121,7 @@ export async function ubahNamaFolder(
   presetId: number,
   id: number,
   nama: string,
-): Promise<Hasil<Record<string, never>>> {
+): Promise<Hasil<{ id: number }>> {
   const bersih = namaBersih(nama);
   if (!bersih) return gagal(400, "Nama folder wajib diisi");
   const r = await db
@@ -129,7 +129,7 @@ export async function ubahNamaFolder(
     .bind(bersih, id, presetId)
     .run();
   if (!r.meta.changes) return gagal(404, "Folder tidak ditemukan");
-  return { ok: true };
+  return { ok: true, id };
 }
 
 /**
@@ -141,10 +141,10 @@ export async function hapusFolder(
   db: D1Database,
   presetId: number,
   id: number,
-): Promise<Hasil<Record<string, never>>> {
+): Promise<Hasil<{ id: number }>> {
   const r = await db.prepare("DELETE FROM desain_folder WHERE id = ? AND preset_id = ?").bind(id, presetId).run();
   if (!r.meta.changes) return gagal(404, "Folder tidak ditemukan");
-  return { ok: true };
+  return { ok: true, id };
 }
 
 // ── Desain ────────────────────────────────────────────────────────────────
@@ -251,10 +251,10 @@ export async function hapusDesain(
   db: D1Database,
   presetId: number,
   id: number,
-): Promise<Hasil<Record<string, never>>> {
+): Promise<Hasil<{ id: number }>> {
   const r = await db.prepare("DELETE FROM ai_desain WHERE id = ? AND preset_id = ?").bind(id, presetId).run();
   if (!r.meta.changes) return gagal(404, "Desain tidak ditemukan");
-  return { ok: true };
+  return { ok: true, id };
 }
 
 /**
@@ -266,7 +266,7 @@ export async function pindahDesainFolder(
   presetId: number,
   id: number,
   folderId: number | null,
-): Promise<Hasil<Record<string, never>>> {
+): Promise<Hasil<{ id: number }>> {
   if (folderId !== null && folderId !== undefined) {
     const induk = await db
       .prepare("SELECT id FROM desain_folder WHERE id = ? AND preset_id = ?")
@@ -279,7 +279,7 @@ export async function pindahDesainFolder(
     .bind(folderId ?? null, sekarang(), id, presetId)
     .run();
   if (!r.meta.changes) return gagal(404, "Desain tidak ditemukan");
-  return { ok: true };
+  return { ok: true, id };
 }
 
 // ── Latar ─────────────────────────────────────────────────────────────────
@@ -393,10 +393,10 @@ export async function hapusLatar(
   db: D1Database,
   presetId: number,
   id: number,
-): Promise<Hasil<Record<string, never>>> {
+): Promise<Hasil<{ id: number }>> {
   const r = await db.prepare("DELETE FROM ai_latar WHERE id = ? AND preset_id = ?").bind(id, presetId).run();
   if (!r.meta.changes) return gagal(404, "Latar tidak ditemukan");
-  return { ok: true };
+  return { ok: true, id };
 }
 
 /** Pindahkan latar ke folder lain (`folderId` null = tanpa folder). */
@@ -405,7 +405,7 @@ export async function pindahLatarFolder(
   presetId: number,
   id: number,
   folderId: number | null,
-): Promise<Hasil<Record<string, never>>> {
+): Promise<Hasil<{ id: number }>> {
   if (folderId !== null && folderId !== undefined) {
     const induk = await db
       .prepare("SELECT id FROM desain_folder WHERE id = ? AND preset_id = ?")
@@ -418,5 +418,5 @@ export async function pindahLatarFolder(
     .bind(folderId ?? null, id, presetId)
     .run();
   if (!r.meta.changes) return gagal(404, "Latar tidak ditemukan");
-  return { ok: true };
+  return { ok: true, id };
 }

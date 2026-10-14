@@ -83,7 +83,7 @@ describe("validasiLayout", () => {
     assert.equal(hasil.ok, true);
     if (!hasil.ok) return;
     assert.equal(hasil.layout.elemen.length, 1);
-    assert.equal((hasil.layout as LayoutBanner & { dibuang: number }).dibuang, 3);
+    assert.equal(hasil.dibuang, 3);
   });
 
   it("memotong elemen melebihi batas dan teks melebihi 400 karakter", () => {

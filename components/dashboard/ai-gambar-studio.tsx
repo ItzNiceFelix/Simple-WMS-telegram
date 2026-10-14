@@ -53,6 +53,8 @@ function bacaGambar(f: File): Promise<Referensi> {
 
 export function AiGambarStudio() {
   const [preset, setPreset] = useState<PresetPrompt[]>([])
+  // Preset TOKO (bukan preset prompt) — dipakai picker aset di tab Editor.
+  const [presetToko, setPresetToko] = useState<number>(0)
   const [model, setModel] = useState<ModelGambar[]>([])
   const [setting, setSetting] = useState<SettingGambar | null>(null)
   const [prompt, setPrompt] = useState("")
@@ -73,6 +75,12 @@ export function AiGambarStudio() {
       const d1 = (await r1.json().catch(() => null)) as { ok?: boolean; preset?: PresetPrompt[]; error?: string } | null
       if (!r1.ok || !d1?.ok) throw new Error(d1?.error ?? `Gagal memuat preset (${r1.status}).`)
       setPreset((d1.preset ?? []).filter((p) => p.aktif === 1))
+      // Preset toko: dipakai picker aset Editor. Kegagalan di sini tidak boleh
+      // menggagalkan seluruh studio — tab Generate tetap harus jalan.
+      const rp = await fetch("/api/preset", { credentials: "include" })
+      const dp = (await rp.json().catch(() => null)) as { ok?: boolean; presets?: { id: number }[] } | null
+      const daftar = dp?.presets ?? []
+      if (rp.ok && dp?.ok && daftar.length > 0) setPresetToko((lama) => lama || daftar[0].id)
       const d = await muatSettingGambar()
       setSetting(d.setting)
       setModel(d.model)
@@ -211,7 +219,13 @@ export function AiGambarStudio() {
         </TabsList>
 
         <TabsContent value="editor" className="flex flex-col gap-4">
-          <EditorDesain />
+          {presetToko > 0 ? (
+            <EditorDesain presetId={presetToko} />
+          ) : (
+            <p className="text-muted-foreground text-sm" data-testid="editor-tanpa-preset">
+              Editor butuh preset toko. Buat preset dulu di halaman Laba → Preset.
+            </p>
+          )}
         </TabsContent>
 
         <TabsContent value="generate" className="flex flex-col gap-4">
