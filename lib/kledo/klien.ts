@@ -227,19 +227,38 @@ export async function ambilStok(opsi: OpsiKledo, idProduk: number[]): Promise<Ha
   return { ok: true, data: semua };
 }
 
-/** Harga beli terakhir (fallback HPP). Mengembalikan map id -> harga. */
+/**
+ * Harga beli terakhir (fallback HPP). Mengembalikan map id → harga.
+ *
+ * BENTUK NYATA (diverifikasi live): `data` adalah OBJEK berkunci id produk, BUKAN array —
+ * `{"231":{"last_buy_price":0,"last_buy_price_contact":0}}`. Versi pertama fungsi ini
+ * hanya membaca array sehingga SELALU mengembalikan kosong: fallbacknya tidak pernah
+ * bekerja sekali pun. Nama field-nya juga `last_buy_price`, bukan `last_price`/`price`.
+ */
 export async function ambilHargaBeliTerakhir(opsi: OpsiKledo, idProduk: number[]): Promise<Map<number, number>> {
   const hasil = new Map<number, number>();
   for (const bagian of potong(idProduk, CHUNK_PRODUK)) {
     if (bagian.length === 0) continue;
     const h = await kledoGet<unknown>(opsi, `/finance/products/last_buy_prices?ids=${bagian.join(",")}`);
     if (!h.ok) continue; // fallback: kegagalan di sini tidak boleh menggagalkan sinkronisasi
-    const arr = Array.isArray(h.data) ? h.data : [];
-    for (const it of arr) {
-      const o = it as { id?: unknown; price?: unknown; last_price?: unknown; base_price?: unknown };
-      const id = Number(o.id);
-      const harga = Number(o.last_price ?? o.price ?? o.base_price ?? 0);
-      if (Number.isFinite(id) && harga > 0) hasil.set(id, harga);
+    const d = h.data;
+    // Dua bentuk diterima: objek berkunci id (bentuk nyata) dan array (jaga-jaga).
+    const daftar: { id: unknown; nilai: unknown }[] = [];
+    if (Array.isArray(d)) {
+      for (const it of d) {
+        const o = it as Record<string, unknown>;
+        daftar.push({ id: o.id, nilai: o.last_buy_price ?? o.last_price ?? o.price ?? o.base_price });
+      }
+    } else if (d && typeof d === "object") {
+      for (const [kunci, nilai] of Object.entries(d as Record<string, unknown>)) {
+        const o = nilai as Record<string, unknown> | null;
+        daftar.push({ id: kunci, nilai: o?.last_buy_price ?? o?.last_price ?? o?.price ?? o?.base_price });
+      }
+    }
+    for (const { id, nilai } of daftar) {
+      const nomor = Number(id);
+      const harga = Number(nilai);
+      if (Number.isFinite(nomor) && Number.isFinite(harga) && harga >= 1) hasil.set(nomor, harga);
     }
   }
   return hasil;

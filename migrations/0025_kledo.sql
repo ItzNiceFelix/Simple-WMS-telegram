@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS kledo_kredensial (
   dibuat_oleh TEXT,
   uji_at      INTEGER,                       -- terakhir diuji
   uji_ok      INTEGER CHECK (uji_ok IN (0,1)), -- hasil uji terakhir
+  uji_pesan   TEXT,                          -- pesan hasil uji (mis. "3 gudang" atau alasan gagal)
   UNIQUE(subdomain)
 );
 

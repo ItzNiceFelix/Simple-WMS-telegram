@@ -210,6 +210,33 @@ describe("ujiKoneksi", () => {
   });
 });
 
+describe("ambilHargaBeliTerakhir (bentuk OBJEK, bukan array)", () => {
+  it("membaca objek berkunci id dengan field last_buy_price", async () => {
+    const { ambilHargaBeliTerakhir } = await import("./klien");
+    globalThis.fetch = (async () => {
+      // Bentuk PERSIS dari produksi Kledo.
+      return new Response(
+        JSON.stringify({ success: true, data: { "231": { last_buy_price: 4200, last_buy_price_contact: 0 }, "5": { last_buy_price: 0 } } }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
+    }) as typeof globalThis.fetch;
+    const peta = await ambilHargaBeliTerakhir(OPSI, [231, 5]);
+    assert.equal(peta.get(231), 4200, "nilai last_buy_price terbaca");
+    assert.equal(peta.has(5), false, "0 tidak dipakai sebagai fallback");
+  });
+
+  it("tetap menerima bentuk array (jaga-jaga)", async () => {
+    const { ambilHargaBeliTerakhir } = await import("./klien");
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ success: true, data: [{ id: 9, last_buy_price: 700 }] }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })) as typeof globalThis.fetch;
+    const peta = await ambilHargaBeliTerakhir(OPSI, [9]);
+    assert.equal(peta.get(9), 700);
+  });
+});
+
 describe("fixture produksi", () => {
   // Fixture menyimpan respons PENUH Kledo: {success, data, message, time}.
   it("bentuk gudang nyata terbaca", async () => {

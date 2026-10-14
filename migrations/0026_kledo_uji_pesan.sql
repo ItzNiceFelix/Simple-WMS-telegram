@@ -1,0 +1,16 @@
+-- 0026_kledo_uji_pesan.sql — Kolom yang tertinggal saat 0025 diterapkan lebih awal.
+--
+-- Kejadian: 0025_kledo.sql versi PERTAMA diterapkan ke produksi. Sesudah itu file-nya
+-- diperbaiki (menambah `uji_pesan`), TAPI produksi sudah mencatat 0025 sebagai diterapkan —
+-- jadi memperbaiki file tidak berpengaruh apa pun ke DB yang sudah ada.
+-- Akibatnya route /api/pengaturan/kledo gagal dengan:
+--   D1_ERROR: no such column: uji_pesan at offset 104
+--
+-- Pelajaran: DATABASE PRODUKSI ADALAH KEBENARAN. Setelah migrasi diterapkan, setiap
+-- perubahan skema WAJIB jadi migrasi baru — bukan suntingan file lama.
+--
+-- Idempoten: SQLite tidak punya "ADD COLUMN IF NOT EXISTS". Migrasi yang sama dijalankan
+-- ulang akan gagal dengan "duplicate column name" dan itu memang benar — 0025 sudah
+-- memasukkan kolom ini untuk DB yang dibuat dari nol. Baris ini hanya penyelaras untuk
+-- DB yang menerapkan 0025 versi lama.
+ALTER TABLE kledo_kredensial ADD COLUMN uji_pesan TEXT;

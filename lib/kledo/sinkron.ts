@@ -69,6 +69,20 @@ export function hppDariKledo(avgBasePrice: unknown, fallbackTerakhir?: number): 
   return null;
 }
 
+/** Batas aman satu panggilan db.batch (D1 membatasi jumlah pernyataan per panggilan). */
+const UKURAN_BATCH = 50;
+
+/**
+ * Kirim pernyataan dalam kelompok, bukan satu per satu.
+ * WAJIB: sinkron 1174 produk butuh ~6000 query; berurutan satu-satu membuatnya
+ * menggantung lebih dari 160 detik dan Worker menghentikannya di tengah jalan.
+ */
+async function jalankanBatch(db: D1Database, stmts: D1PreparedStatement[]): Promise<void> {
+  for (let i = 0; i < stmts.length; i += UKURAN_BATCH) {
+    await db.batch(stmts.slice(i, i + UKURAN_BATCH));
+  }
+}
+
 /** Buat baris laporan sinkronisasi; kembalikan id-nya. */
 async function mulaiLaporan(db: D1Database, pemicu: string, oleh: string | null): Promise<number> {
   const r = await db
@@ -81,14 +95,36 @@ async function mulaiLaporan(db: D1Database, pemicu: string, oleh: string | null)
   return cari?.id ?? 0;
 }
 
-/** Cek apakah masih ada sinkronisasi yang berjalan (pagar anti-tumpang-tindih). */
+/**
+ * Cek apakah masih ada sinkronisasi yang berjalan (pagar anti-tumpang-tindih).
+ *
+ * Dua batas, karena satu saja tidak cukup:
+ *  - `maksUmurDetik` (30 menit): sinkronisasi normal selesai dalam ~20 detik; yang lebih tua
+ *    dari ini pasti sudah mati dan tidak boleh menahan sinkron berikutnya selamanya.
+ *  - `maksSenyapDetik` (3 menit): sinkron yang Worker-nya dihentikan di tengah akan
+ *    meninggalkan status 'jalan' tanpa `selesai_at`. Bila tidak ada kemajuan selama ini,
+ *    anggap mati dan tutup catatannya supaya tidak menghalangi.
+ */
 export async function adaSinkronBerjalan(db: D1Database, maksUmurDetik = 1800): Promise<boolean> {
+  const batas = sekarang() - maksUmurDetik;
   const baris = await db
-    .prepare("SELECT id FROM kledo_sync WHERE status = 'jalan' AND mulai_at > ? LIMIT 1")
-    .bind(sekarang() - maksUmurDetik)
-    .first();
-  return !!baris;
+    .prepare("SELECT id, mulai_at FROM kledo_sync WHERE status = 'jalan' AND mulai_at > ? ORDER BY id DESC LIMIT 1")
+    .bind(batas)
+    .first<{ id: number; mulai_at: number }>();
+  if (!baris) return false;
+  // Sinkronisasi normal selesai dalam hitungan detik. Yang masih 'jalan' setelah
+  // 3 menit hampir pasti terputus — tutup dan biarkan sinkron berikutnya jalan.
+  const umur = sekarang() - Number(baris.mulai_at);
+  if (umur < MAKS_SENYAP_DETIK) return true;
+  await db
+    .prepare("UPDATE kledo_sync SET status = 'gagal', selesai_at = ?, pesan = ? WHERE id = ? AND status = 'jalan'")
+    .bind(sekarang(), `Terputus: tidak ada kemajuan selama ${Math.round(umur / 60)} menit.`, baris.id)
+    .run();
+  return false;
 }
+
+/** Sinkronisasi yang tidak bergerak selama ini (detik) dianggap terputus. */
+const MAKS_SENYAP_DETIK = 180;
 
 /**
  * Jalankan sinkronisasi penuh.
@@ -235,14 +271,20 @@ export async function jalankanSinkron(
     }
   }
 
+  // Seluruh produk dikirim lewat db.batch, bukan satu per satu.
+  // Alasan terukur: 1174 produk × 2 query = 2348 round-trip berurutan; D1 memakan
+  // puluhan ms per query sehingga sinkron menggantung >160 detik dan akhirnya
+  // dihentikan Worker (data berhenti di 767 dari 1174). Dengan batch: ~24 panggilan.
+  const stmtProduk: D1PreparedStatement[] = [];
   for (const s of siap) {
     const norm = normNama(s.nama);
     if (s.baru) {
-      // HPP null untuk produk BARU = biarkan NULL (jangan pura-pura 0; 0 adalah harga yang sah).
-      await db
-        .prepare("INSERT INTO products (sku, nama_accurate, nama_accurate_normalized, hpp, is_online_product, updated_at, kledo_synced_at) VALUES (?, ?, ?, ?, 0, ?, ?) ON CONFLICT(sku) DO NOTHING")
-        .bind(s.sku, s.nama, norm, s.hpp, at, at)
-        .run();
+      // HPP null untuk produk BARU = biarkan NULL (0 adalah harga yang sah; null ≠ 0).
+      stmtProduk.push(
+        db
+          .prepare("INSERT INTO products (sku, nama_accurate, nama_accurate_normalized, hpp, is_online_product, updated_at, kledo_synced_at) VALUES (?, ?, ?, ?, 0, ?, ?) ON CONFLICT(sku) DO NOTHING")
+          .bind(s.sku, s.nama, norm, s.hpp, at, at)
+      );
       produkBaru++;
     } else {
       // HPP ditimpa HANYA bila ada angka layak. Kalau tidak, kolom hpp tidak disentuh sama sekali.
@@ -252,23 +294,27 @@ export async function jalankanSinkron(
       const namaLama = namaProdukSekarang.get(s.sku) ?? "";
       const berubah = s.hpp !== null ? (lama !== s.hpp || namaLama !== s.nama) : namaLama !== s.nama;
       if (s.hpp !== null) {
-        await db
-          .prepare("UPDATE products SET nama_accurate = ?, nama_accurate_normalized = ?, hpp = ?, updated_at = ?, kledo_synced_at = ? WHERE sku = ?")
-          .bind(s.nama, norm, s.hpp, at, at, s.sku)
-          .run();
+        stmtProduk.push(
+          db
+            .prepare("UPDATE products SET nama_accurate = ?, nama_accurate_normalized = ?, hpp = ?, updated_at = ?, kledo_synced_at = ? WHERE sku = ?")
+            .bind(s.nama, norm, s.hpp, at, at, s.sku)
+        );
       } else {
-        await db
-          .prepare("UPDATE products SET nama_accurate = ?, nama_accurate_normalized = ?, updated_at = ?, kledo_synced_at = ? WHERE sku = ?")
-          .bind(s.nama, norm, at, at, s.sku)
-          .run();
+        stmtProduk.push(
+          db
+            .prepare("UPDATE products SET nama_accurate = ?, nama_accurate_normalized = ?, updated_at = ?, kledo_synced_at = ? WHERE sku = ?")
+            .bind(s.nama, norm, at, at, s.sku)
+        );
       }
       if (berubah) produkUbah++;
     }
-    await db
-      .prepare("INSERT INTO kledo_map (jenis, kledo_id, lokal_id, nama_snapshot, terakhir_dilihat) VALUES ('produk', ?, ?, ?, ?) ON CONFLICT(jenis, kledo_id) DO UPDATE SET lokal_id = excluded.lokal_id, nama_snapshot = excluded.nama_snapshot, terakhir_dilihat = excluded.terakhir_dilihat")
-      .bind(String(s.kledoId), s.sku, s.nama, at)
-      .run();
+    stmtProduk.push(
+      db
+        .prepare("INSERT INTO kledo_map (jenis, kledo_id, lokal_id, nama_snapshot, terakhir_dilihat) VALUES ('produk', ?, ?, ?, ?) ON CONFLICT(jenis, kledo_id) DO UPDATE SET lokal_id = excluded.lokal_id, nama_snapshot = excluded.nama_snapshot, terakhir_dilihat = excluded.terakhir_dilihat")
+        .bind(String(s.kledoId), s.sku, s.nama, at)
+    );
   }
+  await jalankanBatch(db, stmtProduk);
 
   // Deteksi bentrok: satu `sku` lokal dipakai lebih dari satu id Kledo.
   const petaProduk = await db
@@ -291,6 +337,7 @@ export async function jalankanSinkron(
   const skuDariKledoId = new Map<string, string>(siap.map((s) => [String(s.kledoId), s.sku]));
 
   const perSkuDrift = new Map<string, { lama: number; baru: number }>();
+  const stmtStok: D1PreparedStatement[] = [];
 
   for (const barisStok of hStok.data) {
     const sku = skuDariKledoId.get(String(barisStok.id));
@@ -305,10 +352,11 @@ export async function jalankanSinkron(
       const qtyBaru = Math.round(Number(w.qty) || 0);
       const qtyLamaNilai = petaQtyLama.get(`${sku}|${lokalId}`) ?? 0;
       if (qtyLamaNilai !== qtyBaru) {
-        await db
-          .prepare("INSERT INTO stock_by_bin (sku, warehouse_id, qty) VALUES (?, ?, ?) ON CONFLICT(sku, warehouse_id) DO UPDATE SET qty = excluded.qty")
-          .bind(sku, lokalId, qtyBaru)
-          .run();
+        stmtStok.push(
+          db
+            .prepare("INSERT INTO stock_by_bin (sku, warehouse_id, qty) VALUES (?, ?, ?) ON CONFLICT(sku, warehouse_id) DO UPDATE SET qty = excluded.qty")
+            .bind(sku, lokalId, qtyBaru)
+        );
         const d = perSkuDrift.get(sku) ?? { lama: 0, baru: 0 };
         d.lama += qtyLamaNilai;
         d.baru += qtyBaru;
@@ -321,11 +369,13 @@ export async function jalankanSinkron(
 
   // Ledger: SATU baris per SKU yang berubah (bukan per baris stok) agar tidak membanjiri stock_moves.
   for (const [sku, d] of perSkuDrift) {
-    await db
-      .prepare("INSERT INTO stock_moves (sku, qty, jenis, source, status, qty_sistem, qty_fisik, selisih, penanda, catatan, at, by) VALUES (?, ?, 'sync_confirmed', 'sync', 'processed', ?, ?, ?, 'kledo', ?, ?, 'kledo')")
-      .bind(sku, d.baru - d.lama, d.lama, d.baru, d.baru - d.lama, `[kledo] sinkron #${syncId}`, at)
-      .run();
+    stmtStok.push(
+      db
+        .prepare("INSERT INTO stock_moves (sku, qty, jenis, source, status, qty_sistem, qty_fisik, selisih, penanda, catatan, at, by) VALUES (?, ?, 'sync_confirmed', 'sync', 'processed', ?, ?, ?, 'kledo', ?, ?, 'kledo')")
+        .bind(sku, d.baru - d.lama, d.lama, d.baru, d.baru - d.lama, `[kledo] sinkron #${syncId}`, at)
+    );
   }
+  await jalankanBatch(db, stmtStok);
 
   // ══ TAHAP 4: LAPORAN ══
   const status: HasilSinkron["status"] = galat.length > 0 ? "sebagian" : "sukses";

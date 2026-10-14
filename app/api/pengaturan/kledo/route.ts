@@ -8,6 +8,7 @@
 //   simpan | aktif | hapus | uji | sinkron
 //
 // Token TIDAK PERNAH dikembalikan sebagai plaintext. Hanya mask (••••3f2a).
+import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { getDb, getKunciEnkripsi } from "@/lib/d1/db";
 import {
   ambilKledoById,
@@ -111,12 +112,29 @@ export async function POST(request: Request) {
       : await (async () => {
           const semua = await daftarKledo(db);
           const pertama = semua.find((k) => k.aktif === 1);
-          return pertama ? ambilKledoById(db, pertama.id, getKunciEnkripsi()) : null;
+          return pertama ? await ambilKledoById(db, pertama.id, getKunciEnkripsi()) : null;
         })();
     if (!kred) return json({ ok: false, error: "Belum ada kredensial Kledo aktif, atau token tidak bisa didekripsi." }, 400);
 
-    const h = await jalankanSinkron(db, { subdomain: kred.subdomain, token: kred.token }, { pemicu: "manual", oleh });
-    return json({ ok: h.status !== "gagal", ...h }, h.status === "gagal" ? 502 : 200);
+    // Dijalankan di LATAR, bukan di dalam siklus permintaan.
+    // Sinkron 1174 produk butuh ~20 detik; bila dijalankan lurus, Worker dihentikan
+    // begitu respons terkirim dan sinkron berhenti di TENGAH (terbukti: produk berhenti
+    // di 767 dari 1174, catatan kledo_sync menyangkut di status 'jalan').
+    // Klien memantau kemajuan lewat GET ?aksi=ringkas.
+    const kerja = jalankanSinkron(db, { subdomain: kred.subdomain, token: kred.token }, { pemicu: "manual", oleh })
+      .then((h) => {
+        console.log(`[kledo] sinkron manual ${h.status}: ${h.produkBaru} baru, ${h.produkUbah} berubah, ${h.stokDrift} drift, ${h.galat} galat`);
+      })
+      .catch((e) => console.error("[kledo] sinkron manual gagal:", e instanceof Error ? e.message : e));
+    try {
+      getCloudflareContext().ctx.waitUntil(kerja);
+    } catch {
+      // Konteks tidak tersedia (mis. dijalankan di luar Worker): tunggu lurus sebagai cadangan.
+      await kerja;
+      const akhir = await sinkronTerakhir(db);
+      return json({ ok: akhir?.status !== "gagal", ...akhir });
+    }
+    return json({ ok: true, mulai: true, pesan: "Sinkronisasi dimulai. Kemajuannya tampil di status." });
   }
 
   return json({ ok: false, error: `Aksi tidak dikenal: ${aksi}` }, 400);

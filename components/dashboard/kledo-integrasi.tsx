@@ -156,14 +156,35 @@ export function KledoIntegrasi({ bolehUbah, onBerubah }: Props) {
       return
     }
     setSibuk(true)
-    toast.info("Sinkronisasi berjalan… jangan tutup halaman.")
     try {
+      // Sinkron dijalankan di latar oleh server (butuh ~20 detik untuk 1174 produk).
       const r = await kirim({ aksi: "sinkron" })
-      if (r.ok) {
-        const d = r.d ?? {}
-        toast.success(
-          `Sinkron selesai: ${d.produkBaru ?? 0} produk baru, ${d.produkUbah ?? 0} berubah, ${d.gudangBaru ?? 0} gudang baru, ${d.stokDrift ?? 0} stok berubah.`
-        )
+      if (!r.ok) return
+      toast.info("Sinkronisasi berjalan di latar…")
+      setJalan(true)
+      // Pantau sampai selesai: status berubah dari 'jalan', atau lewat 3 menit.
+      const batas = Date.now() + 180000
+      for (;;) {
+        await new Promise((r2) => setTimeout(r2, 3000))
+        const res = await fetch("/api/pengaturan/kledo?aksi=ringkas", { credentials: "include" })
+        const d = (await res.json().catch(() => null)) as Ringkas | null
+        if (!res.ok || !d?.ok) break
+        setSinkron(d.sinkron ?? null)
+        setGalat(d.galat ?? [])
+        setJalan(d.sedang_jalan === true)
+        if (d.sedang_jalan !== true) {
+          const s = d.sinkron
+          if (s) {
+            toast.success(
+              `Sinkron selesai (${s.status}): ${s.produk_baru} produk baru, ${s.produk_ubah} berubah, ${s.gudang_baru} gudang baru, ${s.stok_drift} stok berubah.`
+            )
+          }
+          break
+        }
+        if (Date.now() > batas) {
+          toast.error("Sinkronisasi masih berjalan setelah 3 menit. Periksa status nanti.")
+          break
+        }
       }
       await muat()
       onBerubah?.()

@@ -2,7 +2,7 @@
 // Memakai fetch palsu + mock D1 in-memory (pola sama dengan order.test.ts).
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { jalankanSinkron, hppDariKledo, normNama, GUDANG_VIRTUAL } from "./sinkron";
+import { jalankanSinkron, hppDariKledo, normNama, GUDANG_VIRTUAL, adaSinkronBerjalan } from "./sinkron";
 import type { OpsiKledo } from "./klien";
 
 const OPSI: OpsiKledo = { subdomain: "uji", token: "rahasia", retry: 1 };
@@ -23,6 +23,12 @@ function buatDb(awal?: { produk?: Row[]; gudang?: Row[]; bin?: Row[] }) {
 
   const db = {
     _produk: produk, _gudang: gudang, _bin: bin, _peta: petaKledo, _moves: moves, _sync: sync, _galat: syncGalat,
+    /** db.batch: jalankan berurutan, seperti D1. */
+    async batch(list: { run: () => Promise<unknown> }[]) {
+      const hasil: unknown[] = [];
+      for (const s of list) hasil.push(await s.run());
+      return hasil;
+    },
     prepare(sql: string) {
       const st = {
         _sql: sql,
@@ -85,6 +91,12 @@ function buatDb(awal?: { produk?: Row[]; gudang?: Row[]; bin?: Row[] }) {
             seq++;
             sync.push({ id: seq, jenis: a[0], pemicu: a[0], status: a[1], oleh: a[2], mulai_at: 1000, gudang_baru: 0, gudang_ubah: 0, produk_baru: 0, produk_ubah: 0, hpp_dipertahankan: 0, stok_baris: 0, stok_drift: 0, galat: 0, durasi_ms: null, pesan: null });
             return { meta: { last_row_id: seq } };
+          }
+          if (sql.startsWith("UPDATE kledo_sync SET status = 'gagal'")) {
+            // bind(selesai_at, pesan, id)
+            const s = sync.find((x) => x.id === Number(a[2]) && x.status === "jalan");
+            if (s) Object.assign(s, { status: "gagal", selesai_at: a[0], pesan: a[1] });
+            return {};
           }
           if (sql.startsWith("UPDATE kledo_sync SET selesai_at")) {
             // bind(selesai_at, status, durasi_ms, pesan, galat, id)
@@ -195,7 +207,10 @@ beforeEach(() => {
     }
     if (u.includes("/finance/products/last_buy_prices")) {
       const ids = (new URL(u).searchParams.get("ids") ?? "").split(",").filter(Boolean);
-      return j({ success: true, data: data.beli.filter((b) => ids.includes(String(b.id))) });
+      // Bentuk NYATA: objek berkunci id, bukan array.
+      const obj: Record<string, { last_buy_price: number }> = {};
+      for (const b of data.beli) if (ids.includes(String(b.id))) obj[String(b.id)] = { last_buy_price: b.last_price };
+      return j({ success: true, data: obj });
     }
     if (u.includes("/finance/products")) {
       return j({ success: true, data: { data: data.produk, current_page: 1, last_page: 1 } });
@@ -371,6 +386,36 @@ describe("jalankanSinkron — stok", () => {
     assert.equal(h2.gudangUbah, 0, "gudang sudah dipetakan, tidak diubah lagi");
     const d = db as unknown as { _moves: Row[] };
     assert.equal(d._moves.length, 1, "ledger tidak bertambah di siklus kedua");
+  });
+});
+
+describe("adaSinkronBerjalan", () => {
+  it("false bila tidak ada catatan jalan", async () => {
+    const db = buatDb();
+    assert.equal(await adaSinkronBerjalan(db), false);
+  });
+
+  it("true bila ada sinkron yang baru mulai", async () => {
+    const db = buatDb();
+    const d = db as unknown as { _sync: Row[] };
+    d._sync.push({ id: 1, status: "jalan", mulai_at: Math.floor(Date.now() / 1000) - 5 });
+    assert.equal(await adaSinkronBerjalan(db), true);
+  });
+
+  it("MENUTUP sinkron yang terputus (lewat 3 menit) agar tidak menghalangi selamanya", async () => {
+    const db = buatDb();
+    const d = db as unknown as { _sync: Row[] };
+    d._sync.push({ id: 7, status: "jalan", mulai_at: Math.floor(Date.now() / 1000) - 600 });
+    assert.equal(await adaSinkronBerjalan(db), false, "tidak lagi menahan");
+    assert.equal(d._sync[0].status, "gagal", "catatan ditutup sebagai gagal");
+    assert.match(String(d._sync[0].pesan), /Terputus/);
+  });
+
+  it("mengabaikan catatan jalan yang lebih tua dari maksUmur", async () => {
+    const db = buatDb();
+    const d = db as unknown as { _sync: Row[] };
+    d._sync.push({ id: 1, status: "jalan", mulai_at: Math.floor(Date.now() / 1000) - 7200 });
+    assert.equal(await adaSinkronBerjalan(db), false);
   });
 });
 
