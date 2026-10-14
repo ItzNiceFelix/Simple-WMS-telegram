@@ -31,7 +31,7 @@ export type ModelAi = {
   provider: string
   model_id: string
   label: string
-  jenis: "teks" | "gambar" | "vision"
+  jenis: "teks" | "gambar" | "vision" | "audio" | "lain"
   aktif: number
   /** CSV lowercase, mis. 'text,image'. '' = tidak diketahui. */
   modal_masuk: string
@@ -300,7 +300,14 @@ export function AiModel({ bolehUbah, onBerubah }: AiModelProps) {
   }
 
   // Model yang benar-benar ditampilkan: provider terpilih + saringan jenis.
-  const daftarTampil = jenisFilter === "semua" ? daftar : daftar.filter((m) => m.jenis === jenisFilter)
+  // "audio dan lain" menggabungkan jenis audio + lain (TTS, transkripsi, video)
+  // supaya tombolnya tidak terlalu banyak tapi model non-teks tetap bisa dilihat.
+  const daftarTampil =
+    jenisFilter === "semua"
+      ? daftar
+      : jenisFilter === "audio dan lain"
+        ? daftar.filter((m) => m.jenis === "audio" || m.jenis === "lain")
+        : daftar.filter((m) => m.jenis === jenisFilter)
 
   return (
     <Card data-testid="kartu-model">
@@ -368,7 +375,7 @@ export function AiModel({ bolehUbah, onBerubah }: AiModelProps) {
           </div>
           <div className="flex flex-wrap items-center gap-1">
             <span className="text-xs text-muted-foreground">Jenis:</span>
-            {["semua", "teks", "gambar", "vision"].map((j) => (
+            {["semua", "teks", "vision", "gambar", "audio dan lain"].map((j) => (
               <Button
                 key={j}
                 variant={jenisFilter === j ? "default" : "outline"}

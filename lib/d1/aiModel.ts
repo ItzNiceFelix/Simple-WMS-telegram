@@ -3,7 +3,7 @@
 import { gabungModal, tebakModalDariNama, tebakSkemaReasoning } from "../ai/kapabilitas";
 import { gagal, sekarang, type Hasil } from "./hasil";
 
-export const JENIS_MODEL = ["teks", "gambar", "vision"] as const;
+export const JENIS_MODEL = ["teks", "gambar", "vision", "audio", "lain"] as const;
 export type JenisModel = (typeof JENIS_MODEL)[number];
 
 export type ModelAi = {
@@ -88,18 +88,26 @@ export async function tambahModel(
  * karena API hanya memberi modality — bukan jenis kita.
  *
  * MASALAH YANG DIPERBAIKI: sebelumnya semua model hasil tarik jatuh ke jenis
- * 'teks', sehingga 20 model gambar Kenari ikut berlabel teks dan tidak muncul
- * di saringan jenis 'gambar'. Sekarang modality yang menentukan.
+ * 'teks', sehingga 20 model gambar Kenari dan puluhan model audio/video ikut
+ * berlabel teks dan bercampur di daftar pilihan model teks.
  *
- * Aturan: keluaran memuat image → 'gambar'; masukan memuat image tapi keluaran
- * teks → 'vision' (bisa membaca gambar); selain itu 'teks'.
+ * Aturan (urut dari yang paling menentukan):
+ *   keluaran image          -> gambar
+ *   keluaran audio          -> audio (text-to-speech)
+ *   keluaran video          -> lain
+ *   masukan image, keluar teks -> vision
+ *   masukan audio, keluar teks -> audio (transkripsi)
+ *   selain itu              -> teks
  */
 function simpulkanJenis(data: { jenis?: string; modalMasuk?: string[]; modalKeluar?: string[] }): JenisModel {
   if (sahJenis(data.jenis) && data.jenis !== "teks") return data.jenis;
   const masuk = data.modalMasuk ?? [];
   const keluar = data.modalKeluar ?? [];
   if (keluar.includes("image")) return "gambar";
+  if (keluar.includes("audio")) return "audio";
+  if (keluar.includes("video")) return "lain";
   if (masuk.includes("image")) return "vision";
+  if (masuk.includes("audio")) return "audio";
   return "teks";
 }
 

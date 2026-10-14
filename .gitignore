@@ -48,3 +48,6 @@ playwright/.cache/
 .dev.vars
 .wrangler/
 *.uji*.ts
+.uji*.mjs
+.tok*.txt
+.s[0-9]*.mjs
