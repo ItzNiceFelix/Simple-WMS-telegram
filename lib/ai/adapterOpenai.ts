@@ -106,13 +106,34 @@ type ResponsChat = {
   usage?: { prompt_tokens?: number; completion_tokens?: number };
 };
 
+/**
+ * SpesifikasiTool internal (`{nama, deskripsi, parameter}`) → format OpenAI
+ * (`{type:"function", function:{name, description, parameters}}`).
+ *
+ * MASALAH YANG DIPERBAIKI: sebelumnya tool dikirim APA ADANYA tanpa pembungkus dan
+ * tanpa field `type`, sehingga provider menolak dengan
+ * "invalid JSON: missing field `type` at line 1 column 2477" untuk SEMUA model —
+ * bot sama sekali tidak bisa menjawab.
+ */
+function keToolOpenai(t: unknown): Record<string, unknown> {
+  const s = t as { nama?: string; deskripsi?: string; parameter?: Record<string, unknown> };
+  return {
+    type: "function",
+    function: {
+      name: String(s.nama ?? ""),
+      description: String(s.deskripsi ?? ""),
+      parameters: s.parameter ?? { type: "object", properties: {} },
+    },
+  };
+}
+
 /** POST {baseUrl}/chat/completions. Tool call dikembalikan dengan arguments STRING apa adanya. */
 export async function chatOpenai(opsi: OpsiAdapter, permintaan: PermintaanChat): Promise<HasilHttp<JawabanChat>> {
   const body: Record<string, unknown> = {
     model: permintaan.model,
     messages: permintaan.pesan.map(kePesanOpenai),
   };
-  if (permintaan.tool && permintaan.tool.length > 0) body.tools = permintaan.tool;
+  if (permintaan.tool && permintaan.tool.length > 0) body.tools = permintaan.tool.map(keToolOpenai);
   if (permintaan.maksToken !== undefined) body.max_tokens = permintaan.maksToken;
   if (permintaan.suhu !== undefined) body.temperature = permintaan.suhu;
   if (permintaan.jsonMode) body.response_format = { type: "json_object" };

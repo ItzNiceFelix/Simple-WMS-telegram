@@ -67,12 +67,28 @@ function bacaKandidat(d: ResponsGemini): JawabanChat | null {
   };
 }
 
+/**
+ * SpesifikasiTool internal (`{nama, deskripsi, parameter}`) → format Gemini
+ * (`{name, description, parameters}`).
+ *
+ * MASALAH YANG DIPERBAIKI: sebelumnya dikirim APA ADANYA, sehingga Gemini menerima
+ * field `nama`/`deskripsi`/`parameter` yang tidak dikenal dan tool-nya tidak berfungsi.
+ */
+function keToolGemini(t: unknown): Record<string, unknown> {
+  const s = t as { nama?: string; deskripsi?: string; parameter?: Record<string, unknown> };
+  return {
+    name: String(s.nama ?? ""),
+    description: String(s.deskripsi ?? ""),
+    parameters: s.parameter ?? { type: "object", properties: {} },
+  };
+}
+
 /** POST {base}/models/{model}:generateContent?key=… */
 export async function chatGemini(opsi: OpsiGemini, permintaan: PermintaanChat): Promise<HasilHttp<JawabanChat>> {
   const { sistem, isi } = pisahSistem(permintaan.pesan);
   const body: Record<string, unknown> = { contents: isi };
   if (sistem) body.systemInstruction = { parts: [{ text: sistem }] };
-  if (permintaan.tool && permintaan.tool.length > 0) body.tools = [{ functionDeclarations: permintaan.tool }];
+  if (permintaan.tool && permintaan.tool.length > 0) body.tools = [{ functionDeclarations: permintaan.tool.map(keToolGemini) }];
   const generasi: Record<string, unknown> = {};
   if (permintaan.maksToken !== undefined) generasi.maxOutputTokens = permintaan.maksToken;
   if (permintaan.suhu !== undefined) generasi.temperature = permintaan.suhu;
