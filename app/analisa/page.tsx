@@ -13,6 +13,7 @@ import { ChartNoAxesCombined, Info, Megaphone, TriangleAlert } from "lucide-reac
 
 import { PageHeader } from "@/components/dashboard/page-header";
 import { ButuhAkses } from "@/components/dashboard/butuh-akses";
+import { AnalisaPetaSku } from "@/components/dashboard/analisa-peta-sku";
 import { tampilkanGagalTulis } from "@/components/dashboard/umpan-tulis";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -250,6 +251,7 @@ function Analisa() {
               <TabsTrigger value="iklan" onClick={() => void muatIklan()} data-testid="tab-iklan">
                 Saran Iklan
               </TabsTrigger>
+              <TabsTrigger value="peta" data-testid="tab-peta">Peta SKU</TabsTrigger>
             </TabsList>
 
             {/* ══ TAB TEMUAN ══ */}
@@ -511,6 +513,11 @@ function Analisa() {
                   ) : null}
                 </>
               )}
+            </TabsContent>
+
+            {/* ══ TAB PETA SKU (tool tanya SKU: dua kartu) ══ */}
+            <TabsContent value="peta" className="flex flex-col gap-4">
+              <AnalisaPetaSku />
             </TabsContent>
           </Tabs>
         )}
