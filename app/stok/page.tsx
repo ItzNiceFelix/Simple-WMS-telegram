@@ -6,7 +6,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { toast } from "sonner";
-import { FileDown, FileUp, PackagePlus, PackageSearch, Search, TriangleAlert } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  FileDown,
+  FileUp,
+  PackagePlus,
+  PackageSearch,
+  Search,
+  TriangleAlert,
+} from "lucide-react";
 
 import { PageHeader } from "@/components/dashboard/page-header";
 import { ButuhAkses } from "@/components/dashboard/butuh-akses";
@@ -95,6 +104,10 @@ function DaftarStok() {
   const [importOpen, setImportOpen] = useState(false);
   const [onlineSedang, setOnlineSedang] = useState<string | null>(null);
   const [terpilih, setTerpilih] = useState<Set<string>>(new Set());
+  // Paginasi klien: 1174 baris x 2 (tabel + kartu) meledakkan DOM (~84.000 elemen).
+  // `hasil` tetap daftar penuh agar total & nomor halaman benar; hanya render yang dipotong.
+  const [ukuranHalaman, setUkuranHalaman] = useState<10 | 20 | 50 | 100>(50);
+  const [halaman, setHalaman] = useState(1);
   // Daftar gudang untuk kontrol filter (F9). Gagal memuat -> filter tetap "Semua gudang".
   useEffect(() => {
     let batal = false;
@@ -204,6 +217,23 @@ function DaftarStok() {
 
   const teksKosong = filter === "minus" ? "Tidak ada produk minus." : "Tidak ada produk cocok.";
 
+  const jumlahHalaman = Math.max(1, Math.ceil(hasil.length / ukuranHalaman));
+  // halamanAman: kalau data menyusut (mis. setelah koreksi/toggle online) dan halaman
+  // sekarang melewati akhir, jepit ke halaman terakhir — bukan tampilkan daftar kosong palsu.
+  const halamanAman = Math.min(halaman, jumlahHalaman);
+  // Dipotong HANYA untuk render; map mobile & desktop memakai halamanIni, bukan hasil.
+  const halamanIni = useMemo(
+    () => hasil.slice((halamanAman - 1) * ukuranHalaman, halamanAman * ukuranHalaman),
+    [hasil, halamanAman, ukuranHalaman]
+  );
+
+  // Reset ke halaman 1 saat kriteria berubah. Sengaja TIDAK bergantung pada `rows`:
+  // refetch (mis. setelah toggle online) tak boleh melempar user dari halaman yang sedang
+  // dikoreksi; kasus halaman melewati akhir ditangani jepitan halamanAman di atas.
+  useEffect(() => {
+    setHalaman(1);
+  }, [cari, filter, sort, gudangId, ukuranHalaman]);
+
   function togglePilih(kode: string) {
     setTerpilih((lama) => {
       const baru = new Set(lama);
@@ -211,6 +241,16 @@ function DaftarStok() {
       else baru.add(kode);
       return baru;
     });
+  }
+
+  // Sengaja hanya menandai baris yang terlihat di halaman ini: menandai seluruh `rows`
+  // membuat aksi massal (kategori/online) menyentuh baris tak terlihat tanpa disadari.
+  function pilihHalamanIni() {
+    setTerpilih((lama) => new Set([...lama, ...halamanIni.map((r) => r.kode_barang)]));
+  }
+
+  function kosongkanPilihan() {
+    setTerpilih(new Set());
   }
 
   return (
@@ -288,6 +328,33 @@ function DaftarStok() {
                   {gudang.map((g) => (
                     <SelectItem key={g.gudang_id} value={g.gudang_id}>
                       {g.nama}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </Field>
+          <Field className="w-full sm:w-40">
+            <FieldLabel htmlFor="ukuran-halaman-stok">Baris</FieldLabel>
+            <Select
+              value={String(ukuranHalaman)}
+              onValueChange={(v) => {
+                if (typeof v === "string") setUkuranHalaman(Number(v) as 10 | 20 | 50 | 100);
+              }}
+            >
+              <SelectTrigger
+                id="ukuran-halaman-stok"
+                className="h-11 w-full data-[size=default]:h-11 md:h-8 md:data-[size=default]:h-8"
+                data-testid="ukuran-halaman-stok"
+              >
+                {/* Nilainya memang teks angka yang benar untuk ditampilkan apa adanya. selectvalue-ok */}
+                <SelectValue>{(v: string | null) => `${v ?? ukuranHalaman} baris`}</SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  {[10, 20, 50, 100].map((n) => (
+                    <SelectItem key={n} value={String(n)}>
+                      {n} baris
                     </SelectItem>
                   ))}
                 </SelectGroup>
@@ -376,7 +443,34 @@ function DaftarStok() {
         ) : null}
 
         {role === "owner" ? (
-          <AksiMassalKategori sku={[...terpilih]} onSukses={() => { setTerpilih(new Set()); void muat(); }} />
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-11 md:h-8"
+                disabled={halamanIni.length === 0}
+                onClick={pilihHalamanIni}
+                data-testid="pilih-halaman-ini"
+              >
+                Pilih halaman ini
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-11 md:h-8"
+                disabled={terpilih.size === 0}
+                onClick={kosongkanPilihan}
+                data-testid="kosongkan-pilihan"
+              >
+                Kosongkan pilihan
+              </Button>
+              <span className="text-sm text-muted-foreground tabular-nums">
+                {terpilih.size} dipilih
+              </span>
+            </div>
+            <AksiMassalKategori sku={[...terpilih]} onSukses={() => { setTerpilih(new Set()); void muat(); }} />
+          </div>
         ) : null}
 
         {pesanError ? (
@@ -410,7 +504,7 @@ function DaftarStok() {
           <>
             {/* Mobile: kartu */}
             <ul className="flex flex-col gap-3 md:hidden" data-testid="daftar-stok-kartu">
-              {hasil.map((r) => (
+              {halamanIni.map((r) => (
                 <li key={r.kode_barang}>
                   <Card size="sm">
                     <CardContent className="flex flex-col gap-3">
@@ -535,7 +629,7 @@ function DaftarStok() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {hasil.map((r) => (
+                  {halamanIni.map((r) => (
                     <TableRow key={r.kode_barang} data-testid={`baris-${r.kode_barang}`}>
                       {role === "owner" ? (
                         <TableCell>
@@ -677,6 +771,40 @@ function DaftarStok() {
                   ))}
                 </TableBody>
               </Table>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <p className="text-sm text-muted-foreground tabular-nums" data-testid="halaman-stok">
+                {`Halaman ${halamanAman} dari ${jumlahHalaman}`}
+                {" · "}
+                {`${(halamanAman - 1) * ukuranHalaman + 1}–${
+                  (halamanAman - 1) * ukuranHalaman + halamanIni.length
+                } dari ${hasil.length}`}
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="lg"
+                  className="h-11 md:h-8"
+                  disabled={halamanAman <= 1}
+                  onClick={() => setHalaman(halamanAman - 1)}
+                  data-testid="halaman-sebelumnya"
+                >
+                  <ChevronLeft data-icon="inline-start" />
+                  Sebelumnya
+                </Button>
+                <Button
+                  variant="outline"
+                  size="lg"
+                  className="h-11 md:h-8"
+                  disabled={halamanAman >= jumlahHalaman}
+                  onClick={() => setHalaman(halamanAman + 1)}
+                  data-testid="halaman-berikutnya"
+                >
+                  Berikutnya
+                  <ChevronRight data-icon="inline-end" />
+                </Button>
+              </div>
             </div>
           </>
         )}

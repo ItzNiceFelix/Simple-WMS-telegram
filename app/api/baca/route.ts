@@ -50,12 +50,28 @@ export async function GET(request: Request) {
       args.push(`%${q}%`, `%${q}%`);
     }
     if (syarat.length > 0) sql += ` WHERE ${syarat.join(" AND ")}`;
-    sql += " ORDER BY p.sku ASC LIMIT 2000";
-    const { results } = await db.prepare(sql).bind(...args).all<{
+    // Paginasi opsional: klien lama yang tidak mengirim limit/offset tetap dapat cap 2000
+    // (kontrak respons lama aman — field baru bersifat aditif).
+    const limitParam = Number(url.searchParams.get("limit"));
+    const pakaiLimit = Number.isInteger(limitParam) && limitParam >= 1;
+    const limit = pakaiLimit ? Math.min(limitParam, 200) : 2000;
+    const offsetParam = Number(url.searchParams.get("offset"));
+    const offset = Number.isInteger(offsetParam) && offsetParam > 0 ? offsetParam : 0;
+    const whereClause = syarat.length > 0 ? ` WHERE ${syarat.join(" AND ")}` : "";
+    sql += ` ORDER BY p.sku ASC LIMIT ? OFFSET ?`;
+    const { results } = await db.prepare(sql).bind(...args, limit, offset).all<{
       sku: string; nama_accurate: string; hpp: number | null; is_online_product: number; stok_min: number | null;
       kategori: string | null; tier_override: string | null; pre_order: number; ukuran_khusus: number; go_override: string | null;
       warehouse_id: string | null; qty: number | null;
     }>();
+    // Total memakai COUNT(DISTINCT p.sku), bukan COUNT(*): LEFT JOIN stock_by_bin menjadikan
+    // satu SKU bisa punya banyak baris (per bin), sehingga COUNT(*) menggelembung dan nomor
+    // halaman jadi salah. Syarat WHERE (onlineSaja + q) identik dengan query data di atas.
+    const totalRow = await db
+      .prepare(`SELECT COUNT(DISTINCT p.sku) AS total FROM products p LEFT JOIN stock_by_bin b ON b.sku = p.sku${whereClause}`)
+      .bind(...args)
+      .first<{ total: number }>();
+    const total = totalRow?.total ?? 0;
     const { results: paths } = await db.prepare("SELECT kategori_path FROM kategori_tarif").all<{ kategori_path: string }>();
     const himpunan = new Set(paths.map((p) => p.kategori_path));
     const grup = new Map<string, { p: (typeof results)[number]; qtyMap: Record<string, number> }>();
@@ -79,7 +95,7 @@ export async function GET(request: Request) {
         pre_order: p.pre_order === 1, ukuran_khusus: p.ukuran_khusus === 1, go_override: p.go_override ?? null,
       });
     }
-    return json({ ok: true, rows: baris });
+    return json({ ok: true, rows: baris, total, limit, offset });
   }
 
   if (scope === "produk") {
