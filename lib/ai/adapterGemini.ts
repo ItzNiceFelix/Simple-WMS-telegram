@@ -4,6 +4,7 @@
 // Basis: https://generativelanguage.googleapis.com/v1beta (api key sebagai query `key`).
 
 import { panggilJson, type BagianChat, type HasilHttp, type HasilModel, type JawabanChat, type PermintaanChat } from "./http";
+import { terapkanReasoning } from "./reasoning";
 
 const BASE = "https://generativelanguage.googleapis.com/v1beta";
 
@@ -101,11 +102,19 @@ export async function chatGemini(opsi: OpsiGemini, permintaan: PermintaanChat): 
 /** POST {base}/models/{model}:generateContent untuk gambar; baca inlineData dari parts. */
 export async function gambarGemini(
   opsi: OpsiGemini,
-  minta: { model: string; prompt: string; referensi?: { mime: string; base64: string }[] }
+  minta: { model: string; prompt: string; referensi?: { mime: string; base64: string }[]; reasoning?: string; aspekRasio?: string }
 ): Promise<HasilHttp<{ base64: string; mime: string }>> {
   const parts: BagianGemini[] = [{ text: minta.prompt }];
   for (const r of minta.referensi ?? []) parts.push({ inline_data: { mime_type: r.mime, data: r.base64 } });
   const base = (opsi.baseUrl ?? BASE).replace(/\/+$/, "");
+  const body: Record<string, unknown> = { contents: [{ role: "user", parts }] };
+  // Reasoning model gambar (mis. Gemini 3.1 Flash Lite Image): thinkingLevel minimal|high.
+  // Kosong = jangan kirim, biar provider pakai defaultnya.
+  const paramReasoning = terapkanReasoning("gemini", minta.reasoning);
+  const generasi: Record<string, unknown> = { ...paramReasoning };
+  // Rasio gambar: Gemini memakai imageConfig.aspectRatio.
+  if (minta.aspekRasio) generasi.imageConfig = { aspectRatio: minta.aspekRasio };
+  if (Object.keys(generasi).length > 0) body.generationConfig = generasi;
   const h = await panggilJson<{
     candidates?: { content?: { parts?: ({ inlineData?: { mimeType?: string; data?: string } } | { text?: string })[] } }[];
     error?: unknown;
@@ -114,7 +123,7 @@ export async function gambarGemini(
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contents: [{ role: "user", parts }] }),
+      body: JSON.stringify(body),
     },
     { timeoutMs: opsi.timeoutMs }
   );
@@ -133,11 +142,22 @@ export async function gambarGemini(
   };
 }
 
-/** GET {base}/models?key=… → hanya model yang bisa generateContent, prefix `models/` dibuang. */
+/**
+ * GET {base}/models?key=… → hanya model yang bisa generateContent, prefix `models/` dibuang.
+ * Gemini TIDAK memberi modalitas — modalMasuk/modalKeluar sengaja dibiarkan undefined
+ * (heuristik di lib/ai/kapabilitas.ts yang mengisi saat disimpan).
+ */
 export async function modelGemini(opsi: OpsiGemini): Promise<HasilHttp<HasilModel[]>> {
   const base = (opsi.baseUrl ?? BASE).replace(/\/+$/, "");
   const h = await panggilJson<{
-    models?: { name?: string; displayName?: string; supportedGenerationMethods?: string[] }[];
+    models?: {
+      name?: string;
+      displayName?: string;
+      supportedGenerationMethods?: string[];
+      thinking?: boolean;
+      inputTokenLimit?: number;
+      outputTokenLimit?: number;
+    }[];
     error?: unknown;
   }>(`${base}/models?key=${encodeURIComponent(opsi.apiKey)}&pageSize=1000`, { method: "GET" }, { timeoutMs: opsi.timeoutMs });
   if (!h.ok) return h;
@@ -146,7 +166,16 @@ export async function modelGemini(opsi: OpsiGemini): Promise<HasilHttp<HasilMode
     if (!(m.supportedGenerationMethods ?? []).includes("generateContent")) continue;
     const id = String(m.name ?? "").replace(/^models\//, "").trim();
     if (!id) continue;
-    daftar.push({ id, label: m.displayName });
+    // `thinking` cuma boolean tanpa level — skema detail per model diisi heuristik.
+    const bisaBerpikir = m.thinking === true;
+    daftar.push({
+      id,
+      label: m.displayName,
+      reasoningSkema: bisaBerpikir ? "bool" : "",
+      reasoningPilihan: [],
+      reasoningHilir: bisaBerpikir,
+      contextLength: m.inputTokenLimit,
+    });
   }
   return { ok: true, data: daftar, latencyMs: h.latencyMs };
 }

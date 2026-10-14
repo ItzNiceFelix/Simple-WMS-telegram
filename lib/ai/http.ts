@@ -19,7 +19,24 @@ export type BagianChat = {
   namaTool?: string;
 };
 
-export type HasilModel = { id: string; label?: string };
+/**
+ * Metadata satu model dari GET /models provider. Field kapabilitas OPSIONAL:
+ * hanya OpenRouter (dan sebagian Gemini) yang mengisinya — sisanya undefined
+ * dan diisi heuristik di lib/ai/kapabilitas.ts.
+ */
+export type HasilModel = {
+  id: string;
+  label?: string;
+  modalMasuk?: string[];
+  modalKeluar?: string[];
+  reasoningSkema?: string;
+  reasoningPilihan?: string[];
+  reasoningHilir?: boolean;
+  contextLength?: number;
+};
+
+/** Kredensial provider yang sudah di-dekripsi; baseUrl kosong = pakai bawaan provider. */
+export type KredensialProvider = { apiKey: string; baseUrl?: string; timeoutMs?: number };
 
 export type PermintaanChat = {
   model: string;
@@ -28,6 +45,10 @@ export type PermintaanChat = {
   maksToken?: number;
   suhu?: number;
   jsonMode?: boolean;
+  /** Nilai reasoning dari setting ('low','high',...). Kosong = provider pakai default. */
+  reasoning?: string;
+  /** True bila sistem boleh membaca reasoning yang dihasilkan model. */
+  reasoningHilir?: boolean;
 };
 
 export type JawabanChat = {

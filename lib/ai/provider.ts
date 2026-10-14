@@ -26,9 +26,9 @@ export type Konteks = {
 const PROVIDER_OPENAI: ProviderNama[] = ["groq", "kenari", "openai", "openrouter"];
 
 function opsiUntuk(provider: ProviderNama, apiKey: string, ctx: Konteks, timeoutMs: number): OpsiAdapter | null {
-  if (provider === "kenari") return { baseUrl: baseKenari(ctx.env), apiKey, timeoutMs };
+  if (provider === "kenari") return { baseUrl: baseKenari(ctx.env), apiKey, timeoutMs, provider };
   const baseUrl = BASE_OPENAI[provider];
-  return baseUrl ? { baseUrl, apiKey, timeoutMs } : null;
+  return baseUrl ? { baseUrl, apiKey, timeoutMs, provider } : null;
 }
 
 /**
@@ -97,9 +97,22 @@ async function kandidatTeks(ctx: Konteks, jenis: "teks" | "vision", catatan: Cat
 }
 
 /** Satu percobaan ke satu provider+model; semua error berasal dari adapter (asli dari provider). */
-async function cobaTeks(kandidat: Kandidat, pesan: BagianChat[], tool: unknown[] | undefined, ctx: Konteks, jenis: "teks" | "vision"): Promise<Hasil<{ jawaban: JawabanChat; latencyMs: number }>> {
+async function cobaTeks(
+  kandidat: Kandidat,
+  pesan: BagianChat[],
+  tool: unknown[] | undefined,
+  ctx: Konteks,
+  jenis: "teks" | "vision",
+  opsiReasoning?: { reasoning?: string; reasoningHilir?: boolean }
+): Promise<Hasil<{ jawaban: JawabanChat; latencyMs: number }>> {
   const timeoutMs = jenis === "vision" ? 60000 : 30000;
-  const permintaan: PermintaanChat = { model: kandidat.model, pesan, tool };
+  const permintaan: PermintaanChat = {
+    model: kandidat.model,
+    pesan,
+    tool,
+    ...(opsiReasoning?.reasoning ? { reasoning: opsiReasoning.reasoning } : {}),
+    ...(opsiReasoning?.reasoningHilir ? { reasoningHilir: true } : {}),
+  };
   const h =
     kandidat.provider === "gemini"
       ? await chatGemini({ apiKey: kandidat.apiKey, timeoutMs }, permintaan)
@@ -118,7 +131,7 @@ async function cobaTeks(kandidat: Kandidat, pesan: BagianChat[], tool: unknown[]
  */
 export async function panggilTeks(
   ctx: Konteks,
-  minta: { pesan: BagianChat[]; tool?: unknown[]; modelDiminta?: string },
+  minta: { pesan: BagianChat[]; tool?: unknown[]; modelDiminta?: string; reasoning?: string; reasoningHilir?: boolean },
   jenis: "teks" | "vision" = "teks"
 ): Promise<
   Hasil<{
@@ -137,7 +150,10 @@ export async function panggilTeks(
   if (kandidat.length === 0) return gagal(502, ringkasGagal(catatan));
 
   for (const k of kandidat) {
-    const h = await cobaTeks(k, minta.pesan, minta.tool, ctx, jenis);
+    const h = await cobaTeks(k, minta.pesan, minta.tool, ctx, jenis, {
+      reasoning: minta.reasoning,
+      reasoningHilir: minta.reasoningHilir,
+    });
     if (!h.ok) {
       catatan.push({ provider: k.provider, model: k.model, error: h.error });
       continue;
@@ -159,15 +175,35 @@ export async function panggilTeks(
 /** Panggil image gen: coba provider tepat satu model (pilihan user/peta modelGambar, lalu katalog gambar). */
 export async function panggilGambar(
   ctx: Konteks,
-  minta: { prompt: string; referensi?: { mime: string; base64: string }[] }
+  minta: {
+    prompt: string;
+    referensi?: { mime: string; base64: string }[];
+    /** Hints dari setting per user (halaman /ai-gambar). Kosong = pakai pengaturan global. */
+    provider?: string;
+    model?: string;
+    /** Nilai reasoning; diteruskan ke adapter sebagai field opsional. '' = jangan kirim. */
+    reasoning?: string;
+    /** Rasio aspek pilihan user; diteruskan ke adapter sebagai field opsional. */
+    aspekRasio?: string;
+    /** Jumlah gambar yang diminta (1..4). Kosong = 1. */
+    jumlah?: number;
+  }
 ): Promise<Hasil<{ base64: string; mime: string; provider: string; model: string }>> {
   const catatan: Catatan[] = [];
   if (!ctx.kunci && !ctx.env?.AI_KEY_ENCRYPTION_KEY) return gagal(500, "AI_KEY_ENCRYPTION_KEY belum diset.");
 
   const set = await ambilPengaturanAI(ctx.db, ctx.env);
-  const rantaiGambar = (set.chainGambar.length > 0 ? set.chainGambar : [set.imageProvider || "gemini"]).filter(
-    (p): p is ProviderNama => (PROVIDER_OPENAI as string[]).concat("gemini").includes(p)
+  const semuaProvider = (PROVIDER_OPENAI as string[]).concat("gemini");
+  const dasar = (set.chainGambar.length > 0 ? set.chainGambar : [set.imageProvider || "gemini"]).filter(
+    (p): p is ProviderNama => semuaProvider.includes(p)
   );
+  // Provider pilihan user (bila sah) dipindah ke depan rantai — bukan mengganti rantai,
+  // supaya fallback tetap jalan saat provider pilihan sedang bermasalah.
+  const pilihan = String(minta.provider ?? "").trim();
+  const rantaiGambar =
+    pilihan && semuaProvider.includes(pilihan)
+      ? [pilihan as ProviderNama, ...dasar.filter((p) => p !== pilihan)]
+      : dasar;
 
   for (const provider of rantaiGambar) {
     const kred = await ambilKredensial(ctx.db, provider, ctx.kunci);
@@ -177,18 +213,31 @@ export async function panggilGambar(
     }
     const katalog = (await daftarModel(ctx.db, provider, "gambar")).filter((m) => m.aktif === 1).sort((a, b) => a.id - b.id);
     const id: string[] = [];
+    // Model pilihan user hanya diprioritaskan di provider pilihannya.
+    const modelUser = provider === pilihan ? String(minta.model ?? "").trim() : "";
+    if (modelUser) id.push(modelUser);
     const pilih = set.modelGambar[provider];
     if (pilih) id.push(pilih);
     for (const m of katalog) if (!id.includes(m.model_id)) id.push(m.model_id);
 
     for (const model of id) {
+      // Reasoning diteruskan ke adapter; adapter yang tidak mendukung akan
+      // mengabaikannya karena `terapkanReasoning` mengembalikan objek kosong.
+      const mintaGambar = {
+        model,
+        prompt: minta.prompt,
+        referensi: minta.referensi,
+        reasoning: String(minta.reasoning ?? "").trim(),
+        aspekRasio: String(minta.aspekRasio ?? "").trim(),
+        jumlah: Number(minta.jumlah) > 0 ? Math.min(4, Math.floor(Number(minta.jumlah))) : 1,
+      };
       const h =
         provider === "gemini"
-          ? await gambarGemini({ apiKey: kred.plaintext, timeoutMs: 120000 }, { model, prompt: minta.prompt, referensi: minta.referensi })
+          ? await gambarGemini({ apiKey: kred.plaintext, timeoutMs: 120000 }, mintaGambar)
           : await (async () => {
               const opsi = opsiUntuk(provider, kred.plaintext, ctx, 120000);
               if (!opsi) return { ok: false as const, status: 400, error: `Provider ${provider} tidak mendukung image gen.`, latencyMs: 0 };
-              return gambarOpenai(opsi, { model, prompt: minta.prompt, referensi: minta.referensi });
+              return gambarOpenai(opsi, mintaGambar);
             })();
       if (!h.ok) {
         catatan.push({ provider, model, error: h.error });

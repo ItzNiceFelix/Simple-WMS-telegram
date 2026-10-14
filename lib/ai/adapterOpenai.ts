@@ -6,8 +6,33 @@
 // pindah model/provider.
 
 import { panggilJson, pesanServer, type BagianChat, type HasilHttp, type HasilModel, type JawabanChat, type PermintaanChat } from "./http";
+import { normalkanModal } from "./kapabilitas";
 
-export type OpsiAdapter = { baseUrl: string; apiKey: string; timeoutMs?: number };
+import { terapkanReasoning } from "./reasoning";
+
+export type OpsiAdapter = { baseUrl: string; apiKey: string; timeoutMs?: number; /** Nama provider — dipakai memilih nama parameter reasoning yang benar. */ provider: string };
+
+/**
+ * Peta rasio -> `size` untuk provider OpenAI-compatible (yang memakai ukuran, bukan rasio).
+ * Hanya rasio yang punya padanan ukuran resmi; sisanya dibiarkan agar provider pakai default.
+ */
+const UKURAN_DARI_RASIO: Record<string, string> = {
+  "1:1": "1024x1024",
+  "3:2": "1536x1024",
+  "2:3": "1024x1536",
+  "16:9": "1536x864",
+  "9:16": "864x1536",
+};
+
+/**
+ * Field ekstra yang MUNGKIN dikirim sebagian provider OpenAI-compatible.
+ * Groq/OpenAI/Kenari nyata tidak mengirimnya — jangan diandalkan.
+ */
+type EkstraModel = {
+  context_length?: number;
+  context_window?: number;
+  architecture?: { input_modalities?: unknown; output_modalities?: unknown };
+};
 
 /** Base URL bawaan provider. Kenari tidak di sini — base URL-nya dari env. */
 export const BASE_OPENAI: Record<string, string> = {
@@ -64,6 +89,13 @@ export async function chatOpenai(opsi: OpsiAdapter, permintaan: PermintaanChat):
   if (permintaan.maksToken !== undefined) body.max_tokens = permintaan.maksToken;
   if (permintaan.suhu !== undefined) body.temperature = permintaan.suhu;
   if (permintaan.jsonMode) body.response_format = { type: "json_object" };
+  // Reasoning: nama parameternya beda per provider, jadi peta-nya ada di reasoning.ts.
+  const paramReasoning = terapkanReasoning(opsi.provider, permintaan.reasoning, {
+    hilir: permintaan.reasoningHilir,
+    jsonMode: permintaan.jsonMode,
+    adaTool: !!permintaan.tool?.length,
+  });
+  Object.assign(body, paramReasoning);
 
   const h = await panggilJson<ResponsChat>(
     `${opsi.baseUrl.replace(/\/+$/, "")}/chat/completions`,
@@ -102,36 +134,59 @@ export async function chatOpenai(opsi: OpsiAdapter, permintaan: PermintaanChat):
   };
 }
 
-/** GET {baseUrl}/models → daftar id model. */
+/**
+ * GET {baseUrl}/models → daftar id model.
+ * Groq/OpenAI terverifikasi hanya memberi `id`; field kapabilitas di bawah ini
+ * hanya terisi bila provider tertentu (varian OpenAI-compatible) menyertakannya.
+ * Kalau kosong, heuristik di lib/ai/kapabilitas.ts yang mengisi saat disimpan.
+ */
 export async function modelOpenai(opsi: OpsiAdapter): Promise<HasilHttp<HasilModel[]>> {
-  const h = await panggilJson<{ data?: { id?: string }[] }>(
+  const h = await panggilJson<{ data?: (EkstraModel & { id?: string })[] }>(
     `${opsi.baseUrl.replace(/\/+$/, "")}/models`,
     { method: "GET", headers: { Authorization: `Bearer ${opsi.apiKey}` } },
     { timeoutMs: opsi.timeoutMs }
   );
   if (!h.ok) return h;
-  const daftar = (h.data.data ?? [])
-    .map((m) => String(m.id ?? "").trim())
-    .filter(Boolean)
-    .map((id) => ({ id }));
+  const daftar: HasilModel[] = [];
+  for (const m of h.data.data ?? []) {
+    const id = String(m.id ?? "").trim();
+    if (!id) continue;
+    const masuk = normalkanModal(m.architecture?.input_modalities);
+    const keluar = normalkanModal(m.architecture?.output_modalities);
+    const ctx = m.context_length ?? m.context_window;
+    const model: HasilModel = { id };
+    if (masuk.length) model.modalMasuk = masuk;
+    if (keluar.length) model.modalKeluar = keluar;
+    if (typeof ctx === "number") model.contextLength = ctx;
+    daftar.push(model);
+  }
   return { ok: true, data: daftar, latencyMs: h.latencyMs };
 }
 
 /** POST /images/generations, atau /images/edits (multipart) bila ada referensi. */
 export async function gambarOpenai(
   opsi: OpsiAdapter,
-  minta: { model: string; prompt: string; referensi?: { mime: string; base64: string }[] }
+  minta: { model: string; prompt: string; referensi?: { mime: string; base64: string }[]; reasoning?: string; aspekRasio?: string; jumlah?: number }
 ): Promise<HasilHttp<{ base64: string; mime: string }>> {
   const base = opsi.baseUrl.replace(/\/+$/, "");
   const referensi = minta.referensi ?? [];
+  // Reasoning gambar opsional: hanya dikirim bila provider+model memang mendukung
+  // (mis. OpenRouter model gambar dengan `reasoning.effort`). Kosong = jangan kirim.
+  const paramReasoning = terapkanReasoning(opsi.provider, minta.reasoning);
 
   if (referensi.length === 0) {
+    const bodyGambar: Record<string, unknown> = { model: minta.model, prompt: minta.prompt, n: Math.min(4, Math.max(1, Math.floor(Number(minta.jumlah) || 1))) };
+    Object.assign(bodyGambar, paramReasoning);
+    // Ukuran gambar OpenAI-compatible memakai `size` (bukan rasio). Petakan rasio
+    // ke ukuran yang dikenal; rasio tak dikenal dibiarkan (provider pakai default).
+    const ukuran = UKURAN_DARI_RASIO[minta.aspekRasio ?? ""];
+    if (ukuran) bodyGambar.size = ukuran;
     const h = await panggilJson<{ data?: { b64_json?: string; url?: string }[]; error?: unknown }>(
       `${base}/images/generations`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${opsi.apiKey}` },
-        body: JSON.stringify({ model: minta.model, prompt: minta.prompt, n: 1 }),
+        body: JSON.stringify(bodyGambar),
       },
       { timeoutMs: opsi.timeoutMs }
     );

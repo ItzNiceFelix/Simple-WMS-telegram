@@ -11,12 +11,22 @@ import { getDb, getEnvAi, getKunciEnkripsi } from "@/lib/d1/db";
 import {
   ambilKredensial, catatUji, daftarKredensial, hapusKredensial, setAktifKredensial, simpanKredensial,
 } from "@/lib/d1/aiKredensial";
-import { daftarModel, hapusModel, setAktifModel, tambahModel, tambahModelBanyak, ubahLabelModel } from "@/lib/d1/aiModel";
+import {
+  daftarModel,
+  hapusModel,
+  perbaruiKapabilitasModel,
+  ringkasKapabilitas,
+  setAktifModel,
+  tambahModel,
+  tambahModelBanyak,
+  ubahLabelModel,
+} from "@/lib/d1/aiModel";
 import { daftarPreset, hapusPreset, seedPreset, tambahPreset, ubahPreset } from "@/lib/d1/aiPreset";
 import { daftarTool, hapusTool, seedTool, setAktifTool, setKataTool, simpanTool } from "@/lib/d1/aiTool";
 import { ambilPengaturanAI, PROVIDER_VALID, simpanPengaturanAI, simpanProviderAI, type EnvAi } from "@/lib/d1/pengaturan";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
 import { BASE_OPENAI, baseKenari, chatOpenai, modelOpenai } from "@/lib/ai/adapterOpenai";
+import { modelOpenrouter } from "@/lib/ai/adapterOpenrouter";
 import { chatGemini, modelGemini } from "@/lib/ai/adapterGemini";
 import { tanggalWib } from "@/lib/ai/provider";
 import type { HasilHttp, HasilModel } from "@/lib/ai/http";
@@ -38,14 +48,16 @@ function teks(v: unknown): string {
 /** Tarik daftar model dari provider memakai kredensial aktif. Error provider diteruskan apa adanya. */
 async function tarikModel(db: D1Database, provider: string, kunci: string, env: EnvAi): Promise<HasilHttp<HasilModel[]>> {
   const kred = await ambilKredensial(db, provider, kunci);
+  // OpenRouter: /models publik — tetap jalan tanpa kredensial (key hanya menaikkan rate limit).
+  if (provider === "openrouter") return modelOpenrouter({ apiKey: kred?.plaintext ?? "" });
   if (!kred) return { ok: false, status: 400, error: `Provider ${provider} belum punya kredensial aktif.`, latencyMs: 0 };
   if (provider === "gemini") return modelGemini({ apiKey: kred.plaintext });
-  if (provider === "kenari") return modelOpenai({ baseUrl: baseKenari(env), apiKey: kred.plaintext });
+  if (provider === "kenari") return modelOpenai({ baseUrl: baseKenari(env), apiKey: kred.plaintext, provider });
   const baseUrl = BASE_OPENAI[provider];
   if (!baseUrl) {
     return { ok: false, status: 400, error: `Provider ${provider} tidak menyediakan endpoint daftar model.`, latencyMs: 0 };
   }
-  return modelOpenai({ baseUrl, apiKey: kred.plaintext });
+  return modelOpenai({ baseUrl, apiKey: kred.plaintext, provider });
 }
 
 export async function GET(request: Request) {
@@ -78,6 +90,10 @@ export async function GET(request: Request) {
   if (aksi === "preset") {
     return json({ ok: true, preset: await daftarPreset(db, url.searchParams.get("kategori") ?? undefined) });
   }
+  // Cakupan data kapabilitas: berapa model yang tahu modality/reasoning-nya.
+  if (aksi === "ringkas-kapabilitas") {
+    return json({ ok: true, ringkas: await ringkasKapabilitas(db, url.searchParams.get("provider") ?? undefined) });
+  }
   if (aksi === "tool") {
     return json({ ok: true, tool: await daftarTool(db) });
   }
@@ -87,7 +103,20 @@ export async function GET(request: Request) {
     const h = await tarikModel(db, provider, getKunciEnkripsi(), getEnvAi());
     if (!h.ok) return json({ ok: false, error: h.error, provider, latencyMs: h.latencyMs }, h.status >= 400 ? h.status : 502);
     const jenis = teks(url.searchParams.get("jenis")) || "teks";
-    const impor = await tambahModelBanyak(db, provider, h.data.map((m) => ({ model_id: m.id, label: m.label, jenis })));
+    const impor = await tambahModelBanyak(
+      db,
+      provider,
+      h.data.map((m) => ({
+        model_id: m.id,
+        label: m.label,
+        jenis,
+        modalMasuk: m.modalMasuk,
+        modalKeluar: m.modalKeluar,
+        reasoningSkema: m.reasoningSkema,
+        reasoningPilihan: m.reasoningPilihan,
+        reasoningHilir: m.reasoningHilir,
+      }))
+    );
     return json({ ok: true, provider, jumlah: h.data.length, ditambah: impor.ditambah, dilewati: impor.dilewati, latencyMs: h.latencyMs });
   }
   if (aksi === "pemakaian") {
@@ -198,6 +227,19 @@ export async function POST(request: Request) {
     if (!h.ok) return json({ ok: false, error: h.error }, h.status);
     return json({ ok: true });
   }
+  // Koreksi manual kapabilitas: modality + skema reasoning. Sumber jadi 'manual'
+  // supaya tarik-model berikutnya tidak menimpa koreksi user.
+  if (aksi === "model-kapabilitas") {
+    const h = await perbaruiKapabilitasModel(db, teks(body.provider), teks(body.modelId), {
+      modalMasuk: Array.isArray(body.modalMasuk) ? body.modalMasuk.map(teks).filter(Boolean) : undefined,
+      modalKeluar: Array.isArray(body.modalKeluar) ? body.modalKeluar.map(teks).filter(Boolean) : undefined,
+      reasoningSkema: typeof body.reasoningSkema === "string" ? body.reasoningSkema : undefined,
+      reasoningPilihan: Array.isArray(body.reasoningPilihan) ? body.reasoningPilihan.map(teks).filter(Boolean) : undefined,
+      reasoningHilir: typeof body.reasoningHilir === "boolean" ? body.reasoningHilir : undefined,
+    });
+    if (!h.ok) return json({ ok: false, error: h.error }, h.status);
+    return json({ ok: true });
+  }
 
   // ── Preset prompt ──
   if (aksi === "preset-tambah") {
@@ -291,7 +333,7 @@ export async function POST(request: Request) {
         : await (async () => {
             const baseUrl = provider === "kenari" ? baseKenari(getEnvAi()) : BASE_OPENAI[provider];
             if (!baseUrl) return { ok: false as const, status: 400, error: `Provider ${provider} tidak mendukung chat teks.`, latencyMs: 0 };
-            return chatOpenai({ baseUrl, apiKey: kred.plaintext, timeoutMs: 30000 }, { model, pesan, maksToken: 16 });
+            return chatOpenai({ baseUrl, apiKey: kred.plaintext, timeoutMs: 30000, provider }, { model, pesan, maksToken: 16 });
           })();
 
     const latencyMs = h.ok ? h.latencyMs : h.latencyMs || Date.now() - mulai;

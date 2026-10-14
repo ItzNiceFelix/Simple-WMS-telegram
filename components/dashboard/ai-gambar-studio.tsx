@@ -8,6 +8,7 @@ import { toast } from "sonner"
 import { Download, Plus, RefreshCw, Send, Sparkles, Trash2, Wand2 } from "lucide-react"
 
 import { KanvasAnotasi } from "@/components/dashboard/kanvas-anotasi"
+import { AiGambarSetting, muatSettingGambar, type ModelGambar, type SettingGambar } from "@/components/dashboard/ai-gambar-setting"
 import { PageHeader } from "@/components/dashboard/page-header"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -29,7 +30,6 @@ import type { AreaGambar } from "@/lib/ai/areaGambar"
 const MAKS_REFERENSI = 5
 
 type PresetPrompt = { id: number; nama: string; kategori: string; prompt: string; aktif: number }
-type ModelAi = { id: number; provider: string; model_id: string; label: string; jenis: string; aktif: number }
 type Referensi = { id: number; mime: string; base64: string; nama: string }
 type Hasil = { base64: string; mime: string; provider: string; model: string }
 
@@ -51,8 +51,8 @@ function bacaGambar(f: File): Promise<Referensi> {
 
 export function AiGambarStudio() {
   const [preset, setPreset] = useState<PresetPrompt[]>([])
-  const [model, setModel] = useState<ModelAi[]>([])
-  const [modelGambar, setModelGambar] = useState<string>("")
+  const [model, setModel] = useState<ModelGambar[]>([])
+  const [setting, setSetting] = useState<SettingGambar | null>(null)
   const [prompt, setPrompt] = useState("")
   const [referensi, setReferensi] = useState<Referensi[]>([])
   const [hasil, setHasil] = useState<Hasil | null>(null)
@@ -65,15 +65,13 @@ export function AiGambarStudio() {
   const muat = useCallback(async () => {
     setMemuat(true)
     try {
-      const [r1, r2] = await Promise.all([
-        fetch("/api/pengaturan/ai?aksi=preset", { credentials: "include" }),
-        fetch("/api/pengaturan/ai?aksi=model&jenis=gambar", { credentials: "include" }),
-      ])
+      const r1 = await fetch("/api/pengaturan/ai?aksi=preset", { credentials: "include" })
       const d1 = (await r1.json().catch(() => null)) as { ok?: boolean; preset?: PresetPrompt[]; error?: string } | null
       if (!r1.ok || !d1?.ok) throw new Error(d1?.error ?? `Gagal memuat preset (${r1.status}).`)
       setPreset((d1.preset ?? []).filter((p) => p.aktif === 1))
-      const d2 = (await r2.json().catch(() => null)) as { ok?: boolean; model?: ModelAi[] } | null
-      if (d2?.ok) setModel((d2.model ?? []).filter((m) => m.aktif === 1))
+      const d = await muatSettingGambar()
+      setSetting(d.setting)
+      setModel(d.model)
     } catch (e) {
       tampilkanGagalTulis(e instanceof Error ? e.message : "Gagal memuat pengaturan gambar.")
     } finally {
@@ -119,7 +117,11 @@ export function AiGambarStudio() {
           prompt: p,
           referensi: referensi.length > 0 ? referensi.map((r) => r.base64) : undefined,
           mimeReferensi: referensi[0]?.mime ?? "image/jpeg",
-          modelGambar: modelGambar || undefined,
+          provider: setting?.provider || undefined,
+          modelGambar: setting?.model_id || undefined,
+          reasoning: setting?.reasoning || undefined,
+          aspek_rasio: setting?.aspek_rasio || undefined,
+          jumlah: setting?.jumlah ?? undefined,
           anotasi: anotasi.length > 0 ? anotasi : undefined,
         }),
       })
@@ -258,7 +260,12 @@ export function AiGambarStudio() {
             )}
           </div>
 
-          <Card className="h-fit">
+          <div className="flex h-fit flex-col gap-4">
+            <AiGambarSetting
+              awal={setting ? { setting, model } : null}
+              onBerubah={setSetting}
+            />
+            <Card className="h-fit">
             <CardHeader>
               <CardTitle>Referensi (maks {MAKS_REFERENSI})</CardTitle>
               <CardDescription>
@@ -321,6 +328,7 @@ export function AiGambarStudio() {
               )}
             </CardContent>
           </Card>
+          </div>
         </div>
 
         <Card>
@@ -336,29 +344,6 @@ export function AiGambarStudio() {
                 data-testid="prompt-gambar"
               />
               <FieldDescription>Klik preset di atas untuk mengisi kolom ini.</FieldDescription>
-            </Field>
-
-            <Field>
-              <FieldLabel htmlFor="model-gambar">Model gambar</FieldLabel>
-              <Select value={modelGambar} onValueChange={(v) => typeof v === "string" && setModelGambar(v)}>
-                <SelectTrigger id="model-gambar" className="h-11 w-full md:h-8" data-testid="model-gambar">
-                  <SelectValue>
-                    {(v: string | null) => (v ? (model.find((m) => m.model_id === v)?.label || v) : "Model utama pengaturan")}
-                  </SelectValue>
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectGroup>
-                    {model.map((m) => (
-                      <SelectItem key={m.id} value={m.model_id}>
-                        {m.label || m.model_id} · {m.provider}
-                      </SelectItem>
-                    ))}
-                  </SelectGroup>
-                </SelectContent>
-              </Select>
-              <FieldDescription>
-                Kosongkan untuk memakai model gambar dari halaman Pengaturan.
-              </FieldDescription>
             </Field>
 
             <div className="flex flex-wrap gap-2">

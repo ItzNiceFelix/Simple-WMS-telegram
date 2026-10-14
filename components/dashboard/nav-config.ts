@@ -10,6 +10,7 @@ import {
   Send,
   Settings,
   ShieldCheck,
+  Sparkles,
   Tag,
   Tags,
   UserRound,
@@ -45,6 +46,7 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/admin", label: "Admin", icon: ShieldCheck, roles: ["owner", "admin"] },
   { href: "/pengaturan", label: "Pengaturan", icon: Settings, roles: ["owner", "admin"], utama: true },
   { href: "/profil", label: "Profil", icon: UserRound, roles: ["owner", "admin", "guest"] },
+  { href: "/ai-gambar", label: "Studio Gambar", icon: Sparkles, roles: ["owner", "admin", "guest"] },
 ];
 
 export function itemUntukRole(role: Role): NavItem[] {

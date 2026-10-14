@@ -2,6 +2,7 @@
 // Hasil TIDAK masuk database — dikembalikan base64 ke klien, selesai di situ.
 // Pagar server: sesi + rate limit ketat (10/menit) + batas ukuran muatan 12 MB.
 import { getDb, getEnvAi, getKunciEnkripsi } from "@/lib/d1/db";
+import { ambilSettingGambar } from "@/lib/d1/aiGambarSetting";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
 import { panggilGambar, panggilTeks, type Konteks } from "@/lib/ai/provider";
 import { kalimatIdentifikasi, promptInpainting, uraikanArea, type AreaGambar } from "@/lib/ai/areaGambar";
@@ -102,7 +103,13 @@ export async function POST(request: Request) {
   if (!kunci) return json({ ok: false, error: "Kunci enkripsi AI belum diset." }, 500);
   const ctx: Konteks = { db: getDb(), kunci, env: getEnvAi() };
 
-  const modelGambar = teks(body.modelGambar);
+  // Setting per user (halaman /ai-gambar) jadi DEFAULT; body boleh menimpanya.
+  const setting = await ambilSettingGambar(ctx.db, sesi.user.tg_id);
+  const modelGambar = teks(body.modelGambar) || setting.model_id;
+  const providerPilih = teks(body.provider) || setting.provider;
+  const reasoning = teks(body.reasoning) || setting.reasoning;
+  // Rasio & jumlah dari setting; keduanya diteruskan ke adapter gambar.
+  const aspekRasio = teks(body.aspek_rasio) || setting.aspek_rasio;
   const anotasiMentah = Array.isArray(body.anotasi) ? body.anotasi.slice(0, MAKS_ANOTASI) : [];
   const anotasi = anotasiMentah.map(normalkan).filter((a): a is AreaGambar => a !== null);
 
@@ -120,6 +127,11 @@ export async function POST(request: Request) {
   const hasil = await panggilGambar(ctx, {
     prompt: promptFinal,
     referensi: referensi.length > 0 ? referensi : undefined,
+    provider: providerPilih || undefined,
+    model: modelGambar || undefined,
+    reasoning: reasoning || undefined,
+    aspekRasio: aspekRasio || undefined,
+    jumlah: Number(body.jumlah) > 0 ? Number(body.jumlah) : setting.jumlah,
   });
   if (!hasil.ok) return json({ ok: false, error: hasil.error }, hasil.status);
 
