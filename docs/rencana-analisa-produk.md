@@ -79,69 +79,108 @@ Temuan penting:
   nyata harus dari periode yang lebih panjang.
 - `ACOS`, `Efektifitas Iklan`, `Terjual Langsung` tersedia → basis ROAS nyata.
 
-### 1.3 Struktur file performa — dua lapis baris
+### 1.3 KOREKSI PENTING: SKU kita ada di TIGA kolom, bukan satu
 
-File punya **dua jenis baris**:
+Pemeriksaan awal hanya membaca kolom **`SKU Induk`** — itu **SALAH dan menyesatkan**.
+File punya **dua kolom bernama `Kode Variasi`** (posisi 3 dan 6), dan **kolom 6 berisi SKU kita**.
 
-| Jenis baris | `Nama Variasi` | `SKU Induk` | `Kode Variasi` |
+```
+[ 3] Kode Variasi      kode variasi SHOPEE      (138333482525, 251709099114, ...)
+[ 6] Kode Variasi      SKU KITA                 (001770, 1212, 0174, 0169)   <-- 218 cocok
+[ 7] SKU Induk         SKU KITA                 (100331, 1708)                <--  48 cocok
+```
+
+Kolom 3 dan 6 **berbeda total** (irisan **0**) meski namanya sama. Karena keduanya bernama
+`Kode Variasi`, pembacaan berbasis **nama kolom** tidak bisa dipakai — **harus berbasis POSISI**.
+Ini jebakan yang wajib dicatat di importer.
+
+Terukur dari file nyata:
+
+| Sumber | SKU cocok master |
+|---|---|
+| `[6] Kode Variasi` | **247 langsung** + 1 kanonik |
+| `[7] SKU Induk` | 70 langsung + 2 kanonik |
+| `[3] Kode Variasi` | 0 (memang kode Shopee) |
+| **Gabungan** | **~263 SKU**, memetakan **120 dari 624 kode produk** |
+
+Naik **5×** dibanding hanya membaca `SKU Induk` (60 kode produk).
+
+### 1.3b Dampak nyata: cakupan omset 98,3%
+
+Kesalahan membaca kolom memutuskan seluruh rencana. Perbandingan pada file nyata
+(periode 7-13 Okt):
+
+| | Hanya `SKU Induk` | Semua kolom (benar) |
+|---|---|---|
+| Kode produk terpetakan | 60 | **120** |
+| Pesanan terpetakan | ~10% | **98,3%** (3524/3585) |
+| Omzet terpetakan | — | **97,6%** (Rp 105,9 jt dari Rp 108,6 jt) |
+| Produk berpesanan yang belum terpetakan | **61** | **22** |
+
+Produk terbesar yang dulu dianggap "tak terpetakan" ternyata **punya SKU** di kolom 6:
+
+```
+28753717561  Piring Rotan Kupu-Kupu  terjual 558
+   variasi BIRU R  [6]=001770   variasi COKLAT [6]=1212
+   variasi HIJAU   [6]=0174     variasi BIRU   [6]=0169
+   (SKU Induk KOSONG di semua baris — tapi SKU ada di kolom 6)
+```
+
+Jadi **tool tanya SKU jauh lebih jarang dipakai dari dugaan**: hanya **22 produk**
+(0,4% omzet), dan yang terbesar cuma 23 pesanan / Rp 1,07 jt.
+
+### 1.3c Model varian itu SAH, bukan bentrok
+
+Satu kode produk Shopee dengan **banyak SKU** = **model varian yang benar**:
+
+```
+20076426310  Lunch Box TRI J 4in1
+   BIRU  -> 001517      PINK -> 001916
+   PUTIH -> 001917      UNGU -> 001944
+9715798028   Dispenser Beras New Modern
+   14 variasi, masing-masing punya SKU sendiri, SEMUA ada di master
+```
+
+Diperiksa juga: 35 kandidat yang namanya "tidak nyambung" ternyata **semuanya benar**,
+hanya beda gaya penulisan:
+
+```
+"Termos nasi & es motif rotan"    -> "Rice Bucket 6,5L tri J Ungu"    (produk sama)
+"Tissu Kompor Serbaguna"          -> "Beclean Warna T1000"            (merek vs deskripsi)
+"Rak Penyimpanan Makanan 4 Susun" -> "Tudung Saji 4ssn Peri"          (nama beda, produk sama)
+```
+
+**Kesimpulan: pencocokan nama TIDAK diperlukan sebagai penentu.** SKU sudah tersedia
+eksplisit dari Shopee. Nama hanya dipakai untuk **menampilkan** agar manusia mudah memilih
+saat 22 kasus itu ditanyakan.
+
+### 1.3d Struktur baris file
+
+File punya dua jenis baris:
+
+| Jenis baris | `[3] Kode Variasi` | `[6]` | `[7] SKU Induk` |
 |---|---|---|---|
-| **Induk** (produk) | `-` | **kosong** | `-` |
-| **Variasi** | `BIRU`, `HITAM`, ... | **terisi** | kode variasi |
+| **Induk** (produk) | `-` | `-` | kadang terisi, kadang `-` |
+| **Variasi** | kode Shopee | **SKU kita** | kadang terisi |
 
-Terukur: **83 baris ber-`SKU Induk`, 843 kosong.** Dari 624 Kode Produk unik, hanya
-**60 yang punya `SKU Induk`** di salah satu barisnya.
+Konsekuensi: pemetaan **WAJIB mengumpulkan dari SELURUH baris** per `Kode Produk`,
+tidak boleh membaca per baris. Angka pesanan/omzet hanya ada di baris **induk** —
+jadi penggabungan harus hati-hati agar tidak menghitung ganda.
 
-**Konsekuensi teknis:** pemetaan harus **mengumpulkan `Kode Produk → SKU Induk` dari
-SELURUH baris file**, bukan membaca per baris. Produk yang SKU Induk-nya hanya muncul
-di baris variasi tetap bisa dipetakan — asalkan dikumpulkan dulu.
+### 1.4 Bahaya SKU kembar di master (masih relevan)
 
-### 1.3b Yang lebih penting: 61 produk berterjual TANPA SKU Induk
-
-Dari 564 Kode Produk tanpa `SKU Induk`, **61 di antaranya benar-benar berterjual** —
-dan itu justru produk yang paling besar:
-
-```
-28753717561  Piring Rotan Kupu-Kupu     terjual 558   dilihat 362.653
-20076426310  Lunch Box TRI J 4in1       terjual 541   dilihat 302.615
-28566565639  Rak sepatu ASTER 4 Susun   terjual 242   dilihat  59.660
-6261211167   Tisu Kompor BeClean 1kg    terjual 237   dilihat  28.332
-9715798028   Dispenser Beras New Modern terjual 138   dilihat  79.496
-54964139911  Lemari Plastik 4 Susun     terjual  23   dilihat  26.903
-```
-
-**Ini masalah serius:** produk dengan penjualan & tayangan terbesar justru **tidak bisa
-dipetakan otomatis** ke master, karena induknya tidak punya SKU Induk di file.
-
-Sisanya (485) hanya dilihat tanpa terjual — tidak mendesak.
-
-**Kesimpulan: tool tanya SKU BUKAN pelengkap, tapi WAJIB** — dan dipakai justru untuk
-produk paling penting. Ini memvalidasi usulan user.
-
-### 1.4 Sisa masalah: SKU Induk tidak selalu cocok langsung
-
-Dari **60 SKU Induk** yang ditemukan:
-
-```
-48  cocok LANGSUNG dengan master          (80%)
- 2  cocok setelah kanonik (buang nol depan)
-10  tetap tidak cocok:
-      1777, GYG-ISADX, FYP-MSP, 0227, 0229, 1459, 0813,
-      RCB-12KIMP, TGS-130DIS, 001522
-```
-
-**Bahaya yang terbukti — 79 grup SKU "kembar" di master kita:**
+Meski cakupan 98%, **79 grup SKU "kembar"** tetap ada di master dan tetap berbahaya
+bila suatu saat dipakai untuk pencocokan longgar:
 
 ```
 1203     Alas Setrika uk.3x45x90          ⟷  001203  Pampers Cilukba Pants uk. XL
 1620     Kaca Cetakan 7/8 Lubang          ⟷  001620  tudung saji 4ssn tri j peri glowing biru
 1124     Waskom 10 Super -T               ⟷  001124  Botol Kaca Kaktus No Box
-1126     (SKU/01126) Bangku Pendek 2 CHT  ⟷  001126  Botol Kaca Six Oup Logo
 ```
 
-**Produk yang sama sekali berbeda.** Mencocokkan dengan "buang nol depan" saja akan
-menyambungkan keduanya — dan biaya iklan/analisa masuk ke produk yang salah.
-
-**Inilah satu-satunya alasan tool tanya SKU dibutuhkan**, dan hanya untuk kasus ini.
+Karena pemetaan sekarang **eksplisit lewat SKU** (bukan tebakan), grup ini **tidak
+berbahaya**. Yang berbahaya hanya bila seseorang menambahkan pencocokan "buang nol depan"
+di masa depan — karena itu **aturan kanonik longgar DILARANG** (§2.4).
 
 ---
 
@@ -156,31 +195,30 @@ Alasan dipersempit: chatbot bebas berarti user tidak tahu kapan harus dipanggil,
 jawaban bebas sulit diverifikasi. Pertanyaan tertutup dengan kandidat bisa diuji,
 diaudit, dan dijawab cepat.
 
-### 2.2 Kapan muncul (empat pemicu, semuanya pasti)
+### 2.2 Kapan muncul (dua pemicu, angkanya terukur)
 
-Diukur dari file nyata:
+Diukur pada file nyata: cakupan **98,3% pesanan / 97,6% omzet sudah beres tanpa bertanya.**
+Pertanyaan hanya untuk sisa kecil:
 
 ```
-Pemicu 1  Kode Produk BERterjual tapi tidak punya SKU Induk
-          61 produk, termasuk 6 terbesar (558, 541, 242, 237, 138, 23 pesanan)
-          → tanya: "Produk ini terjual 558 tapi belum ada padanannya. Pilih produknya."
+Pemicu 1  Kode Produk BERPESANAN tanpa SKU di ketiga kolom ( [3]/[6]/[7] )
+          22 produk — terbesar 23 pesanan (Rp 1,07 jt), sisanya 1-12 pesanan
+          → tanya: "Produk ini terjual 23 kali tapi belum punya padanan. Pilih produknya."
 
-Pemicu 2  SKU Induk ada di master, TAPI kanoniknya bertabrakan (79 grup kembar)
-          → tanya: "SKU '1620' bisa berarti 2 produk berbeda. Yang mana?"
-             [1620   Kaca Cetakan 7/8 Lubang Happycall Gold]
-             [001620 tudung saji 4ssn tri j peri glowing biru]
-             [bukan keduanya]
-
-Pemicu 3  SKU Induk tidak ada di master sama sekali (10 dari 60)
+Pemicu 2  SKU ditemukan tapi TIDAK ADA di master
           → tanya: "SKU '1777' tidak ada di master. Pilih tindakan."
              [ tambah produk baru ]  [ petakan ke produk lain ]  [ bukan produk kita ]
-
-Pemicu 4  Kode Produk di file iklan tidak ada di file performa
-          → tanya: sama seperti pemicu 1
 ```
 
-**Urutan prioritas pertanyaan: pemicu 1 lebih dulu** — itu produk dengan penjualan
-terbesar, jadi salah petanya paling merugikan.
+**Pemicu lama yang DIBATALKAN** (karena tidak lagi perlu):
+
+- ~~SKU kembar/kanonik bentrok~~ → pemetaan sekarang **eksplisit** dari SKU, bukan
+  tebakan, jadi 79 grup kembar tidak berbahaya (§1.4).
+- ~~Kode produk iklan tak ada di performa~~ → file iklan memuat `Kode Produk` yang
+  sama; bila tidak ketemu, itu jatuh ke pemicu 1.
+
+**Kandidat tetap ditampilkan** (nama Shopee + variasi + jumlah terjual) agar keputusan
+cepat, tapi **hanya sebagai tampilan** — bukan dasar pemetaan.
 
 ### 2.3 Bentuk dialog
 
@@ -200,15 +238,20 @@ Satu baris = satu keputusan. Dijawab sekali, **tersimpan**, tidak pernah ditanya
 
 ### 2.4 Aturan yang mengikat
 
+- **Pemetaan HANYA lewat SKU eksplisit** dari kolom `[6]` dan `[7]`. Tidak ada pencocokan
+  nama sebagai penentu.
+- **DUA-DUANYA HARUS COCOK PERSIS** (setelah trim + uppercase) dengan `products.sku`.
+  Tidak ada normalisasi longgar.
+- **Kanonik longgar (buang nol depan / awalan `SKU/`) DILARANG.** Terbukti berbahaya:
+  `1203` ≠ `001203` (§1.4). Bila perlu penyamaan, itu **harus** jadi pertanyaan ke user.
 - **Sistem TIDAK PERNAH menebak.** Tidak ada auto-pilih, tidak ada "kandidat terbaik".
-  Kandidat hanya **diurutkan** (dari mesin `cariProdukByNama.js` yang sudah ada) untuk
-  mempercepat mata manusia.
-- **Data tidak dipakai sebelum dijawab.** Baris yang belum diputuskan **dikeluarkan**
-  dari analisa, dan jumlahnya dilaporkan ("4 baris belum dipetakan, tidak dihitung").
-  Bukan dihitung dengan asumsi.
-- **Jawaban bisa diubah** (manusia salah pilih) → analisa dihitung ulang.
-- **Kandidat ditampilkan dengan bukti**: nama + SKU + (bila ada) jumlah terjual, supaya
-  keputusan bisa diambil dalam detik.
+- **Data tidak dipakai sebelum dijawab.** Baris yang belum diputuskan **dikeluarkan** dari
+  analisa, dan jumlahnya dilaporkan ("22 baris belum dipetakan, tidak dihitung").
+  Bukan dihitung dengan asumsi, bukan juga dibuang diam-diam.
+- **Jawaban tersimpan permanen** per `Kode Produk`; tidak pernah ditanya lagi.
+- **Importer membaca kolom berdasarkan POSISI**, bukan nama — karena ada dua kolom
+  bernama `Kode Variasi` (§1.3). Nama kolom di header dipakai sebagai **pemeriksa**
+  (memastikan file tidak bergeser), bukan sebagai dasar pengambilan nilai.
 
 ### 2.5 Kenapa ini bukan "AI tool"
 
@@ -243,28 +286,34 @@ boleh ada bagian yang tidak bisa ditelusuri.
 ## 4. Skema — satu migrasi
 
 ```
--- Jembatan Kode Produk Shopee → SKU kita. Diisi dari file Performa (fakta Shopee).
+-- Jembatan Kode Produk Shopee → daftar SKU kita. Diisi dari file Performa (fakta Shopee).
+-- Satu Kode Produk bisa punya BANYAK SKU (model varian sah — mis. Dispenser Beras 14 variasi).
 CREATE TABLE shopee_produk (
-  kode_produk TEXT PRIMARY KEY,          -- ID produk Shopee
-  sku TEXT,                              -- products.sku; NULL = belum diputuskan
-  nama_shopee TEXT,                      -- untuk ditampilkan saat bertanya
-  sumber TEXT NOT NULL DEFAULT 'performa' CHECK (sumber IN ('performa','manual')),
-  diputuskan_at INTEGER, diputuskan_oleh TEXT,
-  at INTEGER NOT NULL DEFAULT (unixepoch())
+  kode_produk TEXT NOT NULL,             -- ID produk Shopee
+  sku TEXT NOT NULL,                     -- products.sku
+  variasi TEXT,                          -- nama variasi (untuk tampilan)
+  kode_variasi_shopee TEXT,              -- kolom [3], untuk jejak
+  sumber_kolom TEXT NOT NULL,            -- 'KodeVariasi6' | 'SKUInduk7' | 'manual'
+  nama_shopee TEXT,                      -- nama produk Shopee (tampilan)
+  at INTEGER NOT NULL DEFAULT (unixepoch()),
+  PRIMARY KEY (kode_produk, sku)
 );
 CREATE INDEX idx_shopee_produk_sku ON shopee_produk(sku);
 
 -- Keputusan tak-pasti: satu baris per pertanyaan yang menunggu jawaban manusia.
 CREATE TABLE peta_putusan (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  jenis TEXT NOT NULL CHECK (jenis IN ('produk_baru','sku_kembar','tanpa_padanan')),
-  acuan TEXT NOT NULL,                   -- kode_produk / sku shopee yang dipertanyakan
+  jenis TEXT NOT NULL CHECK (jenis IN ('tanpa_sku','sku_tak_ada_master')),
+  acuan TEXT NOT NULL,                   -- kode_produk yang dipertanyakan
+  nama_shopee TEXT,                      -- untuk ditampilkan saat bertanya
+  pesanan INTEGER NOT NULL DEFAULT 0,    -- bobot prioritas
   kandidat_json TEXT NOT NULL DEFAULT '[]',
   diputuskan_sku TEXT,                   -- hasil; '' = bukan produk kita
   diputuskan_at INTEGER, diputuskan_oleh TEXT,
   at INTEGER NOT NULL DEFAULT (unixepoch()),
   UNIQUE (jenis, acuan)
 );
+CREATE INDEX idx_peta_putusan_belum ON peta_putusan(jenis, acuan) WHERE diputuskan_at IS NULL;
 
 -- Biaya iklan PER PRODUK per tanggal.
 CREATE TABLE ads_produk (
@@ -383,13 +432,17 @@ Bila model tidak mendukung → **dicatat sebagai peringatan**, tidak diam-diam t
 | **T1** | `lib/analisa/hitung.ts` + uji (data yang sudah ada) | 5 angka cocok dengan SQL langsung |
 | **T2** | API GET + halaman (analisa cepat) | temuan nyata dari 3 snapshot tampil |
 | **T3** | Ganti menu "Kata Kunci" → "Analisa"; **hapus** halaman kata-kunci + `kamus.ts` + `catatKeyword` + `konfirmasiKeyword` | grep bersih |
-| **T4** | Migrasi + importer performa xlsx + peta `Kode Produk → SKU` | 48/60 cocok langsung; sisanya jadi pertanyaan |
-| **T5** | **Tool tanya SKU** + deteksi 3 pemicu + UI "Perlu Keputusan" | 12 SKU tak cocok jadi 12 keputusan jelas |
+| **T4** | Migrasi + importer performa xlsx (**baca kolom POSISI 6 & 7**) + peta `Kode Produk → SKU` | 120/624 kode produk terpetakan; **98,3% pesanan / 97,6% omzet** |
+| **T5** | **Tool tanya SKU** + 2 pemicu + UI "Perlu Keputusan" | hanya **22 produk** jadi pertanyaan; sisanya otomatis |
 | **T6** | Importer CSV iklan + `ads_produk` | biaya iklan nyata masuk per SKU |
 | **T7** | ROAS impas + tab Saran Iklan + baris keterbatasan | angka impas cocok hitung tangan |
 | **T8** | `lib/analisa/ai.ts` + tombol "Analisa mendalam" + reasoning global | narasi memuat angka benar + menyebut data kurang |
 
-T4 sebelum T5: pemetaan 80% cocok **tanpa bertanya**; pertanyaan hanya untuk 20% sisanya.
+T4 harus memakai **posisi kolom**, bukan nama: ada dua kolom bernama `Kode Variasi`,
+dan yang berisi SKU kita adalah **posisi 6**. Salah baca = cakupan jatuh dari 98% ke 10%.
+Header dipakai sebagai **pemeriksa** (memastikan file tidak bergeser), bukan sumber nilai.
+
+T4 sebelum T5: 98% selesai tanpa bertanya; pertanyaan hanya untuk 22 produk sisanya.
 T5 sebelum T7: tanpa SKU yang benar, saran iklan salah sasaran.
 
 ---
