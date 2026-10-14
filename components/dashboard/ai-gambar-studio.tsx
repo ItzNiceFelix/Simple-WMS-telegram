@@ -24,6 +24,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { EditorDesain } from "@/components/dashboard/editor-desain"
 import { tampilkanGagalTulis } from "@/components/dashboard/umpan-tulis"
 import type { AreaGambar } from "@/lib/ai/areaGambar"
 
@@ -56,6 +58,8 @@ export function AiGambarStudio() {
   const [prompt, setPrompt] = useState("")
   const [referensi, setReferensi] = useState<Referensi[]>([])
   const [hasil, setHasil] = useState<Hasil | null>(null)
+  // Default "generate": perilaku lama tidak berubah bagi user yang tidak menyentuh tab.
+  const [tabAktif, setTabAktif] = useState("generate")
   const [area, setArea] = useState<AreaGambar[]>([])
   const [mengirim, setMengirim] = useState(false)
   const [mengirimTg, setMengirimTg] = useState(false)
@@ -197,6 +201,20 @@ export function AiGambarStudio() {
         judul="Studio Gambar Produk"
         deskripsi="Buat atau revisi foto produk untuk listing marketplace."
       />
+
+      {/* Dua mode: Generate (perilaku lama, tetap default) + Editor (kanvas editable).
+          Tab disimpan di state sederhana supaya mode lama tidak berubah perilakunya. */}
+      <Tabs value={tabAktif} onValueChange={(v) => typeof v === "string" && setTabAktif(v)} className="gap-4">
+        <TabsList data-testid="tab-studio-gambar">
+          <TabsTrigger value="generate" data-testid="tab-generate">Generate</TabsTrigger>
+          <TabsTrigger value="editor" data-testid="tab-editor">Editor</TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="editor" className="flex flex-col gap-4">
+          <EditorDesain />
+        </TabsContent>
+
+        <TabsContent value="generate" className="flex flex-col gap-4">
 
       <div className="flex flex-col gap-4">
         <Card>
@@ -388,6 +406,8 @@ export function AiGambarStudio() {
           </CardContent>
         </Card>
       </div>
+        </TabsContent>
+      </Tabs>
     </>
   )
 }
