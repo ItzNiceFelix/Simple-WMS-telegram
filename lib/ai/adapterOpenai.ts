@@ -317,6 +317,13 @@ export async function gambarOpenai(
   }
 
   // Multipart: provider OpenAI-compatible menerima berkas "image" + field prompt/model.
+  //
+  // MASALAH YANG DIPERBAIKI: sebelumnya berkas ke-2 dst. dikirim sebagai `image[0]`,
+  // `image[1]`, ... Kenari menolaknya dengan "field 'image' is required" (HTTP 400) —
+  // jadi MUSTAHIL mengirim lebih dari satu referensi, walau UI mengizinkan 5.
+  // Nama field diulang dengan nama yang SAMA adalah cara standar multipart mengirim
+  // daftar berkas, dan itu yang diterima Kenari/OpenAI. Diverifikasi lewat uji nyata:
+  // 1 referensi lolos, 2+ gagal "field 'image' is required".
   const form = new FormData();
   form.set("model", minta.model);
   form.set("prompt", minta.prompt);
@@ -325,13 +332,36 @@ export async function gambarOpenai(
     const bytes = new Uint8Array(new ArrayBuffer(biner.length));
     for (let j = 0; j < biner.length; j++) bytes[j] = biner.charCodeAt(j);
     const ext = r.mime.split("/")[1] ?? "png";
-    form.append(referensi.length > 1 ? `image[${i}]` : "image", new Blob([bytes], { type: r.mime }), `referensi-${i + 1}.${ext}`);
+    form.append("image", new Blob([bytes], { type: r.mime }), `referensi-${i + 1}.${ext}`);
   }
   const h = await panggilJson<{ data?: { b64_json?: string; url?: string }[]; error?: unknown; message?: unknown }>(
     `${base}/images/edits`,
     { method: "POST", headers: { Authorization: `Bearer ${opsi.apiKey}` }, body: form },
     { timeoutMs: opsi.timeoutMs }
   );
+  // Sebagian provider hanya menerima `image[]` (bukan `image` berulang) untuk banyak gambar.
+  // Bila provider menolak karena field-nya, ulangi sekali dengan nama itu. Hanya dilakukan
+  // saat ada >1 referensi — dengan satu gambar `image` sudah pasti benar.
+  if (!h.ok && referensi.length > 1 && /field .?image/i.test(h.error)) {
+    const form2 = new FormData();
+    form2.set("model", minta.model);
+    form2.set("prompt", minta.prompt);
+    for (const [i, r] of referensi.entries()) {
+      const biner = atob(r.base64);
+      const bytes = new Uint8Array(new ArrayBuffer(biner.length));
+      for (let j = 0; j < biner.length; j++) bytes[j] = biner.charCodeAt(j);
+      const ext = r.mime.split("/")[1] ?? "png";
+      form2.append("image[]", new Blob([bytes], { type: r.mime }), `referensi-${i + 1}.${ext}`);
+    }
+    const h2 = await panggilJson<{ data?: { b64_json?: string; url?: string }[]; error?: unknown; message?: unknown }>(
+      `${base}/images/edits`,
+      { method: "POST", headers: { Authorization: `Bearer ${opsi.apiKey}` }, body: form2 },
+      { timeoutMs: opsi.timeoutMs }
+    );
+    if (h2.ok) return bacaHasilGambar(h2.data, h2.latencyMs, opsi.apiKey);
+    // Dua-duanya gagal: laporkan yang PERTAMA karena itu bentuk yang kita pilih sengaja.
+    return h;
+  }
   if (!h.ok) return h;
   return bacaHasilGambar(h.data, h.latencyMs, opsi.apiKey);
 }
