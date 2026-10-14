@@ -85,7 +85,6 @@ function DaftarStok() {
   const [rows, setRows] = useState<StockRow[] | null>(null);
   const [gudang, setGudang] = useState<GudangDoc[]>([]);
   const [gudangId, setGudangId] = useState<string>("SEMUA");
-  const [hanyaOnline, setHanyaOnline] = useState(true);
   const [pesanError, setPesanError] = useState<string | null>(null);
   const [cari, setCari] = useState("");
   const [filter, setFilter] = useState<Filter>("semua");
@@ -116,15 +115,18 @@ function DaftarStok() {
     setPesanError(null);
     setRows(null);
     try {
+      // is_online sengaja TIDAK dikirim: halaman stok menampilkan SEMUA produk, online
+      // maupun non-online. Dulu ada toggle "Hanya produk online" yang default AKTIF, sehingga
+      // 692 dari 1174 produk (termasuk hasil sinkron Kledo) tersembunyi DAN tidak ketemu
+      // walau dicari — sebab filter online dipasang server-side, bukan di klien.
       const f: StockFilter = {
         gudang_id: gudangId === "SEMUA" ? null : gudangId,
-        is_online: hanyaOnline ? true : "semua",
       };
       setRows(await data.listStock(f));
     } catch (e) {
       setPesanError(e instanceof Error ? e.message : "Gagal memuat daftar stok.");
     }
-  }, [data, gudangId, hanyaOnline]);
+  }, [data, gudangId]);
 
   useEffect(() => {
     void muat();
@@ -292,18 +294,6 @@ function DaftarStok() {
               </SelectContent>
             </Select>
           </Field>
-
-          <ToggleGroup
-            variant="outline"
-            value={hanyaOnline ? ["on"] : []}
-            onValueChange={(v) => setHanyaOnline(v.includes("on"))}
-            aria-label="Filter produk online"
-            data-testid="filter-online-stok"
-          >
-            <ToggleGroupItem value="on" className="h-11 md:h-8" data-testid="toggle-hanya-online">
-              Hanya produk online
-            </ToggleGroupItem>
-          </ToggleGroup>
         </div>
 
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">

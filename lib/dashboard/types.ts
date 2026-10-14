@@ -94,11 +94,12 @@ export interface StockRow {
   go_override?: string | null;
 }
 
-/** v5 (F9): filter listStock. Default is_online=true; gudang_id untuk scope. */
+/** v5 (F9): filter listStock. gudang_id untuk scope; is_online HANYA bila caller memang
+ *  minta menyaring (default: tampilkan semua produk, online maupun non-online). */
 export interface StockFilter {
   /** Filter satu gudang (nilai dari qty_per_gudang[key]). null = tanpa filter gudang. */
   gudang_id?: string | null;
-  /** true = hanya produk online; "semua" = jangan filter. Default true. */
+  /** true = hanya produk online; "semua" = jangan filter. Tidak diisi = jangan filter. */
   is_online?: boolean | "semua";
   /** Sertakan produk tanpa dokumen stock (qty null). */
   sertakan_tanpa_gudang?: boolean;

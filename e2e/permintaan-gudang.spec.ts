@@ -1,6 +1,11 @@
 import { test, expect, type Page } from "@playwright/test";
 
-// v5 F9: filter stok per gudang + toggle online. F8: toggle is_online dari dashboard.
+// v5 F9: filter stok per gudang. F8: toggle is_online dari dashboard.
+//
+// Filter "Hanya produk online" DIHAPUS (keputusan 2026-10-14): halaman stok harus
+// menampilkan SEMUA produk. Filter itu dulu default AKTIF, sehingga 692 dari 1174 produk
+// (termasuk hasil sinkron Kledo) tersembunyi dari daftar DAN dari pencarian — sebab
+// penyaringannya dilakukan server-side, bukan di klien. Uji di bawah mengunci perilaku baru.
 
 async function bukaStok(page: Page, role: "owner" | "admin" | "guest" = "owner") {
   await page.goto(`/?role=${role}`);
@@ -8,18 +13,11 @@ async function bukaStok(page: Page, role: "owner" | "admin" | "guest" = "owner")
   await expect(page.getByRole("heading", { name: "Stok", level: 1 })).toBeVisible();
 }
 
-test.describe("H2 Stok - filter gudang + online (v5 F9)", () => {
-  test("kontrol filter online ada dan default aktif", async ({ page }) => {
+test.describe("H2 Stok - filter gudang (v5 F9)", () => {
+  test("filter online sudah tidak ada lagi", async ({ page }) => {
     await bukaStok(page, "owner");
-    await expect(page.getByTestId("filter-online-stok")).toBeVisible();
-  });
-
-  test("melepas filter online menampilkan lebih banyak baris", async ({ page }) => {
-    await bukaStok(page, "owner");
-    const sebelum = await page.getByTestId(/^baris-/).count();
-    await page.getByTestId("filter-online-stok").click();
-    const sesudah = await page.getByTestId(/^baris-/).count();
-    expect(sesudah).toBeGreaterThanOrEqual(sebelum);
+    await expect(page.getByTestId("filter-online-stok")).toHaveCount(0);
+    await expect(page.getByTestId("toggle-hanya-online")).toHaveCount(0);
   });
 
   test("dropdown filter gudang tersedia", async ({ page }) => {
@@ -29,30 +27,23 @@ test.describe("H2 Stok - filter gudang + online (v5 F9)", () => {
 
   test("guest dapat melihat stok (read lintas gudang, R5)", async ({ page }) => {
     await bukaStok(page, "guest");
-    await expect(page.getByTestId("filter-online-stok")).toBeVisible();
+    await expect(page.getByTestId("filter-gudang-stok")).toBeVisible();
+    await expect(page.getByTestId(/^baris-/).first()).toBeVisible();
   });
 
-  test("toggle online tidak terlihat untuk guest", async ({ page }) => {
+  test("toggle online per baris tidak terlihat untuk guest", async ({ page }) => {
     await bukaStok(page, "guest");
     await expect(page.getByTestId(/^toggle-online-/)).toHaveCount(0);
   });
 
-  test("owner melihat kontrol toggle online", async ({ page }) => {
+  test("owner melihat kontrol toggle online per baris", async ({ page }) => {
     await bukaStok(page, "owner");
     await expect(page.locator('[data-testid^="toggle-online-"]:visible').first()).toBeVisible();
   });
 
-  test("kombinasi filter gudang + online tidak error", async ({ page }) => {
+  test("daftar stok memuat tanpa error", async ({ page }) => {
     await bukaStok(page, "owner");
-    await expect(page.getByTestId("filter-gudang-stok")).toBeVisible();
-    await expect(page.getByTestId("filter-online-stok")).toBeVisible();
     await expect(page.locator("body")).not.toContainText("Gagal memuat");
-  });
-
-  test("perubahan filter tidak merusak tabel (baris tetap ada)", async ({ page }) => {
-    await bukaStok(page, "owner");
-    await page.getByTestId("filter-online-stok").click();
-    await page.getByTestId("filter-online-stok").click();
     await expect(page.getByTestId(/^baris-/).first()).toBeVisible();
   });
 });
