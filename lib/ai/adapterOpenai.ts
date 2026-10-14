@@ -5,7 +5,7 @@
 // Semua kegagalan diteruskan apa adanya — pemanggil (provider.ts) yang memutuskan
 // pindah model/provider.
 
-import { panggilJson, pesanServer, type BagianChat, type HasilHttp, type HasilModel, type JawabanChat, type PermintaanChat } from "./http";
+import { panggilJson, type BagianChat, type HasilHttp, type HasilModel, type JawabanChat, type PermintaanChat } from "./http";
 import { normalkanModal, normalkanPilihanReasoning } from "./kapabilitas";
 
 import { terapkanReasoning } from "./reasoning";
@@ -208,6 +208,62 @@ export function providerKaya(provider: string): boolean {
   return PROVIDER_KAYA.has(String(provider ?? "").trim().toLowerCase());
 }
 
+/**
+ * Baca gambar dari respons provider, toleran terhadap TIGA bentuk yang nyata dipakai:
+ *   1. `b64_json` — OpenAI klasik.
+ *   2. `url` berisi DATA URL (`data:image/png;base64,iVBOR...`) — dipakai Kenari dan
+ *      sebagian provider OpenAI-compatible.
+ *   3. `url` biasa (http) — perlu diunduh dulu.
+ *
+ * Sebelumnya hanya bentuk 1 yang dibaca, sehingga gambar Kenari dianggap gagal
+ * ("Provider tidak mengembalikan gambar") padahal gambarnya ADA di `url` sebagai
+ * data URL. Akibatnya sistem diam-diam jatuh ke model lain.
+ */
+async function bacaHasilGambar(
+  data: { data?: { b64_json?: string; url?: string }[]; error?: unknown },
+  latencyMs: number,
+  apiKey: string
+): Promise<HasilHttp<{ base64: string; mime: string }>> {
+  const item = data.data?.[0];
+  if (item?.b64_json) {
+    return { ok: true, data: { base64: item.b64_json, mime: "image/png" }, latencyMs };
+  }
+  const url = String(item?.url ?? "");
+  if (url.startsWith("data:")) {
+    // data URL: ambil mime + base64 setelah koma. Bentuk ini yang dipakai Kenari.
+    const koma = url.indexOf(",");
+    const kepala = url.slice(5, koma); // mis. "image/png;base64"
+    const mime = kepala.split(";")[0] || "image/png";
+    const b64 = koma > 0 ? url.slice(koma + 1) : "";
+    if (!b64) {
+      return { ok: false, status: 502, error: "Provider mengirim data URL tanpa isi.", latencyMs };
+    }
+    return { ok: true, data: { base64: b64, mime }, latencyMs };
+  }
+  if (url) {
+    // URL http: unduh isinya. Sebagian provider hanya memberi tautan sementara.
+    try {
+      const res = await fetch(url, { headers: { Authorization: `Bearer ${apiKey}` } });
+      if (!res.ok) {
+        return { ok: false, status: 502, error: `Gagal mengunduh gambar dari ${url.slice(0, 80)} (HTTP ${res.status}).`, latencyMs };
+      }
+      const mime = res.headers.get("content-type")?.split(";")[0] || "image/png";
+      const buf = new Uint8Array(await res.arrayBuffer());
+      let biner = "";
+      for (const b of buf) biner += String.fromCharCode(b);
+      return { ok: true, data: { base64: btoa(biner), mime }, latencyMs };
+    } catch (e) {
+      return { ok: false, status: 502, error: `Gagal mengunduh gambar: ${e instanceof Error ? e.message : "tidak diketahui"}.`, latencyMs };
+    }
+  }
+  return {
+    ok: false,
+    status: 502,
+    error: `Provider tidak mengembalikan gambar: ${JSON.stringify(data).slice(0, 300)}`,
+    latencyMs,
+  };
+}
+
 /** POST /images/generations, atau /images/edits (multipart) bila ada referensi. */
 export async function gambarOpenai(
   opsi: OpsiAdapter,
@@ -236,16 +292,7 @@ export async function gambarOpenai(
       { timeoutMs: opsi.timeoutMs }
     );
     if (!h.ok) return h;
-    const b64 = h.data.data?.[0]?.b64_json;
-    if (!b64) {
-      return {
-        ok: false,
-        status: 502,
-        error: `Provider tidak mengembalikan gambar: ${h.data.data?.[0]?.url ?? JSON.stringify(h.data).slice(0, 300)}`,
-        latencyMs: h.latencyMs,
-      };
-    }
-    return { ok: true, data: { base64: b64, mime: "image/png" }, latencyMs: h.latencyMs };
+    return bacaHasilGambar(h.data, h.latencyMs, opsi.apiKey);
   }
 
   // Multipart: provider OpenAI-compatible menerima berkas "image" + field prompt/model.
@@ -265,10 +312,5 @@ export async function gambarOpenai(
     { timeoutMs: opsi.timeoutMs }
   );
   if (!h.ok) return h;
-  const b64 = h.data.data?.[0]?.b64_json;
-  if (!b64) {
-    const sisa = pesanServer(h.data);
-    return { ok: false, status: 502, error: `Provider tidak mengembalikan gambar: ${sisa.slice(0, 300)}`, latencyMs: h.latencyMs };
-  }
-  return { ok: true, data: { base64: b64, mime: "image/png" }, latencyMs: h.latencyMs };
+  return bacaHasilGambar(h.data, h.latencyMs, opsi.apiKey);
 }
