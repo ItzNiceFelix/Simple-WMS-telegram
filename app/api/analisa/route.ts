@@ -7,12 +7,16 @@
 //
 // PRINSIP: angka SELALU dari lib/analisa/hitung.ts. AI tidak pernah menghitung.
 // Karena itu endpoint `cepat` tidak menyentuh AI sama sekali.
-import { getDb } from "@/lib/d1/db";
+import { getDb, getEnvAi, getKunciEnkripsi } from "@/lib/d1/db";
 import {
   adaPerforma, ambilSnapshot, daftarPresetAnalisa, daftarTanggalSnapshot,
   petaHppMaster, petaStok, totalIklanPeriode,
 } from "@/lib/d1/analisa";
-import { json, sesiRoute } from "@/lib/d1/route";
+import { ambilPengaturanAI } from "@/lib/d1/pengaturan";
+import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
+import { imporIklan, parseIklan } from "@/lib/d1/adsProduk";
+import { petaSkuDariKodeProduk } from "@/lib/d1/shopeePeta";
+import { analisaMendalam } from "@/lib/analisa/ai";
 import {
   analisaCepat, janganDiiklankan, urutSaranIklan,
   AMBANG_MARGIN_TIPIS, type MasukanAnalisa,
@@ -112,16 +116,93 @@ export async function GET(request: Request) {
 }
 
 export async function POST(request: Request) {
-  const sesi = await sesiRoute(request, 10);
+  const sesi = await sesiRoute(request, 5);
   if (!sesi.ok) return json({ ok: false, error: sesi.error }, sesi.status);
   if (!sesi.user.is_admin) return json({ ok: false, error: "Akses ditolak." }, 403);
-  return json(
-    {
-      ok: false,
-      error:
-        "Analisa mendalam (AI) belum tersedia. Analisa cepat di halaman ini sudah lengkap dan tidak butuh AI — " +
-        "angka dihitung dari data Anda sendiri sehingga bisa diaudit.",
+
+  const db = getDb();
+  const oleh = String(sesi.user.tg_id ?? "");
+  const body = await bacaBody(request);
+  const aksi = String(body.aksi ?? "").trim();
+
+  if (aksi === "impor-iklan") {
+    const presetId = Number(body.presetId);
+    if (!Number.isInteger(presetId) || presetId <= 0) {
+      return json({ ok: false, error: "presetId wajib diisi." }, 400);
+    }
+    const teks = String(body.teks ?? "");
+    if (!teks.trim()) return json({ ok: false, error: "Isi berkas iklan kosong." }, 400);
+
+    // Peta Kode Produk → SKU dibaca dari `shopee_produk` (hasil impor Performa Produk).
+    // Tanpa peta, baris iklan tidak bisa dipastikan milik SKU mana — dan menebak lewat
+    // kemiripan nama DILARANG untuk data uang.
+    // Kode produk diambil lewat `parseIklan` (bukan split koma) karena nama iklan bisa
+    // memuat koma di dalam tanda kutip — split naif akan menggeser kolomnya.
+    const kode = [...new Set(parseIklan(teks).baris.map((b) => b.kodeProduk))];
+    const petaArr = await petaSkuDariKodeProduk(db, kode.slice(0, 500));
+    const peta = new Map<string, string>();
+    for (const [kp, daftar] of petaArr) {
+      // SKU variasi sudah didahulukan oleh query; ambil yang pertama sebagai pilihan utama.
+      if (daftar.length > 0) peta.set(kp, daftar[0].sku);
+    }
+
+    const h = await imporIklan(db, teks, presetId, oleh, peta);
+    return json(h, h.ok ? 200 : h.status);
+  }
+
+  if (aksi !== "mendalam") {
+    return json({ ok: false, error: `Aksi tidak dikenal: ${aksi || "(kosong)"}` }, 400);
+  }
+
+  // Rakit ulang masukan yang SAMA dengan endpoint cepat, supaya AI menerima angka
+  // yang persis sama dengan yang dilihat user di halaman. Kalau dihitung terpisah,
+  // narasi dan tabel bisa berbeda dan tidak ada yang tahu mana yang benar.
+  const presetId = Number(body.presetId);
+  const tanggal = String(body.tanggal ?? "").trim();
+  if (!Number.isInteger(presetId) || presetId <= 0) {
+    return json({ ok: false, error: "presetId wajib diisi." }, 400);
+  }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(tanggal)) {
+    return json({ ok: false, error: "Tanggal harus YYYY-MM-DD." }, 400);
+  }
+  const snap = await ambilSnapshot(db, presetId, tanggal);
+  if (!snap) return json({ ok: false, error: `Belum ada data laba untuk ${tanggal}.` }, 404);
+
+  const semuaTanggal = await daftarTanggalSnapshot(db, presetId);
+  const { dari, sampai } = rentangMundur(tanggal, 6);
+  const [hppMaster, stok, biayaIklan, performaAda] = await Promise.all([
+    petaHppMaster(db, snap.rincian.map((r) => r.sku)),
+    petaStok(db),
+    totalIklanPeriode(db, presetId, dari, sampai),
+    adaPerforma(db, presetId),
+  ]);
+
+  const hasil = analisaCepat({
+    presetId,
+    periode: tanggal,
+    snapshot: {
+      jml_order: snap.jml_order, omzet: snap.omzet, hpp: snap.hpp,
+      biaya: snap.biaya, pajak: snap.pajak, laba: snap.laba, rincian: snap.rincian,
     },
-    501
+    hppMaster,
+    stok,
+    biayaIklan,
+    jmlSnapshot: semuaTanggal.length,
+    adaPerforma: performaAda,
+  });
+
+  // Reasoning dari pengaturan GLOBAL (diminta user) — bukan dipaku di kode fitur.
+  const pengaturan = await ambilPengaturanAI(db, getEnvAi());
+  const hasilAi = await analisaMendalam(
+    { db, kunci: getKunciEnkripsi(), env: getEnvAi() },
+    hasil,
+    pengaturan.reasoningAnalisa
   );
+  if (!hasilAi.ok) return json({ ok: false, error: hasilAi.error }, hasilAi.status);
+
+  return json({
+    ok: true,
+    ...hasilAi.data,
+    reasoning: pengaturan.reasoningAnalisa || "(default model)",
+  });
 }

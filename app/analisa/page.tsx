@@ -8,8 +8,9 @@
 //
 // Analisa cepat langsung tampil tanpa tombol dan tanpa AI — angka benar harus selalu
 // bisa didapat tanpa menunggu model dan tanpa biaya token.
-import { useCallback, useEffect, useState } from "react";
-import { ChartNoAxesCombined, Info, Megaphone, TriangleAlert } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ChartNoAxesCombined, Info, Megaphone, Sparkles, TriangleAlert } from "lucide-react";
+import { toast } from "sonner";
 
 import { PageHeader } from "@/components/dashboard/page-header";
 import { ButuhAkses } from "@/components/dashboard/butuh-akses";
@@ -17,11 +18,13 @@ import { AnalisaPetaSku } from "@/components/dashboard/analisa-peta-sku";
 import { tampilkanGagalTulis } from "@/components/dashboard/umpan-tulis";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle,
 } from "@/components/ui/empty";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Spinner } from "@/components/ui/spinner";
 import {
   Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
@@ -119,6 +122,9 @@ function Analisa() {
   const [tanggalAda, setTanggalAda] = useState<string[]>([]);
   const [hasil, setHasil] = useState<Hasil | null>(null);
   const [iklan, setIklan] = useState<SaranIklan | null>(null);
+  const [mendalam, setMendalam] = useState<{ narasi: string; model: string; reasoning: string } | null>(null);
+  const [memuatMendalam, setMemuatMendalam] = useState(false);
+  const berkasIklanRef = useRef<HTMLInputElement>(null);
   const [memuat, setMemuat] = useState(true);
   const [memuatIklan, setMemuatIklan] = useState(false);
 
@@ -147,6 +153,9 @@ function Analisa() {
     if (!pid || !tgl) return;
     setMemuat(true);
     setIklan(null);
+    // Narasi lama dibuang: narasi itu milik periode sebelumnya. Menampilkannya bersama
+    // tabel periode baru akan membuat pembaca mengira keduanya berbicara hal yang sama.
+    setMendalam(null);
     try {
       const res = await fetch(`/api/analisa?aksi=cepat&presetId=${pid}&tanggal=${tgl}`, { credentials: "include" });
       const d = (await res.json().catch(() => null)) as Hasil | null;
@@ -178,6 +187,64 @@ function Analisa() {
       tampilkanGagalTulis(e instanceof Error ? e.message : "Gagal memuat saran iklan.");
     } finally {
       setMemuatIklan(false);
+    }
+  }
+
+  /**
+   * Analisa mendalam (AI). Sengaja di balik TOMBOL: angka benar sudah tersedia tanpa AI,
+   * dan tiap panggilan berbiaya token. Tombol membuat biaya itu keputusan sadar user.
+   */
+  async function jalankanMendalam() {
+    if (memuatMendalam || !presetId || !tanggal) return;
+    setMemuatMendalam(true);
+    try {
+      const res = await fetch("/api/analisa", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ aksi: "mendalam", presetId, tanggal }),
+      });
+      const d = (await res.json().catch(() => null)) as {
+        ok?: boolean; narasi?: string; model?: string; reasoning?: string; error?: string;
+      } | null;
+      if (!res.ok || !d?.ok || !d.narasi) throw new Error(d?.error ?? `Gagal (${res.status}).`);
+      setMendalam({ narasi: d.narasi, model: d.model ?? "—", reasoning: d.reasoning ?? "—" });
+    } catch (e) {
+      tampilkanGagalTulis(e instanceof Error ? e.message : "Analisa mendalam gagal.");
+    } finally {
+      setMemuatMendalam(false);
+    }
+  }
+
+  /** Impor CSV iklan Shopee. Perlu peta Kode Produk → SKU; tanpa peta, baris dilewati. */
+  async function unggahIklan(berkas: File) {
+    if (!presetId) {
+      toast.error("Pilih preset toko dulu.");
+      return;
+    }
+    try {
+      const teks = await berkas.text();
+      const res = await fetch("/api/analisa", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ aksi: "impor-iklan", presetId, teks }),
+      });
+      const d = (await res.json().catch(() => null)) as {
+        ok?: boolean; tersimpan?: number; dilewatiTanpaPeta?: number; kodeTanpaPeta?: string[]; error?: string;
+      } | null;
+      if (!res.ok || !d?.ok) throw new Error(d?.error ?? `Gagal mengimpor (${res.status}).`);
+      const tanpaPeta = d.dilewatiTanpaPeta ?? 0;
+      toast.success(
+        `${d.tersimpan ?? 0} baris iklan tersimpan.` +
+          (tanpaPeta > 0 ? ` ${tanpaPeta} dilewati karena produknya belum dipetakan (tab Peta SKU).` : "")
+      );
+      setIklan(null); // buang hasil lama supaya angka iklan terbaru yang dipakai
+      await muatAnalisa(presetId, tanggal);
+    } catch (e) {
+      tampilkanGagalTulis(e instanceof Error ? e.message : "Gagal mengimpor berkas iklan.");
+    } finally {
+      if (berkasIklanRef.current) berkasIklanRef.current.value = "";
     }
   }
 
@@ -280,6 +347,42 @@ function Analisa() {
                   </AlertDescription>
                 </Alert>
               ) : null}
+
+              {/* ── Analisa Mendalam (AI) — di balik tombol ── */}
+              <Card data-testid="kartu-mendalam">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Sparkles className="size-4" aria-hidden />
+                    Analisa Mendalam
+                  </CardTitle>
+                  <CardDescription>
+                    Menyusun temuan di atas menjadi bahasa awam plus prioritas tindakan. Angka tetap
+                    dari perhitungan di halaman ini — AI hanya menafsirkan, tidak menghitung ulang.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-col gap-3">
+                  <div>
+                    <Button
+                      className="h-11 md:h-8"
+                      disabled={memuatMendalam}
+                      onClick={() => void jalankanMendalam()}
+                      data-testid="tombol-mendalam"
+                    >
+                      {memuatMendalam ? <Spinner data-icon="inline-start" /> : <Sparkles className="size-4" aria-hidden />}
+                      {memuatMendalam ? "Menyusun…" : "Analisa Mendalam"}
+                    </Button>
+                  </div>
+
+                  {mendalam ? (
+                    <div className="rounded-lg border border-border bg-muted/40 p-3" data-testid="narasi-mendalam">
+                      <p className="whitespace-pre-wrap text-sm leading-relaxed">{mendalam.narasi}</p>
+                      <p className="mt-2 text-[11px] text-muted-foreground">
+                        {mendalam.model} · reasoning {mendalam.reasoning} · angka dari perhitungan di halaman ini
+                      </p>
+                    </div>
+                  ) : null}
+                </CardContent>
+              </Card>
 
               {hasil.temuan.length === 0 ? (
                 <Card data-testid="tanpa-temuan">
@@ -413,6 +516,43 @@ function Analisa() {
 
             {/* ══ TAB SARAN IKLAN ══ */}
             <TabsContent value="iklan" className="flex flex-col gap-4">
+              {/* Impor CSV iklan — supaya biaya iklan nyata bisa dipakai, bukan hanya titik impas */}
+              <Card data-testid="kartu-impor-iklan">
+                <CardHeader>
+                  <CardTitle className="text-base">Impor data iklan</CardTitle>
+                  <CardDescription>
+                    Unggah <b>Laporan Iklan</b> dari Shopee (CSV). Tanpa data ini, halaman hanya bisa
+                    menghitung titik impas teoretis — belum bisa menilai apakah iklan yang berjalan
+                    menguntungkan.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="flex flex-wrap items-center gap-3">
+                  <input
+                    ref={berkasIklanRef}
+                    type="file"
+                    accept=".csv"
+                    className="hidden"
+                    data-testid="berkas-iklan"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) void unggahIklan(f);
+                    }}
+                  />
+                  <Button
+                    variant="outline"
+                    className="h-11 md:h-8"
+                    onClick={() => berkasIklanRef.current?.click()}
+                    data-testid="tombol-pilih-iklan"
+                  >
+                    <Megaphone className="size-4" aria-hidden />
+                    Pilih berkas Iklan
+                  </Button>
+                  <span className="text-xs text-muted-foreground">
+                    Baris iklan dipetakan lewat tab <b>Peta SKU</b>; yang belum dipetakan akan dilewati.
+                  </span>
+                </CardContent>
+              </Card>
+
               {memuatIklan ? (
                 <Skeleton className="h-48 w-full rounded-xl" />
               ) : !iklan ? (
