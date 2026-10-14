@@ -10,6 +10,9 @@ export type PaketPicklist = { no_resi: string; no_pesanan: string[]; jasa_kirim:
  * Picklist PER PAKET (F18/D4): satu lembar per no_resi, daftar semua order di grup.
  * Qty per baris diambil APA ADANYA dari `order_items` (file gabungan sudah total paket)
  * — TIDAK ada agregasi ulang lintas order. Resi tanpa grup jadi paket satu-order.
+ * Order TANPA resi tetap diekspor sebagai paket sendiri (no_resi = ""): resi bisa belum
+ * terbit saat picklist dicetak, dan menggagalkan seluruh cetakan karena satu order
+ * ber-resi kosong tidak dapat diterima.
  */
 export async function buatPicklistPaket(db: D1Database, targets: PickTarget[]): Promise<Hasil<{ paket: PaketPicklist[] }>> {
   const unik = [...new Map(targets.map((t) => [`${t.mp}|${t.no}`, t])).values()];
@@ -40,8 +43,10 @@ export async function buatPicklistPaket(db: D1Database, targets: PickTarget[]): 
   for (const t of unik) {
     const no = t.no;
     const resi = grup.get(no)?.resi ?? "";
-    if (!resi) return gagal(409, `Order ${no} belum punya no resi — picklist per paket butuh resi.`);
-    let paket = paketMap.get(resi);
+    // Kunci per order bila resi kosong — pakai `""` akan menumpuk semua order tanpa
+    // resi menjadi satu paket palsu.
+    const kunci = resi || `NO-RESI:${no}`;
+    let paket = paketMap.get(kunci);
     if (!paket) {
       let noPesanan: string[] = [no];
       const g = isiGrup.get(resi);
@@ -54,7 +59,7 @@ export async function buatPicklistPaket(db: D1Database, targets: PickTarget[]): 
         }
       }
       paket = { no_resi: resi, no_pesanan: noPesanan, jasa_kirim: g?.jasa_kirim ?? "", rows: [], units: 0 };
-      paketMap.set(resi, paket);
+      paketMap.set(kunci, paket);
     }
     const items = await db
       .prepare("SELECT i.sku, p.nama_accurate AS nama, i.qty, i.variasi FROM order_items i JOIN products p ON p.sku = i.sku WHERE i.marketplace = 'shopee' AND i.no_pesanan = ?")

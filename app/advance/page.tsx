@@ -1,7 +1,7 @@
 "use client";
 
 // app/advance/page.tsx — Daftar booking Advance Fulfilment (pasokan ke Gudang Shopee, Fase E4).
-// Aksi: cetak picklist advance, kirim/batal per booking atau borongan (stok ONLINE turun saat kirim).
+// Aksi: cetak picklist advance, kirim/batal per booking atau borongan (hanya status — stok dipotong Kledo).
 import { useCallback, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { FileDown, RotateCcw, Send, XCircle } from "lucide-react";
@@ -61,8 +61,11 @@ function DaftarAdvance() {
       const res = await fetch(`/api/advance?${q}`, { credentials: "include" });
       const data = (await res.json().catch(() => null)) as { ok?: boolean; error?: string; booking?: Booking[] } | null;
       if (!res.ok || !data?.ok) throw new Error(data?.error ?? `Gagal (${res.status}).`);
-      setBooking(data.booking ?? []);
-      setTerpilih(new Set());
+      const daftar = data.booking ?? [];
+      setBooking(daftar);
+      // Buang pilihan yang tidak tampil lagi supaya aksi massal tidak mengirim booking tak terlihat.
+      const snTampil = new Set(daftar.map((b) => b.booking_sn));
+      setTerpilih((lama) => new Set([...lama].filter((sn) => snTampil.has(sn))));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Gagal memuat booking.");
     }
@@ -96,15 +99,13 @@ function DaftarAdvance() {
         credentials: "include",
         body: JSON.stringify(daftar.length === 1 ? { aksi: aksiNama, booking_sn: daftar[0] } : { aksi: `${aksiNama}-massal`, booking_sn: daftar }),
       });
-      const data = (await res.json().catch(() => null)) as { ok?: boolean; error?: string; sukses?: number; gagal?: { booking_sn: string; error: string }[]; stok_negatif?: boolean; stok_akhir?: number } | null;
+      const data = (await res.json().catch(() => null)) as { ok?: boolean; error?: string; sukses?: number; gagal?: { booking_sn: string; error: string }[] } | null;
       if (!res.ok || !data?.ok) {
         tampilkanGagalTulis(data?.error ?? `Gagal (${res.status}).`);
         return;
       }
       const jml = data.sukses ?? daftar.length;
-      if (data.stok_negatif) {
-        toast.warning(`${jml} booking ${aksiNama}, tapi stok ONLINE jadi ${data.stok_akhir}. Cek selisih fisik.`);
-      } else if (data.gagal?.length) toast.warning(`${jml} ${aksiNama}, ${data.gagal.length} gagal.`);
+      if (data.gagal?.length) toast.warning(`${jml} ${aksiNama}, ${data.gagal.length} gagal.`);
       else toast.success(`${jml} booking ${aksiNama}.`);
       await muat();
     } catch {
@@ -114,11 +115,15 @@ function DaftarAdvance() {
     }
   }
 
+  const adaBooking = (booking?.length ?? 0) > 0;
+  const semuaTerpilih = adaBooking && booking!.every((b) => terpilih.has(b.booking_sn));
+  const sebagianTerpilih = !semuaTerpilih && terpilih.size > 0;
+
   return (
     <>
       <PageHeader
         judul="Advance Fulfilment"
-        deskripsi="Booking pasokan ke Gudang Shopee. Kirim = stok ONLINE turun."
+        deskripsi="Booking pasokan ke Gudang Shopee. Kirim = booking ditandai terkirim (stok dipotong di Kledo)."
         aksi={
           <div className="flex gap-2">
             <Button size="lg" variant="outline" className="h-11 md:h-8" data-testid="picklist-advance" onClick={unduhPicklist}>
@@ -150,6 +155,16 @@ function DaftarAdvance() {
           <span className="text-sm text-muted-foreground md:ml-auto" data-testid="jumlah-dipilih-advance">
             {terpilih.size} dipilih
           </span>
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-9"
+            data-testid="pilih-semua-tombol-advance"
+            disabled={!adaBooking}
+            onClick={() => setTerpilih(semuaTerpilih ? new Set() : new Set(booking!.map((b) => b.booking_sn)))}
+          >
+            {semuaTerpilih ? "Kosongkan" : "Pilih semua"}
+          </Button>
           <Button
             size="sm"
             className="h-9"
@@ -198,7 +213,19 @@ function DaftarAdvance() {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead className="w-10">Pilih</TableHead>
+                  <TableHead className="w-10">
+                    <input
+                      type="checkbox"
+                      className="size-5 accent-primary"
+                      aria-label="Pilih semua booking"
+                      data-testid="pilih-semua-advance"
+                      checked={semuaTerpilih}
+                      ref={(el) => {
+                        if (el) el.indeterminate = sebagianTerpilih;
+                      }}
+                      onChange={() => setTerpilih(semuaTerpilih ? new Set() : new Set(booking.map((b) => b.booking_sn)))}
+                    />
+                  </TableHead>
                   <TableHead>Booking SN</TableHead>
                   <TableHead>SKU</TableHead>
                   <TableHead>Produk</TableHead>
@@ -223,7 +250,9 @@ function DaftarAdvance() {
                     <TableCell className="font-medium">{b.booking_sn}</TableCell>
                     <TableCell>{b.sku}</TableCell>
                     <TableCell>{b.nama_produk}{b.variasi ? ` · ${b.variasi}` : ""}</TableCell>
-                    <TableCell className="tabular-nums">{b.no_resi || "-"}</TableCell>
+                    <TableCell className={b.no_resi ? "tabular-nums" : "tabular-nums text-muted-foreground"} data-testid={`resi-advance-${b.booking_sn}`}>
+                      {b.no_resi || "-"}
+                    </TableCell>
                     <TableCell>
                       <Badge variant={b.status === "menunggu" ? "outline" : "secondary"}>{b.status}</Badge>
                     </TableCell>

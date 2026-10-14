@@ -11,6 +11,7 @@ const DAFTAR = {
     {
       marketplace: "shopee",
       no_pesanan: "SHP-1",
+      no_resi: "",
       tanggal: 1728288000,
       buyer: "Budi",
       status_fulfill: "pending",

@@ -196,38 +196,16 @@ describe("advance bookings", () => {
     assert.equal((await listBooking(db)).length, 2);
     assert.equal((await listBooking(db, { status: "menunggu" })).length, 1);
   });
-  it("kirimKeShopee: stok ONLINE turun + ledger kirim_advance + status terkirim", async () => {
+  it("kirimKeShopee: status jadi terkirim, stok & ledger TIDAK disentuh", async () => {
+    // Aturan 2026-10-14: potong stok dilakukan Kledo. Advance hanya menandai booking
+    // terkirim; menulis stok di sini membuat WMS dan Kledo saling membalik tiap sinkron.
     const db = mockDb({ advance: [{ booking_sn: "BS-1", sku: "A1", qty: 1, status: "menunggu", at: 1 }], stock: [{ sku: "A1", qty: 5 }] });
     const r = await kirimKeShopee(db, "BS-1", "77");
     assert.ok(r.ok);
-    assert.equal(db.stock[0].qty, 4);
-    assert.equal(db.moves[0].jenis, "kirim_advance");
-    assert.equal(db.moves[0].qty, -1);
+    assert.equal(db.stock[0].qty, 5);
+    assert.equal(db.moves.length, 0);
     assert.equal(db.advance[0].status, "terkirim");
-    // Konvensi ledger WAJIB sama dengan tulisQty: qty_sistem = SEBELUM, qty_fisik = SESUDAH, selisih = sesudah − sebelum.
-    assert.equal(db.moves[0].qty_sistem, 5);
-    assert.equal(db.moves[0].qty_fisik, 4);
-    assert.equal(db.moves[0].selisih, -1);
-    assert.equal(r.ok === true && r.stok_negatif, false);
-    assert.equal(r.ok === true && r.stok_akhir, 4);
-  });
-  it("kirimKeShopee izinkan stok negatif TAPI beri sinyal stok_negatif (keputusan I1: stok negatif = fitur)", async () => {
-    const db = mockDb({ advance: [{ booking_sn: "BS-1", sku: "A1", qty: 1, status: "menunggu", at: 1 }], stock: [{ sku: "A1", qty: 0 }] });
-    const r = await kirimKeShopee(db, "BS-1", "77");
-    assert.ok(r.ok, "kirim advance TIDAK diblokir walau stok kurang — booking sudah dibukukan di Shopee");
-    assert.equal(db.stock[0].qty, -1);
-    assert.equal(r.ok === true && r.stok_negatif, true);
-    assert.equal(r.ok === true && r.stok_akhir, -1);
-    assert.equal(db.moves[0].qty_sistem, 0);
-    assert.equal(db.moves[0].qty_fisik, -1);
-    assert.equal(db.moves[0].selisih, -1);
-  });
-  it("kirimKeShopee SKU tanpa baris stock_by_bin → baris dibuat, tetap sinyal negatif", async () => {
-    const db = mockDb({ advance: [{ booking_sn: "BS-1", sku: "A1", qty: 1, status: "menunggu", at: 1 }] });
-    const r = await kirimKeShopee(db, "BS-1", "77");
-    assert.ok(r.ok);
-    assert.equal(db.stock[0].qty, -1);
-    assert.equal(r.ok === true && r.stok_negatif, true);
+    assert.equal(r.ok === true && r.qty, 1);
   });
   it("kirimKeShopee tolak 409 bila sudah terkirim/batal", async () => {
     const db = mockDb({ advance: [{ booking_sn: "BS-1", sku: "A1", qty: 1, status: "terkirim", at: 1 }], stock: [{ sku: "A1", qty: 5 }] });

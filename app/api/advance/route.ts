@@ -1,6 +1,6 @@
 // app/api/advance/route.ts — Fase C3: daftar booking Advance + kirim/batal + picklist PDF.
 // GET  ?aksi=daftar&status=&limit= → { ok, booking }
-// POST { aksi:'kirim'|'batal', booking_sn } → stok ONLINE turun + ledger 'kirim_advance'.
+// POST { aksi:'kirim'|'batal', booking_sn } → ubah status booking saja (stok dipotong di Kledo, bukan di sini).
 // GET  ?aksi=picklist-pdf&status= → PDF A4 (1 baris = 1 booking SN).
 import { getDb } from "@/lib/d1/db";
 import { ambilBooking, batalkanBooking, kirimKeShopee, listBooking } from "@/lib/d1/advanceBelumSku";
@@ -92,7 +92,7 @@ export async function POST(request: Request) {
   if (aksi === "kirim") {
     const hasil = await kirimKeShopee(db, bookingSn, String(sesi.user.tg_id));
     if (!hasil.ok) return json({ ok: false, error: hasil.error }, hasil.status);
-    return json({ ok: true, booking_sn: hasil.booking_sn, qty: hasil.qty, stok_negatif: hasil.stok_negatif, stok_akhir: hasil.stok_akhir });
+    return json({ ok: true, booking_sn: hasil.booking_sn, qty: hasil.qty });
   }
   const hasil = await batalkanBooking(db, bookingSn, String(sesi.user.tg_id));
   if (!hasil.ok) return json({ ok: false, error: hasil.error }, hasil.status);

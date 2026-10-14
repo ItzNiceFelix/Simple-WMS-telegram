@@ -110,11 +110,20 @@ describe("buatPicklistPaket", () => {
     // Tidak ada field map variasi per-SKU yang bisa menimpa (regresi lama).
     assert.equal("variasi" in r.paket[0] && typeof (r.paket[0] as unknown as Record<string, unknown>).variasi === "object" && !Array.isArray(r.paket[0].rows), false);
   });
-  it("order tanpa resi → 409", async () => {
-    const db = mockDb({ orders: [{ no_pesanan: "O-X", no_resi: "" }] });
-    const r = await buatPicklistPaket(db, [{ mp: "shopee", no: "O-X" }]);
-    assert.equal(r.ok, false);
-    assert.equal(r.ok === false && r.status, 409);
+  it("order tanpa resi tetap diekspor sebagai paket sendiri (no_resi kosong)", async () => {
+    const db = mockDb({
+      orders: [{ no_pesanan: "O-X", no_resi: "" }, { no_pesanan: "O-Y", no_resi: "" }],
+      items: [
+        { no_pesanan: "O-X", sku: "SKU-1", nama_accurate: "Produk Satu", qty: 1, variasi: "" },
+        { no_pesanan: "O-Y", sku: "SKU-2", nama_accurate: "Produk Dua", qty: 2, variasi: "" },
+      ],
+    });
+    const r = await buatPicklistPaket(db, [{ mp: "shopee", no: "O-X" }, { mp: "shopee", no: "O-Y" }]);
+    assert.ok(r.ok);
+    // Dua order tanpa resi TIDAK boleh menumpuk jadi satu paket.
+    assert.equal(r.paket.length, 2);
+    assert.deepEqual(r.paket.map((p) => p.no_resi), ["", ""]);
+    assert.deepEqual(r.paket.map((p) => p.no_pesanan), [["O-X"], ["O-Y"]]);
   });
   it("tanpa target → 400", async () => {
     const r = await buatPicklistPaket(mockDb(), []);

@@ -360,6 +360,17 @@ function Analisa() {
                   <Info aria-hidden />
                   <AlertTitle>Analisa ini belum lengkap</AlertTitle>
                   <AlertDescription>
+                    {/* Periode + preset disebut di sini karena kekurangan data SELALU milik periode
+                        tertentu. Tanpa menyebutnya, pesan terbaca seolah impor gagal, padahal
+                        penyebab paling sering adalah periode yang dipilih memang belum punya data. */}
+                    <p className="mb-2" data-testid="konteks-kurang">
+                      Diperiksa untuk preset{" "}
+                      <span className="font-medium">
+                        {preset.find((p) => p.id === hasil.ringkasan.presetId)?.nama ?? `#${hasil.ringkasan.presetId}`}
+                      </span>{" "}
+                      pada periode <span className="font-medium">{hasil.ringkasan.periode || tanggal || "-"}</span> —
+                      data iklan & performa dihitung untuk rentang 7 hari yang berakhir di tanggal itu.
+                    </p>
                     <ul className="list-disc pl-4">
                       {hasil.kurang.map((k, i) => <li key={i}>{k}</li>)}
                     </ul>

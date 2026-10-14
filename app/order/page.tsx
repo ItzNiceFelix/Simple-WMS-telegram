@@ -66,9 +66,12 @@ type RincianOrder = OrderDetail;
 type Target = { mp: string; no: string; ke: string };
 
 // Cermin PETA_TRANSISI lib/d1/order.ts — tombol tampil sesuai status kini.
+// Nilai DB `pack` tetap "pack" (kompatibilitas data); hanya label UI jadi "Disiapkan".
+const LABEL_STATUS: Record<string, string> = { pack: "Disiapkan" };
+
 const TRANSISI: Record<string, { ke: string; label: string }[]> = {
   pending: [
-    { ke: "pack", label: "Pack" },
+    { ke: "pack", label: "Disiapkan" },
     { ke: "batal", label: "Batal" },
   ],
   pack: [
@@ -292,7 +295,7 @@ function DaftarOrder() {
                 <SelectGroup>
                   {DAFTAR_STATUS.map((s) => (
                     <SelectItem key={s} value={s}>
-                      {s === "semua" ? "Semua" : s}
+                      {s === "semua" ? "Semua" : LABEL_STATUS[s] ?? s}
                     </SelectItem>
                   ))}
                 </SelectGroup>
@@ -324,7 +327,7 @@ function DaftarOrder() {
           </span>
           <div className="flex flex-wrap gap-2 md:ml-auto">
             {[
-              { ke: "pack", label: "Pack" },
+              { ke: "pack", label: "Disiapkan" },
               { ke: "kirim", label: "Kirim" },
               { ke: "selesai", label: "Selesai" },
               { ke: "batal", label: "Batal" },
@@ -397,6 +400,7 @@ function DaftarOrder() {
                   <TableHead className="w-10">Pilih</TableHead>
                   <TableHead>No Pesanan</TableHead>
                   <TableHead>MP</TableHead>
+                  <TableHead>No Resi</TableHead>
                   <TableHead>Tanggal</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="text-right">Item</TableHead>
@@ -420,10 +424,13 @@ function DaftarOrder() {
                     <TableCell className="font-medium">{o.no_pesanan}</TableCell>
                     <TableCell>{o.marketplace}</TableCell>
                     <TableCell className="tabular-nums">
+                      {o.no_resi ? o.no_resi : <span className="text-muted-foreground">-</span>}
+                    </TableCell>
+                    <TableCell className="tabular-nums">
                       {new Date(o.tanggal * 1000).toISOString().slice(0, 10)}
                     </TableCell>
                     <TableCell>
-                      <Badge variant="outline">{o.status_fulfill}</Badge>
+                      <Badge variant="outline">{LABEL_STATUS[o.status_fulfill] ?? o.status_fulfill}</Badge>
                     </TableCell>
                     <TableCell className="text-right tabular-nums">{o.items.reduce((a, i) => a + i.qty, 0)}</TableCell>
                     <TableCell className="text-right tabular-nums">{formatRupiah(o.items.reduce((a, i) => a + i.subtotal, 0))}</TableCell>
@@ -477,8 +484,8 @@ function DaftarOrder() {
             </AlertDialogTitle>
             <AlertDialogDescription>
               {target?.ke === "batal"
-                ? "Batal kembalikan stok ONLINE bila sudah pack/kirim. Lanjut?"
-                : "Status order berubah. Lanjut?"}
+                ? "Batal hanya mengubah status di sini — stok TIDAK dikembalikan WMS, karena potong stok dilakukan di Kledo. Batalkan juga di Kledo bila stok perlu masuk kembali. Lanjut?"
+                : "Status order berubah. Stok tidak dipotong di sini — potong stok dilakukan admin Kledo. Lanjut?"}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

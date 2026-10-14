@@ -8,6 +8,7 @@ const DAFTAR = {
     {
       marketplace: "shopee",
       no_pesanan: "SHP-1",
+      no_resi: "SPXID001",
       tanggal: 1728288000,
       buyer: "Budi",
       status_fulfill: "pending",
@@ -17,6 +18,7 @@ const DAFTAR = {
     {
       marketplace: "shopee",
       no_pesanan: "SHP-2",
+      no_resi: "",
       tanggal: 1728288000,
       buyer: "Sari",
       status_fulfill: "pending",

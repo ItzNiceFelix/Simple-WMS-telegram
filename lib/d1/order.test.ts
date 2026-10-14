@@ -42,7 +42,7 @@ function buatDbOrder() {
             const o = orders[kunciOrder(String(a[0]), String(a[1]))];
             return o ? { status_fulfill: o["status_fulfill"] } : null;
           }
-          if (sql.startsWith("SELECT marketplace, no_pesanan, tanggal, buyer, status_fulfill, pajak_pph")) {
+          if (sql.startsWith("SELECT marketplace, no_pesanan, tanggal, buyer, no_resi, status_fulfill, pajak_pph")) {
             return orders[kunciOrder(String(a[0]), String(a[1]))] ?? null;
           }
           return null;
@@ -133,34 +133,31 @@ function statusGagal(r: Hasil<unknown>): number {
 const barisA = (no: string, qty: number): BarisPesanan => ({ marketplace: "shopee", no_pesanan: no, tanggal: 1728288000, buyer: "Budi", sku: "A", qty, harga_satuan: 100000 });
 
 describe("transisiFulfill", () => {
-  it("pack kurangi stok + movement jual_mp", async () => {
+  // Aturan 2026-10-14: WMS TIDAK memotong stok. Kledo yang memotong, dan sinkron Kledo
+  // menimpa penuh stock_by_bin gudang non-ONLINE. Kalau WMS ikut memotong, saat sync
+  // berikutnya potongan itu dianggap selisih lalu dibalik — stok jadi kacau bolak-balik.
+  it("pack hanya ubah status — stok dan ledger TIDAK disentuh", async () => {
     const db = buatDbOrder();
     await imporPesanan(db, [barisA("SHP-1", 3)], null);
     const r = await transisiFulfill(db, "shopee", "SHP-1", "pack", "owner1");
     assert.equal(r.ok, true);
-    assert.equal(db.data.bins["A|ONLINE"], 7);
-    const mv = db.data.moves.filter((m) => m["jenis"] === "jual_mp");
-    assert.equal(mv.length, 1);
-    assert.equal(mv[0]["qty"], -3);
-  });
-  it("pack stok kurang → 400, stok utuh", async () => {
-    const db = buatDbOrder();
-    await imporPesanan(db, [barisA("SHP-2", 99)], null);
-    const r = await transisiFulfill(db, "shopee", "SHP-2", "pack", null);
-    assert.equal(statusGagal(r), 400);
     assert.equal(db.data.bins["A|ONLINE"], 10);
+    assert.equal(db.data.moves.length, 0);
+    assert.equal(db.data.orders[kunciOrder("shopee", "SHP-1")]["status_fulfill"], "pack");
+    // stok_dikurangi tetap 0: kolom itu menandai era WMS-potong, bukan transisi ini.
+    assert.equal(db.data.orders[kunciOrder("shopee", "SHP-1")]["stok_dikurangi"], 0);
   });
-  it("batal kembalikan stok + retur_mp", async () => {
+
+  it("batal TIDAK mengembalikan stok (tidak ada retur_mp)", async () => {
     const db = buatDbOrder();
     await imporPesanan(db, [barisA("SHP-3", 3)], null);
     await transisiFulfill(db, "shopee", "SHP-3", "pack", null);
     const r = await transisiFulfill(db, "shopee", "SHP-3", "batal", null);
     assert.equal(r.ok, true);
     assert.equal(db.data.bins["A|ONLINE"], 10);
-    const mv = db.data.moves.filter((m) => m["jenis"] === "retur_mp");
-    assert.equal(mv.length, 1);
-    assert.equal(mv[0]["qty"], 3);
+    assert.equal(db.data.moves.filter((m) => m["jenis"] === "retur_mp").length, 0);
   });
+
   it("pending→kirim langsung → 409; order tak ada → 404", async () => {
     const db = buatDbOrder();
     await imporPesanan(db, [barisA("SHP-4", 1)], null);
@@ -170,23 +167,26 @@ describe("transisiFulfill", () => {
 });
 
 describe("transisiFulfillBatch", () => {
-  it("dua order pack: keduanya terpotong", async () => {
+  it("qty besar tetap lolos walau stok ONLINE kurang", async () => {
+    // 99 unit padahal stok 10: dulu ditolak 400 oleh gerbang stok. Gerbang itu dihapus
+    // justru karena stok ONLINE bukan lagi sumber kebenaran.
     const db = buatDbOrder();
-    await imporPesanan(db, [barisA("B-1", 2), barisA("B-2", 3)], null);
-    const r = await transisiFulfillBatch(db, [{ mp: "shopee", no: "B-1", ke: "pack" }, { mp: "shopee", no: "B-2", ke: "pack" }], null);
+    await imporPesanan(db, [barisA("B-3", 99)], null);
+    const r = await transisiFulfillBatch(db, [{ mp: "shopee", no: "B-3", ke: "pack" }], null);
     assert.equal(r.ok, true);
-    assert.equal(db.data.bins["A|ONLINE"], 5);
-    assert.equal(db.data.moves.filter((m) => m["jenis"] === "jual_mp").length, 2);
-  });
-
-  it("satu order stok kurang: tidak ada perubahan sama sekali", async () => {
-    const db = buatDbOrder();
-    await imporPesanan(db, [barisA("B-3", 4), barisA("B-4", 9)], null);
-    const r = await transisiFulfillBatch(db, [{ mp: "shopee", no: "B-3", ke: "pack" }, { mp: "shopee", no: "B-4", ke: "pack" }], null);
-    assert.equal(statusGagal(r), 400);
     assert.equal(db.data.bins["A|ONLINE"], 10);
     assert.equal(db.data.moves.length, 0);
+    assert.equal(db.data.orders[kunciOrder("shopee", "B-3")]["status_fulfill"], "pack");
+  });
+
+  it("satu transisi tidak sah → TIDAK ada order yang berubah", async () => {
+    const db = buatDbOrder();
+    await imporPesanan(db, [barisA("B-3", 4), barisA("B-4", 1)], null);
+    // B-4 masih pending, jadi kirim tidak sah; B-3 sah. Preflight harus menahan keduanya.
+    const r = await transisiFulfillBatch(db, [{ mp: "shopee", no: "B-3", ke: "pack" }, { mp: "shopee", no: "B-4", ke: "kirim" }], null);
+    assert.equal(statusGagal(r), 409);
     assert.equal(db.data.orders[kunciOrder("shopee", "B-3")]["status_fulfill"], "pending");
+    assert.equal(db.data.orders[kunciOrder("shopee", "B-4")]["status_fulfill"], "pending");
   });
 
   it("batal order ber-resi eksternal tidak menyentuh stok", async () => {
@@ -205,7 +205,6 @@ describe("transisiFulfillBatch", () => {
     const r = await transisiFulfillBatch(db, [{ mp: "shopee", no: "B-6", ke: "pack" }, { mp: "shopee", no: "B-6", ke: "pack" }], null);
     assert.equal(r.ok, true);
     if (r.ok) assert.equal(r.count, 1);
-    assert.equal(db.data.bins["A|ONLINE"], 7);
   });
 });
 

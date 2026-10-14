@@ -52,22 +52,19 @@ export async function listBooking(db: D1Database, filter: { status?: string; lim
 }
 
 /**
- * Kirim booking ke Gudang Shopee: stok ONLINE turun (1 booking = qty 1) + ledger
- * 'kirim_advance' + CAS status menunggu→terkirim. 409 bila sudah terkirim/batal.
+ * Kirim booking ke Gudang Shopee: CAS status menunggu→terkirim.
  *
- * Stok TIDAK dipreflight: repo ini sengaja mengizinkan stok negatif sebagai sinyal
- * selisih fisik (keputusan I1 di lib/d1/stok.ts), dan booking advance sudah terlanjur
- * dibukukan di Shopee — menolak kirim justru menyembunyikan defisit. Sebagai gantinya
- * kembalikan `stok_negatif` supaya UI bisa memperingatkan. Read-only, tidak memblokir.
+ * STOK TIDAK DISENTUH. Sejak integrasi Kledo (2026-10-14) potong stok dilakukan admin
+ * Kledo, dan sinkron Kledo menimpa penuh `stock_by_bin` gudang non-ONLINE. Menulis stok
+ * di sini akan membuat nilai WMS dan Kledo saling membalik tiap sinkron.
  *
- * Konvensi kolom ledger SAMA dengan tulisQty: qty_sistem = qty SEBELUM, qty_fisik = qty
- * SESUDAH, selisih = sesudah − sebelum (= −qty booking).
+ * 409 bila sudah terkirim/batal.
  */
 export async function kirimKeShopee(
   db: D1Database,
   bookingSn: string,
   oleh: string | null,
-): Promise<Hasil<{ booking_sn: string; qty: number; stok_negatif: boolean; stok_akhir: number }>> {
+): Promise<Hasil<{ booking_sn: string; qty: number }>> {
   const b = await ambilBooking(db, bookingSn);
   if (!b) return gagal(404, "Booking tidak ditemukan.");
   if (b.status !== "menunggu") return gagal(409, `Booking sudah ${b.status}.`);
@@ -77,22 +74,7 @@ export async function kirimKeShopee(
     .bind(at, oleh, bookingSn)
     .run();
   if ((cas.meta.changes ?? 0) !== 1) return gagal(409, "Booking sudah diproses.");
-  const lama = await db.prepare("SELECT qty FROM stock_by_bin WHERE sku = ? AND warehouse_id = 'ONLINE'").bind(b.sku).first<{ qty: number }>();
-  const sebelum = lama?.qty ?? 0;
-  const sesudah = sebelum - b.qty;
-  await db.batch([
-    db
-      .prepare("INSERT INTO stock_by_bin (sku, warehouse_id, qty) VALUES (?, 'ONLINE', ?) ON CONFLICT(sku, warehouse_id) DO UPDATE SET qty = excluded.qty")
-      .bind(b.sku, sesudah),
-    db
-      .prepare(
-        `INSERT INTO stock_moves (sku, qty, jenis, gudang_id, action_type, qty_sistem, qty_fisik, selisih, source, status, created_by, at, by)
-         VALUES (?, ?, 'kirim_advance', 'ONLINE', 'kirim_advance', ?, ?, ?, 'advance', 'processed', ?, ?, ?)`,
-      )
-      .bind(b.sku, -b.qty, sebelum, sesudah, sesudah - sebelum, oleh, at, oleh),
-    db.prepare("UPDATE products SET last_stock_updated = ?, last_stock_updated_by = ? WHERE sku = ?").bind(at, oleh, b.sku),
-  ]);
-  return { ok: true, booking_sn: bookingSn, qty: b.qty, stok_negatif: sesudah < 0, stok_akhir: sesudah };
+  return { ok: true, booking_sn: bookingSn, qty: b.qty };
 }
 
 /** Batalkan booking (hanya yang masih menunggu). */
