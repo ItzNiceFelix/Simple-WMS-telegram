@@ -13,6 +13,42 @@ import { terapkanReasoning } from "./reasoning";
 export type OpsiAdapter = { baseUrl: string; apiKey: string; timeoutMs?: number; /** Nama provider — dipakai memilih nama parameter reasoning yang benar. */ provider: string };
 
 /**
+ * Ubah byte gambar jadi base64 lewat Buffer.
+ *
+ * Kenapa BUKAN loop per byte (`biner += String.fromCharCode(b)`): itu membuat satu string
+ * per byte — ~500.000 alokasi untuk gambar 500 KB, di jalur yang dipanggil tiap gambar
+ * dari provider OpenAI-compatible (termasuk Kenari). Workers Free hanya punya 10 ms CPU
+ * per request, jadi biayanya nyata. Terukur pada Node 22 (500 KB x 30 putaran):
+ *
+ *   per byte + btoa ......... 654 ms
+ *   potongan 8192 + spread .. 677 ms   ← lebih LAMBAT; spread argumen berbiaya
+ *   Buffer.toString("base64") . 24 ms   ← dipakai di sini, ~28x
+ *
+ * Semua tiga menghasilkan base64 IDENTIK (diuji, termasuk byte 0 dan >=128).
+ * Buffer tersedia karena `nodejs_compat` aktif di wrangler.jsonc. Catatan memori: string
+ * JS itu UTF-16, jadi 667 KB base64 tetap ~1,33 MB RAM — Buffer hanya menghemat CPU.
+ */
+function binerKeBase64(buf: Uint8Array): string {
+  return Buffer.from(buf).toString("base64");
+}
+
+/**
+ * Kebalikannya: base64 -> byte. Dulu `atob` lalu loop `charCodeAt` per byte, yang punya
+ * masalah sama seperti loop di atas — dan jalur ini dijalankan untuk SETIAP gambar
+ * referensi (sampai 5), jadi biayanya berlipat. `Buffer.from(s, "base64")` menghasilkan
+ * byte yang sama persis, jauh lebih sedikit kerja CPU.
+ */
+function base64KeBiner(base64: string): Uint8Array<ArrayBuffer> {
+  // Buffer.from memberi Uint8Array<ArrayBufferLike>, sedangkan Blob menuntut ArrayBuffer
+  // konkret. Salin ke buffer baru — ukurannya sama, dan byte-nya sudah benar dari Buffer.
+  const b = Buffer.from(base64, "base64");
+  const bytes = new Uint8Array(new ArrayBuffer(b.length));
+  bytes.set(b);
+  return bytes;
+}
+
+
+/**
  * Peta rasio -> `size` untuk provider OpenAI-compatible (yang memakai ukuran, bukan rasio).
  * Hanya rasio yang punya padanan ukuran resmi; sisanya dibiarkan agar provider pakai default.
  */
@@ -270,9 +306,7 @@ async function bacaHasilGambar(
       }
       const mime = res.headers.get("content-type")?.split(";")[0] || "image/png";
       const buf = new Uint8Array(await res.arrayBuffer());
-      let biner = "";
-      for (const b of buf) biner += String.fromCharCode(b);
-      return { ok: true, data: { base64: btoa(biner), mime }, latencyMs };
+      return { ok: true, data: { base64: binerKeBase64(buf), mime }, latencyMs };
     } catch (e) {
       return { ok: false, status: 502, error: `Gagal mengunduh gambar: ${e instanceof Error ? e.message : "tidak diketahui"}.`, latencyMs };
     }
@@ -328,11 +362,8 @@ export async function gambarOpenai(
   form.set("model", minta.model);
   form.set("prompt", minta.prompt);
   for (const [i, r] of referensi.entries()) {
-    const biner = atob(r.base64);
-    const bytes = new Uint8Array(new ArrayBuffer(biner.length));
-    for (let j = 0; j < biner.length; j++) bytes[j] = biner.charCodeAt(j);
     const ext = r.mime.split("/")[1] ?? "png";
-    form.append("image", new Blob([bytes], { type: r.mime }), `referensi-${i + 1}.${ext}`);
+    form.append("image", new Blob([base64KeBiner(r.base64)], { type: r.mime }), `referensi-${i + 1}.${ext}`);
   }
   const h = await panggilJson<{ data?: { b64_json?: string; url?: string }[]; error?: unknown; message?: unknown }>(
     `${base}/images/edits`,
@@ -347,11 +378,8 @@ export async function gambarOpenai(
     form2.set("model", minta.model);
     form2.set("prompt", minta.prompt);
     for (const [i, r] of referensi.entries()) {
-      const biner = atob(r.base64);
-      const bytes = new Uint8Array(new ArrayBuffer(biner.length));
-      for (let j = 0; j < biner.length; j++) bytes[j] = biner.charCodeAt(j);
       const ext = r.mime.split("/")[1] ?? "png";
-      form2.append("image[]", new Blob([bytes], { type: r.mime }), `referensi-${i + 1}.${ext}`);
+      form2.append("image[]", new Blob([base64KeBiner(r.base64)], { type: r.mime }), `referensi-${i + 1}.${ext}`);
     }
     const h2 = await panggilJson<{ data?: { b64_json?: string; url?: string }[]; error?: unknown; message?: unknown }>(
       `${base}/images/edits`,

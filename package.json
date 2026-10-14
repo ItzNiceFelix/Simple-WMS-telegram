@@ -32,6 +32,7 @@
     "@vercel/functions": "^2.0.0",
     "class-variance-authority": "^0.7.1",
     "cn": "^0.3.0",
+    "fabric": "^7.4.0",
     "firebase": "^12.19.0",
     "firebase-admin": "^12.7.0",
     "googleapis": "^144.0.0",
