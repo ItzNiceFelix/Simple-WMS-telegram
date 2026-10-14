@@ -1,0 +1,662 @@
+{
+ "tanggal": "2026-10-13",
+ "jml_order": 598,
+ "jml_baris": 620,
+ "omzet": 16065584,
+ "hpp": 9445788,
+ "biaya": 4530968,
+ "pajak": 80330,
+ "laba": 2088828,
+ "rincian": [
+  {
+   "sku": "100331",
+   "nama": "Pisau Set 3 in 1",
+   "unit": 155,
+   "hppSatuan": 5000,
+   "hargaJual": 10879,
+   "marginSatuan": 2310,
+   "marginPersen": 21.1,
+   "kontribusi": 358048
+  },
+  {
+   "sku": "001673",
+   "nama": "Piring Cantik Kupu Coklat - R",
+   "unit": 139,
+   "hppSatuan": 8478,
+   "hargaJual": 14400,
+   "marginSatuan": 2009,
+   "marginPersen": 14.3,
+   "kontribusi": 279233
+  },
+  {
+   "sku": "001765",
+   "nama": "Piring Cantik Kupu Hijau-R",
+   "unit": 122,
+   "hppSatuan": 8500,
+   "hargaJual": 14000,
+   "marginSatuan": 2007,
+   "marginPersen": 14.3,
+   "kontribusi": 244850
+  },
+  {
+   "sku": "001822",
+   "nama": "rak sepatu aster 4ssn hitam tri j",
+   "unit": 74,
+   "hppSatuan": 15000,
+   "hargaJual": 23500,
+   "marginSatuan": 1794,
+   "marginPersen": 7.6,
+   "kontribusi": 132733
+  },
+  {
+   "sku": "001737",
+   "nama": "piring bunga coklat - s",
+   "unit": 28,
+   "hppSatuan": 7500,
+   "hargaJual": 16170,
+   "marginSatuan": 3454,
+   "marginPersen": 23.7,
+   "kontribusi": 96703
+  },
+  {
+   "sku": "100319",
+   "nama": "Mangkok Bakso 08 BD Hijau",
+   "unit": 24,
+   "hppSatuan": 8000,
+   "hargaJual": 14000,
+   "marginSatuan": 2694,
+   "marginPersen": 19.2,
+   "kontribusi": 64650
+  },
+  {
+   "sku": "001517",
+   "nama": "Lunch Box Garuda Tri J Biru",
+   "unit": 19,
+   "hppSatuan": 12000,
+   "hargaJual": 21500,
+   "marginSatuan": 2907,
+   "marginPersen": 13.5,
+   "kontribusi": 55231
+  },
+  {
+   "sku": "1917",
+   "nama": "Piring Bunga Hijau - S",
+   "unit": 14,
+   "hppSatuan": 7400,
+   "hargaJual": 15947,
+   "marginSatuan": 3730,
+   "marginPersen": 25.4,
+   "kontribusi": 52216
+  },
+  {
+   "sku": "001188",
+   "nama": "Centong Pelangi",
+   "unit": 28,
+   "hppSatuan": 5250,
+   "hargaJual": 9410,
+   "marginSatuan": 1528,
+   "marginPersen": 15.7,
+   "kontribusi": 42777
+  },
+  {
+   "sku": "100235",
+   "nama": "Piring 9 Jago Putih - SY",
+   "unit": 10,
+   "hppSatuan": 12489,
+   "hargaJual": 22900,
+   "marginSatuan": 4199,
+   "marginPersen": 18.3,
+   "kontribusi": 41991
+  },
+  {
+   "sku": "100083",
+   "nama": "Beclean Warna T1000",
+   "unit": 16,
+   "hppSatuan": 18000,
+   "hargaJual": 29500,
+   "marginSatuan": 2414,
+   "marginPersen": 8.6,
+   "kontribusi": 38625
+  },
+  {
+   "sku": "001916",
+   "nama": "Lunch Box Garuda Tri J Pink",
+   "unit": 73,
+   "hppSatuan": 12000,
+   "hargaJual": 18232,
+   "marginSatuan": 458,
+   "marginPersen": 2.5,
+   "kontribusi": 33452
+  },
+  {
+   "sku": "001944",
+   "nama": "Lunch Box Garuda Tri J Ungu",
+   "unit": 11,
+   "hppSatuan": 12000,
+   "hargaJual": 21500,
+   "marginSatuan": 2931,
+   "marginPersen": 13.6,
+   "kontribusi": 32239
+  },
+  {
+   "sku": "100390",
+   "nama": "Piring Bunga Coklat - Rio",
+   "unit": 8,
+   "hppSatuan": 7500,
+   "hargaJual": 14500,
+   "marginSatuan": 3701,
+   "marginPersen": 24.5,
+   "kontribusi": 29605
+  },
+  {
+   "sku": "0518",
+   "nama": "Kemoceng",
+   "unit": 15,
+   "hppSatuan": 3500,
+   "hargaJual": 8800,
+   "marginSatuan": 1972,
+   "marginPersen": 22.4,
+   "kontribusi": 29575
+  },
+  {
+   "sku": "100028",
+   "nama": "Rice Bucket 6,5L tri J Abu",
+   "unit": 5,
+   "hppSatuan": 27000,
+   "hargaJual": 44000,
+   "marginSatuan": 5627,
+   "marginPersen": 12.8,
+   "kontribusi": 28135
+  },
+  {
+   "sku": "001770",
+   "nama": "piring cantik kupu biru-R",
+   "unit": 15,
+   "hppSatuan": 8495,
+   "hargaJual": 14000,
+   "marginSatuan": 1861,
+   "marginPersen": 13.2,
+   "kontribusi": 27918
+  },
+  {
+   "sku": "001917",
+   "nama": "Lunch Box Garuda Tri J Putih",
+   "unit": 7,
+   "hppSatuan": 11000,
+   "hargaJual": 21500,
+   "marginSatuan": 3874,
+   "marginPersen": 18,
+   "kontribusi": 27118
+  },
+  {
+   "sku": "100277",
+   "nama": "Rak Kosmetik Domi Panda Putih",
+   "unit": 20,
+   "hppSatuan": 11000,
+   "hargaJual": 18000,
+   "marginSatuan": 1289,
+   "marginPersen": 7.2,
+   "kontribusi": 25781
+  },
+  {
+   "sku": "100237",
+   "nama": "Kemoceng/Sulak",
+   "unit": 10,
+   "hppSatuan": 2600,
+   "hargaJual": 7500,
+   "marginSatuan": 2217,
+   "marginPersen": 29.6,
+   "kontribusi": 22171
+  },
+  {
+   "sku": "001719",
+   "nama": "Piring Bunga Biru - S",
+   "unit": 5,
+   "hppSatuan": 7400,
+   "hargaJual": 15500,
+   "marginSatuan": 4362,
+   "marginPersen": 28.1,
+   "kontribusi": 21811
+  },
+  {
+   "sku": "100048",
+   "nama": "Rice Bucket Diamond 6,5L Tri J Hijau Olive",
+   "unit": 4,
+   "hppSatuan": 27000,
+   "hargaJual": 44000,
+   "marginSatuan": 5271,
+   "marginPersen": 12,
+   "kontribusi": 21083
+  },
+  {
+   "sku": "001623",
+   "nama": "rice bucket 17l tri j biru",
+   "unit": 1,
+   "hppSatuan": 58000,
+   "hargaJual": 107000,
+   "marginSatuan": 19395,
+   "marginPersen": 18.1,
+   "kontribusi": 19395
+  },
+  {
+   "sku": "001609",
+   "nama": "rice bucket 17l tri j pink",
+   "unit": 1,
+   "hppSatuan": 58000,
+   "hargaJual": 107000,
+   "marginSatuan": 19395,
+   "marginPersen": 18.1,
+   "kontribusi": 19395
+  },
+  {
+   "sku": "001597",
+   "nama": "Rice Bucket 17L tri j Hijau",
+   "unit": 1,
+   "hppSatuan": 58000,
+   "hargaJual": 104000,
+   "marginSatuan": 17190,
+   "marginPersen": 16.5,
+   "kontribusi": 17190
+  },
+  {
+   "sku": "100201",
+   "nama": "Rafia uk.1kg Putih",
+   "unit": 5,
+   "hppSatuan": 12000,
+   "hargaJual": 19499,
+   "marginSatuan": 3282,
+   "marginPersen": 16.8,
+   "kontribusi": 16412
+  },
+  {
+   "sku": "1698",
+   "nama": "Rak Kosmetik Davina ss3 Putih",
+   "unit": 6,
+   "hppSatuan": 19344,
+   "hargaJual": 29999,
+   "marginSatuan": 2733,
+   "marginPersen": 9.1,
+   "kontribusi": 16399
+  },
+  {
+   "sku": "1708",
+   "nama": "Box Container 55L Hitam Tri J",
+   "unit": 7,
+   "hppSatuan": 36000,
+   "hargaJual": 52000,
+   "marginSatuan": 2286,
+   "marginPersen": 4.4,
+   "kontribusi": 16000
+  },
+  {
+   "sku": "100046",
+   "nama": "Rice Bucket 17L Tri J Biru Laut",
+   "unit": 1,
+   "hppSatuan": 56000,
+   "hargaJual": 99000,
+   "marginSatuan": 15515,
+   "marginPersen": 15.7,
+   "kontribusi": 15515
+  },
+  {
+   "sku": "0967",
+   "nama": "Rak Kosmetik 3ssn Panda Putih",
+   "unit": 17,
+   "hppSatuan": 15000,
+   "hargaJual": 22640,
+   "marginSatuan": 889,
+   "marginPersen": 3.9,
+   "kontribusi": 15105
+  },
+  {
+   "sku": "100345",
+   "nama": "Piring 9 Super Merah - SY",
+   "unit": 9,
+   "hppSatuan": 7000,
+   "hargaJual": 11999,
+   "marginSatuan": 1674,
+   "marginPersen": 14,
+   "kontribusi": 15066
+  },
+  {
+   "sku": "001602",
+   "nama": "rice bucket 6,5l tri j ungu",
+   "unit": 3,
+   "hppSatuan": 28000,
+   "hargaJual": 45500,
+   "marginSatuan": 4874,
+   "marginPersen": 10.7,
+   "kontribusi": 14622
+  },
+  {
+   "sku": "001624",
+   "nama": "Rice Bucket 6,5L tri J Hijau",
+   "unit": 2,
+   "hppSatuan": 26000,
+   "hargaJual": 45500,
+   "marginSatuan": 7182,
+   "marginPersen": 15.8,
+   "kontribusi": 14363
+  },
+  {
+   "sku": "100348",
+   "nama": "Mangkok Jago Putih - BD",
+   "unit": 4,
+   "hppSatuan": 13700,
+   "hargaJual": 22000,
+   "marginSatuan": 3190,
+   "marginPersen": 14.5,
+   "kontribusi": 12760
+  },
+  {
+   "sku": "100398",
+   "nama": "Piring Bunga Hijau - Rio",
+   "unit": 3,
+   "hppSatuan": 7500,
+   "hargaJual": 15500,
+   "marginSatuan": 4072,
+   "marginPersen": 26,
+   "kontribusi": 12216
+  },
+  {
+   "sku": "100012",
+   "nama": "Piring 9 Super Hijau - SY",
+   "unit": 6,
+   "hppSatuan": 7093,
+   "hargaJual": 11999,
+   "marginSatuan": 1789,
+   "marginPersen": 14.9,
+   "kontribusi": 10736
+  },
+  {
+   "sku": "100047",
+   "nama": "Rice Bucket Diamond 6,5L Tri J Merah Cherry",
+   "unit": 2,
+   "hppSatuan": 27000,
+   "hargaJual": 44000,
+   "marginSatuan": 5167,
+   "marginPersen": 11.7,
+   "kontribusi": 10333
+  },
+  {
+   "sku": "001498",
+   "nama": "Kids Bento Cat",
+   "unit": 7,
+   "hppSatuan": 2500,
+   "hargaJual": 6430,
+   "marginSatuan": 1444,
+   "marginPersen": 22.5,
+   "kontribusi": 10106
+  },
+  {
+   "sku": "1475",
+   "nama": "Rice Bucket Diamond 6,5L Tri J Hijau",
+   "unit": 1,
+   "hppSatuan": 23333,
+   "hargaJual": 45500,
+   "marginSatuan": 10028,
+   "marginPersen": 22,
+   "kontribusi": 10028
+  },
+  {
+   "sku": "100091",
+   "nama": "Sapu Ijuk - SHD",
+   "unit": 4,
+   "hppSatuan": 7500,
+   "hargaJual": 13700,
+   "marginSatuan": 2493,
+   "marginPersen": 18.2,
+   "kontribusi": 9970
+  },
+  {
+   "sku": "001596",
+   "nama": "Rice Bucket 6,5L tri j Biru",
+   "unit": 2,
+   "hppSatuan": 28000,
+   "hargaJual": 45500,
+   "marginSatuan": 4874,
+   "marginPersen": 10.7,
+   "kontribusi": 9748
+  },
+  {
+   "sku": "1884",
+   "nama": "Rice Bucket Diamond 6,5L Tri J Pink",
+   "unit": 2,
+   "hppSatuan": 28000,
+   "hargaJual": 45500,
+   "marginSatuan": 4874,
+   "marginPersen": 10.7,
+   "kontribusi": 9748
+  },
+  {
+   "sku": "001618",
+   "nama": "rice bucket 6,5l tri j pink",
+   "unit": 2,
+   "hppSatuan": 28000,
+   "hargaJual": 45500,
+   "marginSatuan": 4874,
+   "marginPersen": 10.7,
+   "kontribusi": 9748
+  },
+  {
+   "sku": "100271",
+   "nama": "Dispenser Beras Snow White Merah Cherry",
+   "unit": 2,
+   "hppSatuan": 28000,
+   "hargaJual": 45000,
+   "marginSatuan": 4500,
+   "marginPersen": 10,
+   "kontribusi": 9000
+  },
+  {
+   "sku": "100399",
+   "nama": "Piring Bunga Biru - Rio",
+   "unit": 2,
+   "hppSatuan": 7500,
+   "hargaJual": 15500,
+   "marginSatuan": 4304,
+   "marginPersen": 27.8,
+   "kontribusi": 8608
+  },
+  {
+   "sku": "100321",
+   "nama": "Mangkok Bakso 08 BD Biru",
+   "unit": 4,
+   "hppSatuan": 8000,
+   "hargaJual": 14000,
+   "marginSatuan": 1913,
+   "marginPersen": 13.7,
+   "kontribusi": 7650
+  },
+  {
+   "sku": "100322",
+   "nama": "Mangkok Bakso 08 BD Pink",
+   "unit": 3,
+   "hppSatuan": 8000,
+   "hargaJual": 14000,
+   "marginSatuan": 2433,
+   "marginPersen": 17.4,
+   "kontribusi": 7300
+  },
+  {
+   "sku": "0990",
+   "nama": "Pisau Set 5in1 Keramik (ha1639)",
+   "unit": 1,
+   "hppSatuan": 15000,
+   "hargaJual": 29500,
+   "marginSatuan": 6611,
+   "marginPersen": 22.4,
+   "kontribusi": 6611
+  },
+  {
+   "sku": "1715",
+   "nama": "Rak Sepatu X 4ssn Tri J Hitam",
+   "unit": 4,
+   "hppSatuan": 14099,
+   "hargaJual": 23000,
+   "marginSatuan": 1499,
+   "marginPersen": 6.8,
+   "kontribusi": 5996
+  },
+  {
+   "sku": "PRTN-WRN",
+   "nama": "Piring Rotan Anyam Biru - R",
+   "unit": 9,
+   "hppSatuan": 8533,
+   "hargaJual": 12430,
+   "marginSatuan": 637,
+   "marginPersen": 5.1,
+   "kontribusi": 5730
+  },
+  {
+   "sku": "100049",
+   "nama": "Rice Bucket Diamond 6,5L Tri J Coklat",
+   "unit": 1,
+   "hppSatuan": 27000,
+   "hargaJual": 44000,
+   "marginSatuan": 5583,
+   "marginPersen": 12.7,
+   "kontribusi": 5583
+  },
+  {
+   "sku": "001628",
+   "nama": "dispenser beras tri j ungu",
+   "unit": 1,
+   "hppSatuan": 27500,
+   "hargaJual": 45000,
+   "marginSatuan": 5000,
+   "marginPersen": 11.1,
+   "kontribusi": 5000
+  },
+  {
+   "sku": "001631",
+   "nama": "dispenser beras tri j pink",
+   "unit": 1,
+   "hppSatuan": 27500,
+   "hargaJual": 45000,
+   "marginSatuan": 5000,
+   "marginPersen": 11.1,
+   "kontribusi": 5000
+  },
+  {
+   "sku": "100030",
+   "nama": "Rice Bucket Rotan 6,5L Tri J Hijau Olive",
+   "unit": 1,
+   "hppSatuan": 27000,
+   "hargaJual": 44000,
+   "marginSatuan": 4750,
+   "marginPersen": 10.8,
+   "kontribusi": 4750
+  },
+  {
+   "sku": "100040",
+   "nama": "Rice Bucket Rotan 6,5L Tri J Coklat",
+   "unit": 1,
+   "hppSatuan": 27000,
+   "hargaJual": 44000,
+   "marginSatuan": 4750,
+   "marginPersen": 10.8,
+   "kontribusi": 4750
+  },
+  {
+   "sku": "0115",
+   "nama": "Rak Yoyo Lyra Hitam Tri J",
+   "unit": 3,
+   "hppSatuan": 22000,
+   "hargaJual": 32500,
+   "marginSatuan": 1295,
+   "marginPersen": 4,
+   "kontribusi": 3885
+  },
+  {
+   "sku": "100053",
+   "nama": "Rice Bucket Rotan 6,5L Tri J Merah Cherry",
+   "unit": 4,
+   "hppSatuan": 27000,
+   "hargaJual": 38800,
+   "marginSatuan": 850,
+   "marginPersen": 2.2,
+   "kontribusi": 3400
+  },
+  {
+   "sku": "0805",
+   "nama": "Rak Kosmetik 3ssn Panda Ungu",
+   "unit": 1,
+   "hppSatuan": 14500,
+   "hargaJual": 25000,
+   "marginSatuan": 3000,
+   "marginPersen": 12,
+   "kontribusi": 3000
+  },
+  {
+   "sku": "001562",
+   "nama": "Gayung Siba",
+   "unit": 1,
+   "hppSatuan": 2083,
+   "hargaJual": 6500,
+   "marginSatuan": 2788,
+   "marginPersen": 42.9,
+   "kontribusi": 2788
+  },
+  {
+   "sku": "0963",
+   "nama": "Kids Bento Panda",
+   "unit": 2,
+   "hppSatuan": 2500,
+   "hargaJual": 6500,
+   "marginSatuan": 1292,
+   "marginPersen": 20,
+   "kontribusi": 2583
+  },
+  {
+   "sku": "RDL-HJ",
+   "nama": "Rak Dapur Lily Hijau",
+   "unit": 1,
+   "hppSatuan": 12500,
+   "hargaJual": 19800,
+   "marginSatuan": 1847,
+   "marginPersen": 9.3,
+   "kontribusi": 1847
+  },
+  {
+   "sku": "100256",
+   "nama": "Rak Sepatu X 4ssn Tri J Biru Laut",
+   "unit": 1,
+   "hppSatuan": 14500,
+   "hargaJual": 23000,
+   "marginSatuan": 1845,
+   "marginPersen": 8,
+   "kontribusi": 1845
+  },
+  {
+   "sku": "100013",
+   "nama": "Piring 9 Super Biru - SY",
+   "unit": 1,
+   "hppSatuan": 7000,
+   "hargaJual": 11999,
+   "marginSatuan": 1674,
+   "marginPersen": 14,
+   "kontribusi": 1674
+  },
+  {
+   "sku": "001909",
+   "nama": "Celengan Tong Kecil",
+   "unit": 1,
+   "hppSatuan": 1400,
+   "hargaJual": 4999,
+   "marginSatuan": 1174,
+   "marginPersen": 23.5,
+   "kontribusi": 1174
+  },
+  {
+   "sku": "0543",
+   "nama": "Mainan Anak Tali",
+   "unit": 1,
+   "hppSatuan": 34000,
+   "hargaJual": 46800,
+   "marginSatuan": -150,
+   "marginPersen": -0.3,
+   "kontribusi": -150
+  }
+ ]
+}
