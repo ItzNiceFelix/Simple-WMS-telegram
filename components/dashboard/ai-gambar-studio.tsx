@@ -5,7 +5,7 @@
 // yang dikembalikan route /api/ai/gambar; simpan = unduh, kirim = Telegram.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { toast } from "sonner"
-import { Download, Plus, RefreshCw, Send, Sparkles, Trash2, Wand2 } from "lucide-react"
+import { Download, Pencil, Plus, RefreshCw, Send, Sparkles, Trash2, Wand2 } from "lucide-react"
 
 import { KanvasAnotasi } from "@/components/dashboard/kanvas-anotasi"
 import { AiGambarSetting, muatSettingGambar, type ModelGambar, type SettingGambar } from "@/components/dashboard/ai-gambar-setting"
@@ -25,7 +25,7 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
-import { EditorDesain } from "@/components/dashboard/editor-desain"
+import { EditorDesain, type EditorDesainHandle } from "@/components/dashboard/editor-desain"
 import { tampilkanGagalTulis } from "@/components/dashboard/umpan-tulis"
 import type { AreaGambar } from "@/lib/ai/areaGambar"
 
@@ -67,6 +67,24 @@ export function AiGambarStudio() {
   const [mengirimTg, setMengirimTg] = useState(false)
   const [memuat, setMemuat] = useState(true)
   const berkasRef = useRef<HTMLInputElement>(null)
+  // Ref editor harus hidup lintas tab: TabsContent me-render isi tab AKTIF saja, jadi
+  // komponen editor belum ter-mount saat tombol "Edit di Editor" diklik.
+  const editorRef = useRef<EditorDesainHandle>(null)
+  /**
+   * Permintaan tempel latar menunggu editor ter-mount. `setTabAktif("editor")` belum
+   * memasang komponennya pada render yang sama, sehingga ref masih null di baris berikutnya;
+   * karena itu permintaan disimpan di state dan dikerjakan di efek setelah tab aktif.
+   */
+  const [latarTertunda, setLatarTertunda] = useState<{ base64: string; mime: string } | null>(null)
+
+  // Editor baru bisa menerima gambar setelah tab Editor benar-benar ter-render.
+  useEffect(() => {
+    if (tabAktif !== "editor" || !latarTertunda) return
+    const ref = editorRef.current
+    if (!ref) return
+    setLatarTertunda(null)
+    void ref.tambahLatarGambar(latarTertunda.base64, latarTertunda.mime)
+  }, [tabAktif, latarTertunda])
 
   const muat = useCallback(async () => {
     setMemuat(true)
@@ -220,7 +238,7 @@ export function AiGambarStudio() {
 
         <TabsContent value="editor" className="flex flex-col gap-4">
           {presetToko > 0 ? (
-            <EditorDesain presetId={presetToko} />
+            <EditorDesain ref={editorRef} presetId={presetToko} />
           ) : (
             <p className="text-muted-foreground text-sm" data-testid="editor-tanpa-preset">
               Editor butuh preset toko. Buat preset dulu di halaman Laba → Preset.
@@ -415,6 +433,21 @@ export function AiGambarStudio() {
               >
                 <Download data-icon="inline-start" />
                 Simpan lokal
+              </Button>
+              {/* Urutan penting: pindah tab DULU (TabsContent baru me-render isi tab aktif),
+                  latar dikirim lewat efek setelah ref editor terpasang — bukan di sini. */}
+              <Button
+                variant="outline"
+                className="h-11 md:h-8"
+                disabled={hasil === null}
+                onClick={() => {
+                  if (hasil) setLatarTertunda({ base64: hasil.base64, mime: hasil.mime })
+                  setTabAktif("editor")
+                }}
+                data-testid="edit-di-editor"
+              >
+                <Pencil data-icon="inline-start" />
+                Edit di Editor
               </Button>
             </div>
           </CardContent>

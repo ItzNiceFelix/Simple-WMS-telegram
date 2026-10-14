@@ -8,12 +8,24 @@
 // Entry "fabric/es" dipilih: memetakan ke dist/fabric.min.mjs, barrel ESM murni (tanpa shim
 // jsdom/node-canvas) → hanya modul yang dipakai yang masuk bundel.
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react"
-import type { ChangeEvent, JSX, KeyboardEvent as KeyboardEventReact } from "react"
-import { Circle, Download, ImagePlus, Minus, Redo2, Square, Type, Undo2 } from "lucide-react"
+import type { ChangeEvent, ForwardedRef, JSX, KeyboardEvent as KeyboardEventReact } from "react"
+import { Circle, Download, FolderOpen, ImagePlus, Minus, Redo2, Save, Square, Type, Undo2 } from "lucide-react"
+import { toast } from "sonner"
 import type * as FabricEsModule from "fabric/es"
 import type { Canvas as FabricCanvas, FabricObject } from "fabric"
 
 import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Field, FieldLabel } from "@/components/ui/field"
+import { Input } from "@/components/ui/input"
+import { Spinner } from "@/components/ui/spinner"
 import {
   Select,
   SelectContent,
@@ -32,6 +44,9 @@ import {
   type PerubahanProperti,
 } from "@/components/dashboard/editor-panel-properti"
 import { EditorPickerAset } from "@/components/dashboard/editor-picker-aset"
+import { EditorToolbarAi } from "@/components/dashboard/editor-toolbar-ai"
+import { tampilkanGagalTulis } from "@/components/dashboard/umpan-tulis"
+import { kePiksel, validasiLayout, type ElemenLayout, type LayoutBanner } from "@/lib/desain/skemaLayout"
 
 /** Preset ukuran dokumen kanvas (piksel). Label ramah untuk pengguna non-desainer. */
 const PRESET = [
@@ -62,6 +77,8 @@ export type EditorDesainHandle = {
   muatDokumen: (json: string) => Promise<void>
   /** Tempel hasil generate AI sebagai latar terkunci di tumpukan paling bawah. */
   tambahLatarGambar: (base64: string, mime: string) => Promise<void>
+  /** Bersihkan kanvas (kecuali latar terkunci) lalu render satu layout AI; satu langkah undo. */
+  terapkanLayout: (layout: LayoutBanner) => Promise<void>
 }
 
 /** Props editor. `presetId` = preset TOKO (bukan ukuran kanvas) untuk picker aset. */
@@ -133,7 +150,21 @@ const NAMA_TIPE: Record<JenisProperti, string> = {
   lain: "Objek",
 }
 
-export const EditorDesain = forwardRef<EditorDesainHandle, EditorDesainProps>(function EditorDesain({ presetId }, ref): JSX.Element {
+/**
+ * Bentuk dokumen yang disimpan server. `dokumen_json` diserialkan `Canvas.toObject()`
+ * sehingga properti canvas IKUT tertulis (versi + dimensi). Dipakai saat memuat desain
+ * untuk mengetahui ukuran dokumen yang tersimpan tanpa menyentuh instance kanvas.
+ */
+type DokumenKanvas = { version?: string; width?: number; height?: number }
+
+/** Metadata desain dari `GET /api/desain` (daftar ringan, tanpa `dokumen_json`). */
+type DesainRingkas = { id: number; nama: string; ukuran: string; updated_at: number }
+
+export const EditorDesain = forwardRef<EditorDesainHandle, EditorDesainProps>(function EditorDesain(
+  { presetId },
+  // Ref dari induk; di dalam komponen hanya dibaca lewat useImperativeHandle.
+  ref: ForwardedRef<EditorDesainHandle>
+): JSX.Element {
   const [ukuranId, setUkuranId] = useState<PresetId>("1080x1080")
   const [terpilih, setTerpilih] = useState<NilaiProperti | null>(null)
   const [dokumenJson, setDokumenJson] = useState("")
@@ -158,6 +189,17 @@ export const EditorDesain = forwardRef<EditorDesainHandle, EditorDesainProps>(fu
 
   // --- Ekspor (Fase 6) ---
   const [dialogEkspor, setDialogEkspor] = useState(false)
+
+  // --- Simpan/buka desain (Fase 5) ---
+  // Satu state untuk tiga dialog: tiga boolean terpisah bisa menghasilkan kombinasi mustahil.
+  const [dialogDesain, setDialogDesain] = useState<
+    | { jenis: "simpan"; nama: string }
+    | { jenis: "buka"; daftar: DesainRingkas[]; memuat: boolean }
+    | null
+  >(null)
+  // Id desain yang sedang dibuka; ada = simpan berikutnya UPDATE, bukan baris baru.
+  const [desainId, setDesainId] = useState<number | null>(null)
+  const [menyimpan, setMenyimpan] = useState(false)
 
   /**
    * Catat keadaan dokumen SEKARANG sebagai satu langkah undo. Dipanggil dari event fabric yang
@@ -623,6 +665,227 @@ export const EditorDesain = forwardRef<EditorDesainHandle, EditorDesainProps>(fu
     [tambahLatarGambar]
   )
 
+  /**
+   * Fase 7: layout AI → objek fabric.
+   * Objek lama dibuang LEBIH DULU supaya hasil AI tidak menumpuk di atas pekerjaan lama,
+   * kecuali latar terkunci (namaLapisan "Latar"): pekerjaan user yang tidak digantikan layout
+   * tidak boleh hilang karena satu permintaan AI.
+   */
+  const terapkanLayout = useCallback(async (layoutMentah: LayoutBanner) => {
+    const kanvas = fabricRef.current
+    const fabric = modulRef.current
+    if (!kanvas || !fabric) return
+    // Layout datang dari jaringan; lewati validator yang sama dengan server. Kalau ditolak,
+    // kanvas dibiarkan apa adanya — lebih baik daripada membersihkan lalu tidak menggambar apa pun.
+    const bersih = validasiLayout(layoutMentah)
+    if (!bersih.ok) {
+      tampilkanGagalTulis(`Layout dari server ditolak: ${bersih.error}`)
+      return
+    }
+    const layout = bersih.layout
+
+    const dipertahankan = kanvas.getObjects().filter((o) => String(o.get("namaLapisan") ?? "") === "Latar")
+    if (dipertahankan.length > 0) kanvas.remove(...dipertahankan)
+    else kanvas.clear() // tanpa latar: bersihkan juga backgroundColor
+    if (layout.latarBelakang) kanvas.backgroundColor = layout.latarBelakang
+
+    /**
+     * Satu elemen layout → satu objek fabric. `undefined` = elemen dilewati
+     * (jenis `gambar` belum punya sumber; membuat objek kosong hanya jadi sampah di kanvas).
+     */
+    const buatObjek = (el: ElemenLayout): FabricObject | undefined => {
+      const k = kePiksel(el, ukuranId)
+      // Origin kiri-atas: `kePiksel` mengembalikan kotak (left/top/lebar/tinggi), bukan titik tengah.
+      const dasar = { left: k.left, top: k.top, originX: "left" as const, originY: "top" as const }
+      const isi = el.warna ?? "#000000"
+      const garis = el.warnaGaris ?? "#000000"
+      const lebarGaris = el.tebalGaris ?? 0
+      const sudut = el.rotasi ?? 0
+      const opasitas = el.opasitas
+
+      // Elemen dengan TINGGI tetap (teks, persegi, lingkaran): penyesuaian ukuran dikirim
+      // sebagai scaleX/scaleY, karena options constructor tidak menerima keduanya — lihat cabang garis.
+      const pas = { left: k.left, top: k.top, angle: sudut, opacity: opasitas }
+
+      switch (el.jenis) {
+        case "teks": {
+          // IText (bukan Text) supaya hasil AI tetap bisa diklik lalu diketik langsung di kanvas.
+          const t = new fabric.IText(el.teks ?? "", {
+            ...pas,
+            originX: "left",
+            originY: "top",
+            fontSize: el.ukuran ?? 48,
+            fontFamily: el.font ?? "Arial",
+            fill: isi,
+            fontWeight: el.tebal ? "bold" : "normal",
+            fontStyle: el.miring ? "italic" : "normal",
+            underline: el.garisBawah === true,
+            textAlign: el.perataan === "tengah" ? "center" : el.perataan === "kanan" ? "right" : "left",
+          })
+          // Dimensi SEDIA ada: originX "left" berlaku untuk kotak teks, jadi left/top tetap
+          // sama setelah diskalakan. Tinggi teks dari AI lebih longgar dari hasil render →
+          // hanya LEBAR yang diskalakan.
+          const lebarAsli = t.width || 1
+          t.set({ scaleX: k.width / lebarAsli, scaleY: k.height / (t.height || 1), width: k.width })
+          return t
+        }
+        case "persegi": {
+          const r = new fabric.Rect({ ...dasar, fill: isi, stroke: garis, strokeWidth: lebarGaris, width: k.width, height: k.height, angle: sudut, opacity: opasitas })
+          const rad = el.radiusSudut ?? 0
+          if (rad > 0) r.set({ rx: rad, ry: rad, width: Math.max(1, k.width - rad * 2), height: Math.max(1, k.height - rad * 2) })
+          return r
+        }
+        case "lingkaran": {
+          const e = new fabric.Ellipse({ ...dasar, fill: isi, stroke: garis, strokeWidth: lebarGaris, rx: k.width / 2, ry: k.height / 2, angle: sudut, opacity: opasitas })
+          // Origin pusat: left/top harus digeser ke tengah kotak supaya hasilnya sama dengan origin kiri-atas.
+          e.set({ originX: "center", originY: "center", left: k.left + k.width / 2, top: k.top + k.height / 2 })
+          return e
+        }
+        case "garis": {
+          // Garis digambar pada skala 1 di koordinat LOKAL pusat, lalu diskalakan: dengan begitu
+          // anggota baru (atan2) tidak perlu dihitung dan sudut dari layout tetap dipakai apa adanya.
+          const l = new fabric.Line([-k.width / 2, 0, k.width / 2, 0], {
+            ...pas,
+            originX: "center",
+            originY: "center",
+            left: k.left + k.width / 2,
+            top: k.top + k.height / 2,
+            stroke: isi,
+            strokeWidth: Math.max(1, lebarGaris),
+          })
+          // Tanpa skala balik, tebal garis ikut mengecil/membesar bersama skala di bawah.
+          const tebalSkala = Math.max(0.2, Math.max(k.height, 1) / (Math.max(1, lebarGaris) * 4))
+          l.set({ scaleX: tebalSkala, scaleY: tebalSkala })
+          return l
+        }
+        default:
+          return undefined // "gambar": server belum mengirim sumber gambarnya
+      }
+    }
+
+    let urut = 0
+    // Urutan array = z-order (index 0 paling bawah); kanvas.add selalu menaruh objek baru di
+    // ATAS, jadi menambahkan berurutan sudah menghasilkan tumpukan yang sama.
+    for (const el of layout.elemen) {
+      const o = buatObjek(el)
+      if (!o) continue
+      urut += 1
+      o.set({ id: el.id || `ai-${urut}-${Date.now()}`, namaLapisan: `AI ${NAMA_TIPE[o instanceof fabric.IText ? "teks" : el.jenis === "garis" ? "garis" : "bentuk"]} ${urut}` })
+      kanvas.add(o)
+    }
+
+    kanvas.discardActiveObject()
+    kanvas.requestRenderAll()
+    setTerpilih(null)
+    setDokumenJson(JSON.stringify(kanvas.toObject(PROP_SERIAL)))
+    // Satu entri riwayat untuk SELURUH layout → Ctrl+Z membatalkan hasil AI dalam satu langkah.
+    catatRiwayat()
+  }, [catatRiwayat, ukuranId])
+
+  /** JSON dokumen saat ini; dipakai simpan desain dan handle imperatif. */
+  const ambilDokumen = useCallback(() => {
+    const kanvas = fabricRef.current
+    return kanvas ? JSON.stringify(kanvas.toObject(PROP_SERIAL)) : dokumenJson
+  }, [dokumenJson])
+
+  /**
+   * Buka daftar desain dari server, lalu tampilkan dialog. `memuat` dipakai dialog untuk
+   * menampilkan spinner selama daftar belum tiba.
+   */
+  const bukaDaftarDesain = useCallback(async () => {
+    setDialogDesain({ jenis: "buka", daftar: [], memuat: true })
+    try {
+      const res = await fetch(`/api/desain?presetId=${presetId}`, { credentials: "include" })
+      const d = (await res.json().catch(() => null)) as { ok?: boolean; desain?: DesainRingkas[]; error?: string } | null
+      if (!res.ok || !d?.ok) {
+        setDialogDesain(null)
+        tampilkanGagalTulis(d?.error ?? `Gagal memuat daftar desain (${res.status}).`)
+        return
+      }
+      setDialogDesain({ jenis: "buka", daftar: d.desain ?? [], memuat: false })
+    } catch (e) {
+      setDialogDesain(null)
+      tampilkanGagalTulis(e instanceof Error ? e.message : "Gagal menghubungi server.")
+    }
+  }, [presetId])
+
+  /**
+   * Simpan dokumen sekarang. `desainId` ada → UPDATE baris yang sama; tanpa itu server
+   * membuat desain baru dan id-nya disimpan supaya klik "Simpan" berikutnya tidak menduplikasi.
+   * Ukuran dokumen TIDAK diubah di sini: dokumen dan preset ukuran harus tetap sepasang.
+   */
+  const simpanDesain = useCallback(async (nama: string) => {
+    setMenyimpan(true)
+    try {
+      const res = await fetch("/api/desain", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          aksi: "simpan",
+          presetId,
+          id: desainId ?? undefined,
+          nama,
+          ukuran: ukuranId,
+          dokumen_json: ambilDokumen(),
+        }),
+      })
+      const d = (await res.json().catch(() => null)) as { ok?: boolean; id?: number; error?: string } | null
+      if (!res.ok || !d?.ok || typeof d.id !== "number") {
+        tampilkanGagalTulis(d?.error ?? `Gagal menyimpan desain (${res.status}).`)
+        return
+      }
+      setDesainId(d.id)
+      setDialogDesain(null)
+      toast.success(`Desain "${nama}" tersimpan.`)
+    } catch (e) {
+      tampilkanGagalTulis(e instanceof Error ? e.message : "Gagal menghubungi server.")
+    } finally {
+      setMenyimpan(false)
+    }
+  }, [presetId, ukuranId, desainId, ambilDokumen])
+
+  /**
+   * Muat satu desain: ukuran dokumen diambil dari `dokumen_json` (bukan dari kolom `ukuran`),
+   * supaya kanvas dan isi dokumen dijamin sepasang. Setelah itu `desainId` diset → simpan berikutnya UPDATE.
+   */
+  const muatDesain = useCallback(async (id: number) => {
+    try {
+      const res = await fetch(`/api/desain?presetId=${presetId}&id=${id}`, { credentials: "include" })
+      const d = (await res.json().catch(() => null)) as
+        | { ok?: boolean; desain?: { nama?: string; ukuran?: string; dokumen_json?: string }; error?: string }
+        | null
+      if (!res.ok || !d?.ok || !d.desain?.dokumen_json) {
+        tampilkanGagalTulis(d?.error ?? `Gagal membuka desain (${res.status}).`)
+        return
+      }
+      const mentah = d.desain.dokumen_json
+      const dok = JSON.parse(mentah) as DokumenKanvas
+      // `muatDokumen` tidak mengubah dimensi, jadi dokumen WAJIB dimuat ke preset yang ukurannya
+      // sama dengan saat disimpan — kalau tidak, posisi elemen meleset dari kanvas.
+      const cocok = Object.values(PRESET).find((p) => p.lebar === dok.width && p.tinggi === dok.height)
+      if (cocok && cocok.id !== ukuranId) setUkuranId(cocok.id)
+      // Fabric di-import dinamis; kanvas baru siap setelah import + render pertama.
+      // Menunggu di sini supaya "buka desain" yang diklik cepat tidak diam-diam tidak jalan.
+      for (let i = 0; i < 20 && !fabricRef.current; i += 1) {
+        const { promise, resolve } = Promise.withResolvers<void>()
+        setTimeout(resolve, 50)
+        await promise
+      }
+      await muatDokumen(mentah)
+      setDesainId(id)
+      setDialogDesain(null)
+      toast.success(`Desain "${d.desain.nama ?? ""}" dibuka.`)
+    } catch (e) {
+      tampilkanGagalTulis(e instanceof Error ? e.message : "Gagal membuka desain.")
+    }
+  }, [presetId, ukuranId, muatDokumen])
+
+  const bukaDialogSimpan = useCallback(() => {
+    // Nama default: tanggal lokal (bukan ISO UTC) karena admin membacanya sebagai "hari ini".
+    setDialogDesain({ jenis: "simpan", nama: `Desain ${new Date().toLocaleDateString("id-ID")}` })
+  }, [])
+
   useImperativeHandle(
     ref,
     () => ({
@@ -632,8 +895,9 @@ export const EditorDesain = forwardRef<EditorDesainHandle, EditorDesainProps>(fu
       },
       muatDokumen,
       tambahLatarGambar,
+      terapkanLayout,
     }),
-    [dokumenJson, muatDokumen, tambahLatarGambar]
+    [dokumenJson, muatDokumen, tambahLatarGambar, terapkanLayout]
   )
 
   return (
@@ -699,6 +963,14 @@ export const EditorDesain = forwardRef<EditorDesainHandle, EditorDesainProps>(fu
             <Download />
             Ekspor
           </Button>
+          <Button variant="outline" size="sm" onClick={bukaDialogSimpan} data-testid="simpan-desain">
+            <Save />
+            Simpan
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => void bukaDaftarDesain()} data-testid="buka-desain">
+            <FolderOpen />
+            Buka
+          </Button>
           <span className="text-muted-foreground text-xs" data-testid="info-dokumen">
             {dokumenJson ? "Dokumen siap disimpan" : "Dokumen kosong"}
           </span>
@@ -749,6 +1021,86 @@ export const EditorDesain = forwardRef<EditorDesainHandle, EditorDesainProps>(fu
 
       {/* Picker aset: latar + folder. Di bawah kanvas supaya kanvas tetap dapat lebar penuh. */}
       <EditorPickerAset presetId={presetId} onPilihAset={pilihAsetLatar} />
+
+      {/* Toolbar AI: hasil layout dari server langsung diterapkan ke kanvas. */}
+      <EditorToolbarAi presetId={presetId} ukuran={ukuranId} onLayoutTerbuat={(l) => void terapkanLayout(l)} />
+
+      {/* Dialog simpan: nama diminta di sini (bukan window.prompt) supaya bisa menyertakan
+          informasi ukuran dan status "desain lama akan ditimpa". */}
+      <Dialog open={dialogDesain?.jenis === "simpan"} onOpenChange={(v) => !v && setDialogDesain(null)}>
+        <DialogContent className="sm:max-w-md" data-testid="dialog-simpan-desain">
+          <DialogHeader>
+            <DialogTitle>Simpan desain</DialogTitle>
+            <DialogDescription>
+              {desainId
+                ? `Menyimpan ulang desain #${desainId} (${ukuranId}).`
+                : `Desain baru akan dibuat (${ukuranId}).`}
+            </DialogDescription>
+          </DialogHeader>
+          {dialogDesain?.jenis === "simpan" && (
+            <div className="flex flex-col gap-3">
+              <Field>
+                <FieldLabel htmlFor="nama-desain">Nama desain</FieldLabel>
+                <Input
+                  id="nama-desain"
+                  value={dialogDesain.nama}
+                  onChange={(e) => setDialogDesain({ jenis: "simpan", nama: e.target.value })}
+                  data-testid="nama-desain"
+                />
+              </Field>
+              <DialogFooter>
+                <Button
+                  className="h-11 md:h-8"
+                  disabled={menyimpan}
+                  onClick={() => void simpanDesain(dialogDesain.nama.trim() || `Desain ${new Date().toLocaleDateString("id-ID")}`)}
+                  data-testid="konfirmasi-simpan-desain"
+                >
+                  {menyimpan ? <Spinner data-icon="inline-start" /> : <Save data-icon="inline-start" />}
+                  Simpan
+                </Button>
+              </DialogFooter>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialog buka: daftar desain preset ini (nama + ukuran + waktu). */}
+      <Dialog open={dialogDesain?.jenis === "buka"} onOpenChange={(v) => !v && setDialogDesain(null)}>
+        <DialogContent className="sm:max-w-md" data-testid="dialog-buka-desain">
+          <DialogHeader>
+            <DialogTitle>Buka desain</DialogTitle>
+            <DialogDescription>Desain yang dibuka menggantikan isi kanvas, termasuk riwayat undo.</DialogDescription>
+          </DialogHeader>
+          {dialogDesain?.jenis === "buka" && (
+            <div className="flex flex-col gap-2" data-testid="daftar-desain">
+              {dialogDesain.memuat ? (
+                <p className="text-sm text-muted-foreground">Memuat…</p>
+              ) : dialogDesain.daftar.length === 0 ? (
+                <p className="text-sm text-muted-foreground" data-testid="desain-kosong">
+                  Belum ada desain tersimpan.
+                </p>
+              ) : (
+                dialogDesain.daftar.map((d) => (
+                  <Button
+                    key={d.id}
+                    variant="outline"
+                    className="h-auto w-full justify-start py-2 text-left"
+                    onClick={() => void muatDesain(d.id)}
+                    data-testid={`buka-desain-${d.id}`}
+                  >
+                    <span className="flex min-w-0 flex-col items-start">
+                      <span className="truncate font-medium">{d.nama}</span>
+                      <span className="text-xs text-muted-foreground">
+                        {d.ukuran} · {new Date(d.updated_at * 1000).toLocaleString("id-ID")}
+                      </span>
+                    </span>
+                  </Button>
+                ))
+              )}
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
 
       <EditorExportDialog
         open={dialogEkspor}
