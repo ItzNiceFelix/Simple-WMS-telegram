@@ -15,6 +15,7 @@ import { AiModelDefault } from "@/components/dashboard/ai-model-default";
 import { AiPrompt } from "@/components/dashboard/ai-prompt";
 import { AiTool } from "@/components/dashboard/ai-tool";
 import { KelolaAdmin } from "@/components/dashboard/kelola-admin";
+import { KledoIntegrasi } from "@/components/dashboard/kledo-integrasi";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { PresetToko } from "@/components/dashboard/preset-toko";
@@ -236,6 +237,7 @@ function Pengaturan() {
 
         {adalahStaff ? <PresetToko bolehUbah={bolehUbah} /> : null}
         {bolehUbah ? <KelolaAdmin /> : null}
+        {bolehUbah ? <KledoIntegrasi bolehUbah={bolehUbah} onBerubah={() => void muat()} /> : null}
 
         {adalahStaff ? (
           <>

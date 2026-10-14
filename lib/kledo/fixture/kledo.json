@@ -1,0 +1,1290 @@
+{
+  "warehouses": {
+    "success": true,
+    "data": {
+      "data": [
+        {
+          "id": 4,
+          "name": "Dukuh Kupang",
+          "code": "DK-KPG",
+          "is_archive": 0,
+          "parent_warehouse_id": null,
+          "photos": []
+        },
+        {
+          "id": 2,
+          "name": "Gudang D12",
+          "code": "D12",
+          "is_archive": 0,
+          "parent_warehouse_id": null,
+          "photos": []
+        },
+        {
+          "id": 3,
+          "name": "Gudang D19",
+          "code": "D19",
+          "is_archive": 0,
+          "parent_warehouse_id": null,
+          "photos": []
+        }
+      ]
+    },
+    "message": "Gudang berhasil diambil",
+    "time": 0.03
+  },
+  "produk": {
+    "success": true,
+    "data": {
+      "current_page": 1,
+      "data": [
+        {
+          "code": "0902",
+          "name": "Alas Setrika uk.3x45x90",
+          "price": 0,
+          "qty": 0,
+          "unit_id": 1,
+          "id": 2,
+          "local_id": "e24c42a5-89b4-4c6b-a552-9b9776f2cd56",
+          "is_track": true,
+          "bundle_type_id": 0,
+          "base_price": 0,
+          "variant_type_id": 0,
+          "sn_type": null,
+          "avg_base_price": 0,
+          "is_archive": 0,
+          "unit": {
+            "id": 1,
+            "name": "Pcs"
+          },
+          "warehouse_qty": [],
+          "modifier_group_ids": [],
+          "category_ids": [
+            1
+          ]
+        },
+        {
+          "code": "1203",
+          "name": "Alas Setrika uk.3x45x90 (Ad!n)",
+          "price": 0,
+          "qty": 17,
+          "unit_id": 1,
+          "id": 3,
+          "local_id": "8ca3ccf0-8c75-4039-9377-c2881fb31096",
+          "is_track": true,
+          "bundle_type_id": 0,
+          "base_price": 0,
+          "variant_type_id": 0,
+          "sn_type": null,
+          "avg_base_price": 13000,
+          "is_archive": 0,
+          "unit": {
+            "id": 1,
+            "name": "Pcs"
+          },
+          "warehouse_qty": [],
+          "modifier_group_ids": [],
+          "category_ids": [
+            1
+          ]
+        },
+        {
+          "code": "0629",
+          "name": "Amazing Shoes",
+          "price": 0,
+          "qty": 1,
+          "unit_id": 1,
+          "id": 4,
+          "local_id": "8c276196-fb95-4eb2-8fec-07d73b2dba8c",
+          "is_track": true,
+          "bundle_type_id": 0,
+          "base_price": 0,
+          "variant_type_id": 0,
+          "sn_type": null,
+          "avg_base_price": 26000,
+          "is_archive": 0,
+          "unit": {
+            "id": 1,
+            "name": "Pcs"
+          },
+          "warehouse_qty": [],
+          "modifier_group_ids": [],
+          "category_ids": [
+            2
+          ]
+        },
+        {
+          "code": "100189",
+          "name": "Amplop Lebaran",
+          "price": 0,
+          "qty": 0,
+          "unit_id": 2,
+          "id": 5,
+          "local_id": "ddd8702c-15ff-4971-9763-31bb40323be5",
+          "is_track": true,
+          "bundle_type_id": 0,
+          "base_price": 0,
+          "variant_type_id": 0,
+          "sn_type": null,
+          "avg_base_price": 0,
+          "is_archive": 0,
+          "unit": {
+            "id": 2,
+            "name": "PACK"
+          },
+          "warehouse_qty": [],
+          "modifier_group_ids": [],
+          "category_ids": [
+            1
+          ]
+        },
+        {
+          "code": "001461",
+          "name": "Bak Cat Monty",
+          "price": 0,
+          "qty": 0,
+          "unit_id": 1,
+          "id": 6,
+          "local_id": "f779f631-6abc-434c-83ac-23c2466eacc3",
+          "is_track": true,
+          "bundle_type_id": 0,
+          "base_price": 0,
+          "variant_type_id": 0,
+          "sn_type": null,
+          "avg_base_price": 0,
+          "is_archive": 0,
+          "unit": {
+            "id": 1,
+            "name": "Pcs"
+          },
+          "warehouse_qty": [],
+          "modifier_group_ids": [],
+          "category_ids": [
+            1
+          ]
+        },
+        {
+          "code": "100146",
+          "name": "Bak Jerman Uk.18 Silver",
+          "price": 0,
+          "qty": 2,
+          "unit_id": 1,
+          "id": 7,
+          "local_id": "55a4489a-abeb-42bf-b349-ac1e4bfff7b9",
+          "is_track": true,
+          "bundle_type_id": 0,
+          "base_price": 0,
+          "variant_type_id": 0,
+          "sn_type": null,
+          "avg_base_price": 6250,
+          "is_archive": 0,
+          "unit": {
+            "id": 1,
+            "name": "Pcs"
+          },
+          "warehouse_qty": [],
+          "modifier_group_ids": [],
+          "category_ids": [
+            1
+          ]
+        },
+        {
+          "code": "100112",
+          "name": "Bak USA uk.20L Army",
+          "price": 10000,
+          "qty": 573,
+          "unit_id": 1,
+          "id": 8,
+          "local_id": "0f7b9bf3-b422-483b-8e13-70297aa8b5ed",
+          "is_track": true,
+          "bundle_type_id": 0,
+          "base_price": 0,
+          "variant_type_id": 0,
+          "sn_type": null,
+          "avg_base_price": 7000,
+          "is_archive": 0,
+          "unit": {
+            "id": 1,
+            "name": "Pcs"
+          },
+          "warehouse_qty": [],
+          "modifier_group_ids": [],
+          "category_ids": [
+            3
+          ]
+        },
+        {
+          "code": "100111",
+          "name": "Bak USA uk.45L Hijau",
+          "price": 0,
+          "qty": 0,
+          "unit_id": 1,
+          "id": 9,
+          "local_id": "a23648fd-7c56-4217-90d3-11f40b79062f",
+          "is_track": true,
+          "bundle_type_id": 0,
+          "base_price": 0,
+          "variant_type_id": 0,
+          "sn_type": null,
+          "avg_base_price": 0,
+          "is_archive": 0,
+          "unit": {
+            "id": 1,
+            "name": "Pcs"
+          },
+          "warehouse_qty": [],
+          "modifier_group_ids": [],
+          "category_ids": [
+            3
+          ]
+        },
+        {
+          "code": "100113",
+          "name": "Bak USA uk.46L Hijau",
+          "price": 0,
+          "qty": 290,
+          "unit_id": 1,
+          "id": 10,
+          "local_id": "373687c6-3a7b-49d7-a5cf-2ac3632e876b",
+          "is_track": true,
+          "bundle_type_id": 0,
+          "base_price": 0,
+          "variant_type_id": 0,
+          "sn_type": null,
+          "avg_base_price": 8292,
+          "is_archive": 0,
+          "unit": {
+            "id": 1,
+            "name": "Pcs"
+          },
+          "warehouse_qty": [],
+          "modifier_group_ids": [],
+          "category_ids": [
+            3
+          ]
+        },
+        {
+          "code": "001399",
+          "name": "Bakku 16 cling",
+          "price": 0,
+          "qty": 0,
+          "unit_id": 1,
+          "id": 11,
+          "local_id": "d9b460ad-080c-4541-9c66-6998188785c9",
+          "is_track": true,
+          "bundle_type_id": 0,
+          "base_price": 0,
+          "variant_type_id": 0,
+          "sn_type": null,
+          "avg_base_price": 0,
+          "is_archive": 0,
+          "unit": {
+            "id": 1,
+            "name": "Pcs"
+          },
+          "warehouse_qty": [],
+          "modifier_group_ids": [],
+          "category_ids": [
+            1
+          ]
+        }
+      ],
+      "first_page_url": "https://cv-hanaa-jaya.api.kledo.com/api/v1/finance/products?per_page=100&page=1",
+      "from": 1,
+      "last_page": 12,
+      "last_page_url": "https://cv-hanaa-jaya.api.kledo.com/api/v1/finance/products?per_page=100&page=12",
+      "links": [
+        {
+          "url": null,
+          "label": "&laquo; Sebelumnya",
+          "page": null,
+          "active": false
+        },
+        {
+          "url": "https://cv-hanaa-jaya.api.kledo.com/api/v1/finance/products?per_page=100&page=1",
+          "label": "1",
+          "page": 1,
+          "active": true
+        },
+        {
+          "url": "https://cv-hanaa-jaya.api.kledo.com/api/v1/finance/products?per_page=100&page=2",
+          "label": "2",
+          "page": 2,
+          "active": false
+        },
+        {
+          "url": "https://cv-hanaa-jaya.api.kledo.com/api/v1/finance/products?per_page=100&page=3",
+          "label": "3",
+          "page": 3,
+          "active": false
+        },
+        {
+          "url": "https://cv-hanaa-jaya.api.kledo.com/api/v1/finance/products?per_page=100&page=4",
+          "label": "4",
+          "page": 4,
+          "active": false
+        },
+        {
+          "url": "https://cv-hanaa-jaya.api.kledo.com/api/v1/finance/products?per_page=100&page=5",
+          "label": "5",
+          "page": 5,
+          "active": false
+        },
+        {
+          "url": "https://cv-hanaa-jaya.api.kledo.com/api/v1/finance/products?per_page=100&page=6",
+          "label": "6",
+          "page": 6,
+          "active": false
+        },
+        {
+          "url": "https://cv-hanaa-jaya.api.kledo.com/api/v1/finance/products?per_page=100&page=7",
+          "label": "7",
+          "page": 7,
+          "active": false
+        },
+        {
+          "url": "https://cv-hanaa-jaya.api.kledo.com/api/v1/finance/products?per_page=100&page=8",
+          "label": "8",
+          "page": 8,
+          "active": false
+        },
+        {
+          "url": "https://cv-hanaa-jaya.api.kledo.com/api/v1/finance/products?per_page=100&page=9",
+          "label": "9",
+          "page": 9,
+          "active": false
+        },
+        {
+          "url": "https://cv-hanaa-jaya.api.kledo.com/api/v1/finance/products?per_page=100&page=10",
+          "label": "10",
+          "page": 10,
+          "active": false
+        },
+        {
+          "url": "https://cv-hanaa-jaya.api.kledo.com/api/v1/finance/products?per_page=100&page=11",
+          "label": "11",
+          "page": 11,
+          "active": false
+        },
+        {
+          "url": "https://cv-hanaa-jaya.api.kledo.com/api/v1/finance/products?per_page=100&page=12",
+          "label": "12",
+          "page": 12,
+          "active": false
+        },
+        {
+          "url": "https://cv-hanaa-jaya.api.kledo.com/api/v1/finance/products?per_page=100&page=2",
+          "label": "Selanjutnya &raquo;",
+          "page": 2,
+          "active": false
+        }
+      ],
+      "next_page_url": "https://cv-hanaa-jaya.api.kledo.com/api/v1/finance/products?per_page=100&page=2",
+      "path": "https://cv-hanaa-jaya.api.kledo.com/api/v1/finance/products",
+      "per_page": 100,
+      "prev_page_url": null,
+      "to": 100,
+      "total": 1174,
+      "grand_subtotal": {
+        "qty": 8433,
+        "avg_base_price": 807861.0083167
+      },
+      "grand_total": {
+        "qty": 126857,
+        "avg_base_price": 23649784.0264198
+      },
+      "categories": [
+        {
+          "id": 1,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Other",
+          "is_active": true,
+          "local_id": "e8c6c2c6-a9a9-4c57-9aed-768226afdaef"
+        },
+        {
+          "id": 2,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "TRI J",
+          "is_active": true,
+          "local_id": "9363b155-2476-400b-b4c2-e8b3b1a139c2"
+        },
+        {
+          "id": 3,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Obor Bina (Alex)",
+          "is_active": true,
+          "local_id": "0ed4d16e-70eb-49b7-98e9-6ab38095c554"
+        },
+        {
+          "id": 4,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "toko viral",
+          "is_active": true,
+          "local_id": "19ee93b2-2b1e-45cd-9040-b143afa38bf3"
+        },
+        {
+          "id": 5,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "BECLEAN (Damai Sentosa)",
+          "is_active": true,
+          "local_id": "10293704-6a80-406a-8443-47a1270dba9d"
+        },
+        {
+          "id": 6,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Luvina",
+          "is_active": true,
+          "local_id": "baca876d-af78-4770-9c9a-b0ce2e944923"
+        },
+        {
+          "id": 7,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Pelangi Plastik",
+          "is_active": true,
+          "local_id": "991f41b5-6a6f-4906-94c5-94cb51f08501"
+        },
+        {
+          "id": 8,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Miracle",
+          "is_active": true,
+          "local_id": "c69c57bb-087c-49dd-9ea0-292d16ef83f2"
+        },
+        {
+          "id": 9,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Cahaya Karunia Sejati (nagoya)",
+          "is_active": true,
+          "local_id": "5b305afe-bfec-42dd-9050-e6fbabc6ba92"
+        },
+        {
+          "id": 10,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Yusuf Bubble",
+          "is_active": true,
+          "local_id": "2d8ffd42-1f01-47fe-a9af-5939413107ac"
+        },
+        {
+          "id": 11,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Livencong Bubble",
+          "is_active": true,
+          "local_id": "2d90e96d-c242-43a9-8842-1d7852af9227"
+        },
+        {
+          "id": 12,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "PT. Aimi",
+          "is_active": true,
+          "local_id": "b7c7527f-421d-439d-afef-76b831bead1d"
+        },
+        {
+          "id": 13,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Sinhob",
+          "is_active": true,
+          "local_id": "a4ac7d3e-3574-4707-8280-f6995376e8a1"
+        },
+        {
+          "id": 14,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "HA",
+          "is_active": true,
+          "local_id": "82b70d6f-258e-4a59-ba84-5c1f11bcb5b7"
+        },
+        {
+          "id": 15,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Meishing",
+          "is_active": true,
+          "local_id": "19d6828d-2ba9-460b-87ff-170d2bdf098c"
+        },
+        {
+          "id": 16,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Prima Nusa Perkasa (mesias)",
+          "is_active": true,
+          "local_id": "21d67bd7-3488-4e26-9f61-171006d054df"
+        },
+        {
+          "id": 17,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Print Color",
+          "is_active": true,
+          "local_id": "8075498b-aac1-4b92-9629-dcb01c90cbe1"
+        },
+        {
+          "id": 18,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "PT MENTARI DINAMIK INDONESIA (heny)",
+          "is_active": true,
+          "local_id": "11ca8ab9-35a6-40df-bd81-a79492755a2a"
+        },
+        {
+          "id": 19,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Dua Jaya Glass (pak giman)",
+          "is_active": true,
+          "local_id": "2320bcbc-d70b-437b-a065-970577059103"
+        },
+        {
+          "id": 20,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "imam (sales indoraya)",
+          "is_active": true,
+          "local_id": "7b7ecb4a-d122-4a20-8080-2167811145f0"
+        },
+        {
+          "id": 21,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Johan",
+          "is_active": true,
+          "local_id": "14432332-a680-4bb5-9f04-06de837887b6"
+        },
+        {
+          "id": 22,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Calista",
+          "is_active": true,
+          "local_id": "d1708c61-786c-4905-85a5-76a505dbb3f9"
+        },
+        {
+          "id": 23,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Umi Hajar",
+          "is_active": true,
+          "local_id": "68ad22a4-9d18-407b-859c-1a9f92516c54"
+        },
+        {
+          "id": 24,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "BinBon",
+          "is_active": true,
+          "local_id": "eca750ec-9b8c-4711-a5bf-5069fd00bacc"
+        },
+        {
+          "id": 25,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Anugerah Hasil Abadi (Nasional)",
+          "is_active": true,
+          "local_id": "2b354dc2-34f6-4960-9c15-5d84379d38f9"
+        },
+        {
+          "id": 26,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Miltape",
+          "is_active": true,
+          "local_id": "5f6b65e2-1d85-43fe-a5db-0b412ce00e08"
+        },
+        {
+          "id": 27,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "seven star",
+          "is_active": true,
+          "local_id": "ce4cc307-42fa-4ab7-b156-c06e9bd1f70e"
+        },
+        {
+          "id": 28,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Nurimansyah",
+          "is_active": true,
+          "local_id": "6d6b98ea-1436-4cb3-bb54-017bfc0857bc"
+        },
+        {
+          "id": 29,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "SUBUR BARU MOJOKERTO",
+          "is_active": true,
+          "local_id": "602741c2-a606-476e-baa6-96a112e10e87"
+        },
+        {
+          "id": 30,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Budi Piring",
+          "is_active": true,
+          "local_id": "3472b12e-7852-43b2-aa99-ccf5ceaacb9b"
+        },
+        {
+          "id": 31,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "reynaldi",
+          "is_active": true,
+          "local_id": "d1636c77-3f3e-43a0-b947-df739775c6d6"
+        },
+        {
+          "id": 32,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Muhaimin",
+          "is_active": true,
+          "local_id": "d79b9d4a-3468-4729-9ad2-91ff0801b30e"
+        },
+        {
+          "id": 33,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Lucky Star",
+          "is_active": true,
+          "local_id": "8b6642db-9970-42c1-924b-bc8afb2cdbbe"
+        },
+        {
+          "id": 34,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Gascomp",
+          "is_active": true,
+          "local_id": "a38a0526-f732-4466-b6a0-05ddf8797abe"
+        },
+        {
+          "id": 35,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Cilukba",
+          "is_active": true,
+          "local_id": "f3d99a81-0406-4c14-8a33-02da73192238"
+        },
+        {
+          "id": 36,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "HappyCall",
+          "is_active": true,
+          "local_id": "e0785a2f-6e58-4bcd-9a1f-3888094a5014"
+        },
+        {
+          "id": 37,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Bagus Pasuruan",
+          "is_active": true,
+          "local_id": "420f85c4-2fd0-4e74-9846-312e2ac2923a"
+        },
+        {
+          "id": 38,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "surya plast",
+          "is_active": true,
+          "local_id": "e06e9af4-58f3-427c-9f82-eebe155c82b4"
+        },
+        {
+          "id": 39,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Syahril (piring bunga,cantik) surabaya",
+          "is_active": true,
+          "local_id": "aa810d89-60fa-4a0c-af4c-4b6767365d76"
+        },
+        {
+          "id": 40,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "ERRINDO JAYA (Calista)",
+          "is_active": true,
+          "local_id": "8a576fcc-b9ae-41e4-a779-6cc8d37f8b81"
+        },
+        {
+          "id": 41,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Teguh",
+          "is_active": true,
+          "local_id": "b88c967c-3f74-44db-9d6c-6d598dee54a5"
+        },
+        {
+          "id": 42,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "NAPOLLY",
+          "is_active": true,
+          "local_id": "ac07e1d0-01e7-4aaa-8062-322637792d49"
+        },
+        {
+          "id": 43,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Kimplast",
+          "is_active": true,
+          "local_id": "ef9c3117-8fb5-44bd-87b5-550ff70e113d"
+        },
+        {
+          "id": 44,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Asta",
+          "is_active": true,
+          "local_id": "1a614cdb-8c4f-4243-9750-444647e7261e"
+        },
+        {
+          "id": 45,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "SNP (QUANTUM)",
+          "is_active": true,
+          "local_id": "e9ea4459-ac74-4681-89c2-a2e8b9b823b4"
+        },
+        {
+          "id": 46,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Ratu Wangi",
+          "is_active": true,
+          "local_id": "6f6aec57-02e8-4e1a-acca-33d0786f6cf2"
+        },
+        {
+          "id": 47,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "SUHADI",
+          "is_active": true,
+          "local_id": "9e21fd3b-66a7-4ffe-87ff-ddf38c690bba"
+        },
+        {
+          "id": 48,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Berkah Jaya",
+          "is_active": true,
+          "local_id": "37151b40-c0fd-455a-b20a-7b72e209465a"
+        },
+        {
+          "id": 49,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Gayatri",
+          "is_active": true,
+          "local_id": "2d877084-3fc6-4557-9c88-1d0637828231"
+        },
+        {
+          "id": 50,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Advan",
+          "is_active": true,
+          "local_id": "dd99ba06-3a83-4cb6-97b6-2ed1d088b113"
+        },
+        {
+          "id": 51,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "UD. GAMPANG JAYA",
+          "is_active": true,
+          "local_id": "004f2ca9-50dd-43e9-a1bc-9a759cca1b06"
+        },
+        {
+          "id": 52,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "N Brand",
+          "is_active": true,
+          "local_id": "8f4da3e3-bdb8-40d4-ade2-644c89babafc"
+        },
+        {
+          "id": 53,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Peony",
+          "is_active": true,
+          "local_id": "2a3f3181-521e-4cc7-aada-c5b54b2bfbef"
+        },
+        {
+          "id": 54,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Kingwon Elektrik Indonesia",
+          "is_active": true,
+          "local_id": "4c8d9923-4360-477e-b222-ee26836211fc"
+        },
+        {
+          "id": 55,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Rio Piring",
+          "is_active": true,
+          "local_id": "a87f238b-d064-4754-8532-599a7150d6da"
+        },
+        {
+          "id": 56,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Pak Sandy mjk",
+          "is_active": true,
+          "local_id": "632afb97-ace9-4071-8722-8d154e6cf3e5"
+        },
+        {
+          "id": 57,
+          "parent_id": null,
+          "has_child": 0,
+          "pos_id": null,
+          "name": "Candi Mas",
+          "is_active": true,
+          "local_id": "7f59204e-87ee-4bab-bdc7-6e73a69c4cc8"
+        }
+      ],
+      "units": [
+        {
+          "id": 1,
+          "name": "Pcs",
+          "position": "15.00000",
+          "created_at": "2026-09-13 06:26:21",
+          "updated_at": "2026-09-13 06:26:21",
+          "deleted_at": null,
+          "local_id": "50cd4ce1-1eb4-4624-8f51-fa06090a5131"
+        },
+        {
+          "id": 2,
+          "name": "PACK",
+          "position": "25.00000",
+          "created_at": "2026-09-21 11:17:35",
+          "updated_at": "2026-09-21 11:17:35",
+          "deleted_at": null,
+          "local_id": "1aca82cd-8e4f-4c07-af7f-fbdec62d8aa0"
+        },
+        {
+          "id": 3,
+          "name": "DOSH",
+          "position": "35.00000",
+          "created_at": "2026-09-21 11:18:02",
+          "updated_at": "2026-09-21 11:18:02",
+          "deleted_at": null,
+          "local_id": "d17fd706-5572-4570-81fa-eb1381b32315"
+        },
+        {
+          "id": 4,
+          "name": "LUSIN",
+          "position": "45.00000",
+          "created_at": "2026-09-21 11:18:41",
+          "updated_at": "2026-09-21 11:18:41",
+          "deleted_at": null,
+          "local_id": "3a9c337f-50bd-4b1e-8ac0-7e5f98ebb320"
+        },
+        {
+          "id": 5,
+          "name": "BOTOL",
+          "position": "55.00000",
+          "created_at": "2026-09-21 11:18:50",
+          "updated_at": "2026-09-21 11:18:50",
+          "deleted_at": null,
+          "local_id": "38ffbbea-db4a-46b5-935d-45f59e380f14"
+        },
+        {
+          "id": 6,
+          "name": "JERIGEN",
+          "position": "65.00000",
+          "created_at": "2026-09-21 11:18:57",
+          "updated_at": "2026-09-21 11:18:57",
+          "deleted_at": null,
+          "local_id": "6976a773-c089-4f2c-8ff0-eb70ecb72063"
+        },
+        {
+          "id": 7,
+          "name": "SET",
+          "position": "75.00000",
+          "created_at": "2026-09-21 11:19:52",
+          "updated_at": "2026-09-21 11:19:52",
+          "deleted_at": null,
+          "local_id": "164d44c3-1a6e-4f1f-917c-01e703f17a5c"
+        },
+        {
+          "id": 8,
+          "name": "KRAT",
+          "position": "85.00000",
+          "created_at": "2026-09-21 11:23:01",
+          "updated_at": "2026-09-21 11:23:01",
+          "deleted_at": null,
+          "local_id": "c7da60fb-0e07-4d38-b04b-6900281455a1"
+        },
+        {
+          "id": 9,
+          "name": "RENTENG",
+          "position": "95.00000",
+          "created_at": "2026-09-21 11:25:08",
+          "updated_at": "2026-09-21 11:25:08",
+          "deleted_at": null,
+          "local_id": "13c6050c-ec40-4976-94e7-bcb9b42ccaec"
+        },
+        {
+          "id": 10,
+          "name": "Lembar",
+          "position": "105.00000",
+          "created_at": "2026-10-09 09:34:18",
+          "updated_at": "2026-10-09 09:34:18",
+          "deleted_at": null,
+          "local_id": "3f32c4a7-a2f9-4f6d-8e47-dc0fb82c345f"
+        }
+      ],
+      "print_url": "eyJpdiI6IkhSbXA3SDlKT1FrQmtjc3hPcVNrSGc9PSIsInZhbHVlIjoiUlZ5RFcreE9BaU5uWVZJV0hMNVJ5aC9wdVRDNzliUFp2UitxK0w3NzczdGhIRFhERndsNE9FdTdxc0ptNEp4NSIsIm1hYyI6ImNjYjE4NTAzNTkzZWIzOWQyNTMwNjY4NTcxMjA0MTZkN2Y1NGQ0ODg2OGEzNDZmMDQzMmQzZDU2ZjhlNDA3MjEiLCJ0YWciOiIifQ==Nh3L/produk.pdf?per_page=100&page=1&include_archive=1"
+    },
+    "message": "Produk berhasil diambil",
+    "time": 0.12
+  },
+  "stok": {
+    "success": true,
+    "data": [
+      {
+        "id": "2",
+        "stocks": {
+          "2": {
+            "warehouse_id": 2,
+            "qty": 0,
+            "product_val": 0,
+            "avg_price": 0,
+            "quota": null
+          },
+          "3": {
+            "warehouse_id": 3,
+            "qty": 0,
+            "product_val": 0,
+            "avg_price": 0,
+            "quota": null
+          },
+          "4": {
+            "warehouse_id": 4,
+            "qty": 0,
+            "product_val": 0,
+            "avg_price": 0,
+            "quota": null
+          }
+        },
+        "qty": 0
+      },
+      {
+        "id": "3",
+        "stocks": {
+          "2": {
+            "warehouse_id": 2,
+            "qty": 17,
+            "product_val": 221000,
+            "avg_price": 13000,
+            "quota": null
+          },
+          "3": {
+            "warehouse_id": 3,
+            "qty": 0,
+            "product_val": 221000,
+            "avg_price": 13000,
+            "quota": null
+          },
+          "4": {
+            "warehouse_id": 4,
+            "qty": 0,
+            "product_val": 221000,
+            "avg_price": 13000,
+            "quota": null
+          }
+        },
+        "qty": 17
+      },
+      {
+        "id": "4",
+        "stocks": {
+          "2": {
+            "warehouse_id": 2,
+            "qty": 0,
+            "product_val": 26000,
+            "avg_price": 26000,
+            "quota": null
+          },
+          "3": {
+            "warehouse_id": 3,
+            "qty": 1,
+            "product_val": 26000,
+            "avg_price": 26000,
+            "quota": null
+          },
+          "4": {
+            "warehouse_id": 4,
+            "qty": 0,
+            "product_val": 26000,
+            "avg_price": 26000,
+            "quota": null
+          }
+        },
+        "qty": 1
+      },
+      {
+        "id": "5",
+        "stocks": {
+          "2": {
+            "warehouse_id": 2,
+            "qty": 0,
+            "product_val": 0,
+            "avg_price": 0,
+            "quota": null
+          },
+          "3": {
+            "warehouse_id": 3,
+            "qty": 0,
+            "product_val": 0,
+            "avg_price": 0,
+            "quota": null
+          },
+          "4": {
+            "warehouse_id": 4,
+            "qty": 0,
+            "product_val": 0,
+            "avg_price": 0,
+            "quota": null
+          }
+        },
+        "qty": 0
+      },
+      {
+        "id": "6",
+        "stocks": {
+          "2": {
+            "warehouse_id": 2,
+            "qty": 0,
+            "product_val": 0,
+            "avg_price": 0,
+            "quota": null
+          },
+          "3": {
+            "warehouse_id": 3,
+            "qty": 0,
+            "product_val": 0,
+            "avg_price": 0,
+            "quota": null
+          },
+          "4": {
+            "warehouse_id": 4,
+            "qty": 0,
+            "product_val": 0,
+            "avg_price": 0,
+            "quota": null
+          }
+        },
+        "qty": 0
+      },
+      {
+        "id": "7",
+        "stocks": {
+          "2": {
+            "warehouse_id": 2,
+            "qty": 2,
+            "product_val": 12500,
+            "avg_price": 6250,
+            "quota": null
+          },
+          "3": {
+            "warehouse_id": 3,
+            "qty": 0,
+            "product_val": 12500,
+            "avg_price": 6250,
+            "quota": null
+          },
+          "4": {
+            "warehouse_id": 4,
+            "qty": 0,
+            "product_val": 12500,
+            "avg_price": 6250,
+            "quota": null
+          }
+        },
+        "qty": 2
+      },
+      {
+        "id": "8",
+        "stocks": {
+          "2": {
+            "warehouse_id": 2,
+            "qty": 573,
+            "product_val": 4011000,
+            "avg_price": 7000,
+            "quota": null
+          },
+          "3": {
+            "warehouse_id": 3,
+            "qty": 0,
+            "product_val": 4011000,
+            "avg_price": 7000,
+            "quota": null
+          },
+          "4": {
+            "warehouse_id": 4,
+            "qty": 0,
+            "product_val": 4011000,
+            "avg_price": 7000,
+            "quota": null
+          }
+        },
+        "qty": 573
+      },
+      {
+        "id": "9",
+        "stocks": {
+          "2": {
+            "warehouse_id": 2,
+            "qty": 0,
+            "product_val": 0,
+            "avg_price": 0,
+            "quota": null
+          },
+          "3": {
+            "warehouse_id": 3,
+            "qty": 0,
+            "product_val": 0,
+            "avg_price": 0,
+            "quota": null
+          },
+          "4": {
+            "warehouse_id": 4,
+            "qty": 0,
+            "product_val": 0,
+            "avg_price": 0,
+            "quota": null
+          }
+        },
+        "qty": 0
+      },
+      {
+        "id": "10",
+        "stocks": {
+          "2": {
+            "warehouse_id": 2,
+            "qty": 290,
+            "product_val": 2404680,
+            "avg_price": 8292,
+            "quota": null
+          },
+          "3": {
+            "warehouse_id": 3,
+            "qty": 0,
+            "product_val": 2404680,
+            "avg_price": 8292,
+            "quota": null
+          },
+          "4": {
+            "warehouse_id": 4,
+            "qty": 0,
+            "product_val": 2404680,
+            "avg_price": 8292,
+            "quota": null
+          }
+        },
+        "qty": 290
+      },
+      {
+        "id": "11",
+        "stocks": {
+          "2": {
+            "warehouse_id": 2,
+            "qty": 0,
+            "product_val": 0,
+            "avg_price": 0,
+            "quota": null
+          },
+          "3": {
+            "warehouse_id": 3,
+            "qty": 0,
+            "product_val": 0,
+            "avg_price": 0,
+            "quota": null
+          },
+          "4": {
+            "warehouse_id": 4,
+            "qty": 0,
+            "product_val": 0,
+            "avg_price": 0,
+            "quota": null
+          }
+        },
+        "qty": 0
+      }
+    ],
+    "message": "Produk berhasil diambil",
+    "time": 0.1
+  },
+  "lastBuy": {
+    "success": true,
+    "data": [],
+    "message": "Produk tidak ditemukan",
+    "time": 0.03
+  }
+}

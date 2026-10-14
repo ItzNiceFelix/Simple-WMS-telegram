@@ -49,5 +49,7 @@ playwright/.cache/
 .wrangler/
 *.uji*.ts
 .uji*.mjs
+.uji*.sqlite
+.tmp-*.mjs
 .tok*.txt
 .s[0-9]*.mjs

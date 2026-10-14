@@ -10,7 +10,7 @@
     "binding": "ASSETS"
   },
   "triggers": {
-    "crons": ["*/15 * * * *", "5 0 * * *"]
+    "crons": ["*/15 * * * *", "5 0 * * *", "0 9 * * *"]
   },
   "vars": {
     "AI_PROVIDER_TEXT": "groq",

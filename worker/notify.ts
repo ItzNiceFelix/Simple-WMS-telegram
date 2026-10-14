@@ -137,6 +137,8 @@ export async function bangunLaporanHarian(db: D1Database): Promise<string> {
 
 /** Cron laporan harian 00:05 UTC = 07:05 WIB (B1-A: pisah dari tick drain). */
 export const LAPORAN_CRON = "5 0 * * *";
+/** Sinkron Kledo tiap sore: 16:00 WIB = 09:00 UTC. */
+export const SINKRON_CRON = "0 9 * * *";
 
 /** Tick cron: selalu drain antrean; laporan harian hanya pada cron-nya sendiri. */
 export async function drainTick(env: Env, cron?: string): Promise<void> {
@@ -147,5 +149,50 @@ export async function drainTick(env: Env, cron?: string): Promise<void> {
     const teks = await bangunLaporanHarian(env.DB);
     await fanoutNotifikasi(env.DB, "report", teks);
     await drainQueue(env);
+  }
+  await sinkronKledoSore(env, cron);
+}
+
+/**
+ * Sinkronisasi Kledo terjadwal: tiap sore (16:00 WIB = 09:00 UTC).
+ * Kegagalan TIDAK boleh menggagalkan cron lain — dicatat dan dilewati.
+ * Kredensial diambil dari D1 (terenkripsi), bukan dari binding.
+ */
+async function sinkronKledoSore(env: Env, cron?: string): Promise<void> {
+  const wib = new Date(Date.now() + 7 * 3600 * 1000);
+  const jendelaSore = wib.getUTCHours() === 16 && wib.getUTCMinutes() < 15;
+  if (cron != null ? cron !== SINKRON_CRON : !jendelaSore) return;
+  try {
+    const db = env.DB;
+    const kunci = String(env.AI_KEY_ENCRYPTION_KEY ?? "");
+    if (!kunci) {
+      console.error("[kledo] AI_KEY_ENCRYPTION_KEY belum diset; sinkron dilewati.");
+      return;
+    }
+    const { adaSinkronBerjalan, jalankanSinkron } = await import("../lib/kledo/sinkron");
+    if (await adaSinkronBerjalan(db)) {
+      console.log("[kledo] sinkron lain masih berjalan; dilewati.");
+      return;
+    }
+    const { ambilKledo } = await import("../lib/d1/kledoKredensial");
+    const kred = await ambilKledo(db, kunci);
+    if (!kred) {
+      console.log("[kledo] belum ada kredensial aktif; sinkron dilewati.");
+      return;
+    }
+    const h = await jalankanSinkron(db, { subdomain: kred.subdomain, token: kred.token }, { pemicu: "jadwal", oleh: "cron" });
+    console.log(`[kledo] sinkron ${h.status}: ${h.produkBaru} produk baru, ${h.produkUbah} berubah, ${h.stokDrift} stok berubah, ${h.galat} galat`);
+    // Laporkan hasil ke admin, terutama bila ada galat.
+    const pesan =
+      `Sinkron Kledo selesai (${h.status}).\n` +
+      `Produk: ${h.produkBaru} baru, ${h.produkUbah} berubah.\n` +
+      `Gudang: ${h.gudangBaru} baru, ${h.gudangUbah} berubah.\n` +
+      `Stok: ${h.stokDrift} baris berubah.\n` +
+      (h.hppDipertahankan > 0 ? `HPP dipertahankan: ${h.hppDipertahankan} produk.\n` : "") +
+      (h.galat > 0 ? `Galat: ${h.galat} — lihat Pengaturan → Integrasi Kledo.` : "Tanpa galat.");
+    await fanoutNotifikasi(db, "info", pesan);
+    await drainQueue(env);
+  } catch (e) {
+    console.error("[kledo] sinkron gagal:", e instanceof Error ? e.message : e);
   }
 }
