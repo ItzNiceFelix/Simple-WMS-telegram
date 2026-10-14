@@ -6,7 +6,7 @@
 // pindah model/provider.
 
 import { panggilJson, pesanServer, type BagianChat, type HasilHttp, type HasilModel, type JawabanChat, type PermintaanChat } from "./http";
-import { normalkanModal } from "./kapabilitas";
+import { normalkanModal, normalkanPilihanReasoning } from "./kapabilitas";
 
 import { terapkanReasoning } from "./reasoning";
 
@@ -29,10 +29,34 @@ const UKURAN_DARI_RASIO: Record<string, string> = {
  * Groq/OpenAI/Kenari nyata tidak mengirimnya — jangan diandalkan.
  */
 type EkstraModel = {
+  id?: string;
+  name?: string;
   context_length?: number;
   context_window?: number;
+  /** OpenRouter: architecture.input_modalities / output_modalities. */
   architecture?: { input_modalities?: unknown; output_modalities?: unknown };
+  /** Kenari: modalities.input / modalities.output — sumber otentik, bukan heuristik. */
+  modalities?: { input?: unknown; output?: unknown };
+  /** Kenari: daftar tingkat reasoning yang SAH untuk model itu (mis. ['low','high','max']). */
+  reasoning_options?: unknown;
+  /** Kenari: apakah model mendukung reasoning sama sekali. */
+  reasoning?: unknown;
+  reasoning_toggle?: unknown;
 };
+
+/** Provider yang mengirim daftar model dengan metadata kaya (bukan hanya id). */
+const PROVIDER_KAYA = new Set(["openrouter", "kenari"]);
+
+/**
+ * Terjemahkan daftar `reasoning_options` provider menjadi skema + pilihan kita.
+ * Kenari memberi daftar PERSIS per model (mis. ['low','high','xhigh','max']),
+ * jadi tidak perlu heuristik — pakai apa adanya.
+ */
+function skemaDariPilihan(pilihan: string[]): string {
+  if (pilihan.length === 0) return "";
+  if (pilihan.length === 2 && pilihan.every((p) => p === "high" || p === "xhigh")) return "level_3";
+  return "level_4";
+}
 
 /** Base URL bawaan provider. Kenari tidak di sini — base URL-nya dari env. */
 export const BASE_OPENAI: Record<string, string> = {
@@ -41,11 +65,14 @@ export const BASE_OPENAI: Record<string, string> = {
   openrouter: "https://openrouter.ai/api/v1",
 };
 
-/** Kenari tanpa env: pakai domain resmi. */
+/** Kenari tanpa env: pakai domain resmi. Dokumentasi resmi: base URL https://kenari.id/v1 */
 export function baseKenari(env?: { KENARI_BASE_URL?: string } | null | object): string {
   const k = env as { KENARI_BASE_URL?: string } | null | undefined;
-  return (k?.KENARI_BASE_URL ?? "").trim().replace(/\/+$/, "") || "https://api.kenari.ai/v1";
+  return (k?.KENARI_BASE_URL ?? "").trim().replace(/\/+$/, "") || BASE_KENARI;
 }
+
+/** Domain resmi Kenari. Sebelumnya salah tulis `kenari.ai` → Cloudflare 530/1016 (DNS gagal). */
+export const BASE_KENARI = "https://kenari.id/v1";
 
 type BagianIsiOpenai = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
 
@@ -151,16 +178,34 @@ export async function modelOpenai(opsi: OpsiAdapter): Promise<HasilHttp<HasilMod
   for (const m of h.data.data ?? []) {
     const id = String(m.id ?? "").trim();
     if (!id) continue;
-    const masuk = normalkanModal(m.architecture?.input_modalities);
-    const keluar = normalkanModal(m.architecture?.output_modalities);
+    const masuk = normalkanModal(m.architecture?.input_modalities ?? m.modalities?.input);
+    const keluar = normalkanModal(m.architecture?.output_modalities ?? m.modalities?.output);
     const ctx = m.context_length ?? m.context_window;
     const model: HasilModel = { id };
+    if (m.name && m.name !== id) model.label = String(m.name).slice(0, 120);
     if (masuk.length) model.modalMasuk = masuk;
     if (keluar.length) model.modalKeluar = keluar;
     if (typeof ctx === "number") model.contextLength = ctx;
+    // Kenari memberi daftar tingkat reasoning PERSIS per model — pakai apa adanya.
+    const pilihan = normalkanPilihanReasoning(m.reasoning_options);
+    if (pilihan.length > 0) {
+      model.reasoningSkema = skemaDariPilihan(pilihan);
+      model.reasoningPilihan = pilihan;
+      model.reasoningHilir = true;
+    } else if (m.reasoning === true || m.reasoning_toggle === true) {
+      // Hanya tahu "bisa reasoning" tanpa daftar tingkat → hidup/mati.
+      model.reasoningSkema = "bool";
+      model.reasoningPilihan = ["on", "off"];
+      model.reasoningHilir = true;
+    }
     daftar.push(model);
   }
   return { ok: true, data: daftar, latencyMs: h.latencyMs };
+}
+
+/** True bila provider ini mengirim metadata kaya; heuristik hanya dipakai bila false. */
+export function providerKaya(provider: string): boolean {
+  return PROVIDER_KAYA.has(String(provider ?? "").trim().toLowerCase());
 }
 
 /** POST /images/generations, atau /images/edits (multipart) bila ada referensi. */

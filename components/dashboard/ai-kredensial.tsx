@@ -28,6 +28,8 @@ export type KredensialItem = {
   provider: string
   label: string
   mask: string
+  /** Alamat dasar provider. '' = pakai bawaan. */
+  base_url?: string
   aktif: number
   dibuat_at: number
   uji_at: number | null
@@ -61,6 +63,7 @@ export function AiKredensial({ bolehUbah, onBerubah }: Props) {
   const [provider, setProvider] = useState<string>("groq")
   const [label, setLabel] = useState("")
   const [apiKey, setApiKey] = useState("")
+  const [baseUrl, setBaseUrl] = useState("")
   const [mengirim, setMengirim] = useState(false)
 
   const muat = useCallback(async () => {
@@ -105,11 +108,12 @@ export function AiKredensial({ bolehUbah, onBerubah }: Props) {
     }
     setMengirim(true)
     try {
-      const ok = await kirim({ aksi: "kredensial-simpan", provider, label, apiKey })
+      const ok = await kirim({ aksi: "kredensial-simpan", provider, label, apiKey, baseUrl })
       if (!ok) return
       toast.success(`Kredensial ${LABEL_PROVIDER[provider] ?? provider} tersimpan (terenkripsi).`)
       setApiKey("")
       setLabel("")
+      setBaseUrl("")
       await muat()
       onBerubah?.()
     } finally {
@@ -170,6 +174,9 @@ export function AiKredensial({ bolehUbah, onBerubah }: Props) {
                     {k.label ? <span className="text-xs text-muted-foreground">· {k.label}</span> : null}
                   </p>
                   <p className="text-xs text-muted-foreground tabular-nums">{k.mask}</p>
+                  <p className="text-[11px] text-muted-foreground" data-testid={`base-kredensial-${k.id}`}>
+                    {k.base_url ? k.base_url : "alamat bawaan provider"}
+                  </p>
                   {k.uji_hasil ? (
                     <p className={`mt-0.5 text-[11px] ${k.uji_hasil.ok ? "text-emerald-700" : "text-red-700"}`}>
                       {k.uji_hasil.ok
@@ -257,6 +264,21 @@ export function AiKredensial({ bolehUbah, onBerubah }: Props) {
               />
               <FieldDescription>
                 Dikirim sekali, langsung dienkripsi. Tidak bisa dilihat lagi setelah disimpan.
+              </FieldDescription>
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="kred-base">Alamat dasar (opsional)</FieldLabel>
+              <Input
+                id="kred-base"
+                className="h-11 md:h-8"
+                value={baseUrl}
+                onChange={(e) => setBaseUrl(e.target.value)}
+                placeholder={provider === "kenari" ? "https://kenari.id/v1" : "(pakai bawaan provider)"}
+                data-testid="kredensial-base"
+              />
+              <FieldDescription>
+                Kosongkan untuk pakai bawaan provider. Isi hanya bila host provider berbeda — mis. Kenari memakai{" "}
+                <code>https://kenari.id/v1</code>. Salah ketik host di sini membuat error HTTP 530 (kode 1016, DNS gagal).
               </FieldDescription>
             </Field>
             <div className="flex justify-end">

@@ -14,6 +14,8 @@ export type KredensialRingkas = {
   dibuat_at: number;
   dibuat_oleh: string | null;
   uji_at: number | null;
+  /** Alamat dasar provider. '' = pakai bawaan (Kenari: dari secret/env). */
+  base_url: string;
   /** Hasil uji terakhir, sudah di-parse. null bila belum pernah diuji. */
   uji_hasil: { ok: boolean; latencyMs?: number; model?: string; error?: string; at?: number } | null;
 };
@@ -23,8 +25,21 @@ export type KredensialPenuh = KredensialRingkas & { plaintext: string };
 type Baris = {
   id: number; provider: string; label: string; ciphertext: string; iv: string; tag: string;
   ujung: string; aktif: number; dibuat_at: number; dibuat_oleh: string | null;
-  uji_at: number | null; uji_hasil: string | null;
+  uji_at: number | null; uji_hasil: string | null; base_url: string;
 };
+
+/**
+ * Normalisasi alamat dasar: trim, buang garis miring di ujung, tolak skema aneh.
+ * Menerima host tanpa skema (mis. "kenari.id/v1") dan menambahkan https:// sendiri,
+ * karena itu kesalahan yang mudah terjadi dan pesan errornya (HTTP 530/1016) tidak jelas.
+ */
+export function normalBase(v: unknown): string {
+  let t = String(v ?? "").trim().replace(/\/+$/, "");
+  if (!t) return "";
+  if (!/^https?:\/\//i.test(t)) t = `https://${t}`;
+  if (!/^https:\/\/[a-z0-9.-]+(:\d+)?(\/.*)?$/i.test(t)) return "";
+  return t.slice(0, 200);
+}
 
 /** Parse hasil uji toleran: JSON rusak / kosong → null (jangan menggagalkan daftar). */
 function parseUji(v: string | null): KredensialRingkas["uji_hasil"] {
@@ -50,6 +65,7 @@ function keRingkas(b: Baris): KredensialRingkas {
     provider: b.provider,
     label: b.label,
     mask: maskKredensial(b.ujung),
+    base_url: b.base_url ?? "",
     aktif: b.aktif,
     dibuat_at: b.dibuat_at,
     dibuat_oleh: b.dibuat_oleh,
@@ -58,12 +74,12 @@ function keRingkas(b: Baris): KredensialRingkas {
   };
 }
 
-const KOLOM = "id, provider, label, ciphertext, iv, tag, ujung, aktif, dibuat_at, dibuat_oleh, uji_at, uji_hasil";
+const KOLOM = "id, provider, label, ciphertext, iv, tag, ujung, aktif, dibuat_at, dibuat_oleh, uji_at, uji_hasil, base_url";
 
 /** Simpan kredensial baru (selalu INSERT — satu provider boleh punya beberapa kunci). */
 export async function simpanKredensial(
   db: D1Database,
-  data: { provider: string; label?: string; apiKey: string; oleh: string | null },
+  data: { provider: string; label?: string; apiKey: string; baseUrl?: string; oleh: string | null },
   kunciEnkripsi: string
 ): Promise<Hasil<{ kredensial: KredensialRingkas }>> {
   const provider = String(data.provider ?? "").trim().toLowerCase();
@@ -78,12 +94,13 @@ export async function simpanKredensial(
     return gagal(500, e instanceof Error ? e.message : "Gagal mengenkripsi kredensial.");
   }
 
+  const baseUrl = normalBase(data.baseUrl);
   const r = await db
     .prepare(
-      "INSERT INTO ai_kredensial (provider, label, ciphertext, iv, tag, ujung, aktif, dibuat_at, dibuat_oleh) " +
-        "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)"
+      "INSERT INTO ai_kredensial (provider, label, ciphertext, iv, tag, ujung, aktif, dibuat_at, dibuat_oleh, base_url) " +
+        "VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)"
     )
-    .bind(provider, label, t.ciphertext, t.iv, t.tag, t.ujung, sekarang(), data.oleh)
+    .bind(provider, label, t.ciphertext, t.iv, t.tag, t.ujung, sekarang(), data.oleh, baseUrl)
     .run();
   const id = Number(r.meta.last_row_id);
   const baris = await db.prepare(`SELECT ${KOLOM} FROM ai_kredensial WHERE id = ?`).bind(id).first<Baris>();
@@ -117,6 +134,21 @@ export async function ambilKredensial(db: D1Database, provider: string, kunciEnk
     // Kunci enkripsi berubah / data rusak → anggap tidak ada, jangan bocorkan detail.
     return null;
   }
+}
+
+/** Ubah alamat dasar kredensial yang sudah ada (tanpa perlu isi ulang API key). */
+export async function setBaseKredensial(db: D1Database, id: number, baseUrl: string): Promise<Hasil<{ kredensial: KredensialRingkas }>> {
+  if (!Number.isInteger(id) || id <= 0) return gagal(400, "id tidak sah.");
+  const bersih = normalBase(baseUrl);
+  // Pemanggil boleh sengaja mengosongkan (kembali ke bawaan provider).
+  if (String(baseUrl ?? "").trim() !== "" && !bersih) {
+    return gagal(400, "Alamat dasar tidak sah. Contoh yang benar: https://kenari.id/v1");
+  }
+  const r = await db.prepare("UPDATE ai_kredensial SET base_url = ? WHERE id = ?").bind(bersih, id).run();
+  if ((r.meta.changes ?? 0) === 0) return gagal(404, "Kredensial tidak ditemukan.");
+  const baris = await db.prepare(`SELECT ${KOLOM} FROM ai_kredensial WHERE id = ?`).bind(id).first<Baris>();
+  if (!baris) return gagal(404, "Kredensial tidak ditemukan.");
+  return { ok: true, kredensial: keRingkas(baris) };
 }
 
 /** Nyalakan/matikan kredensial. */

@@ -195,7 +195,9 @@ export function makeRealDataSource(_getRole: () => Role): DataSource {
       const res = await fetch("/api/pengaturan/ai", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider }),
+        // `aksi` WAJIB: tanpa itu route jatuh ke cabang terakhir dan membalas
+        // "Aksi tidak dikenal." (bug yang dilaporkan user).
+        body: JSON.stringify({ aksi: "provider", provider }),
         credentials: "include",
       });
       const data = (await res.json()) as { ok: boolean; error?: string };

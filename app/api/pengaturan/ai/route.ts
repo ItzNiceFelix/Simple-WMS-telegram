@@ -9,7 +9,7 @@
 // Kredensial TIDAK PERNAH dikembalikan sebagai plaintext. Hanya mask (••••3f2a).
 import { getDb, getEnvAi, getKunciEnkripsi } from "@/lib/d1/db";
 import {
-  ambilKredensial, catatUji, daftarKredensial, hapusKredensial, setAktifKredensial, simpanKredensial,
+  ambilKredensial, catatUji, daftarKredensial, hapusKredensial, setAktifKredensial, setBaseKredensial, simpanKredensial,
 } from "@/lib/d1/aiKredensial";
 import {
   daftarModel,
@@ -52,8 +52,11 @@ async function tarikModel(db: D1Database, provider: string, kunci: string, env: 
   if (provider === "openrouter") return modelOpenrouter({ apiKey: kred?.plaintext ?? "" });
   if (!kred) return { ok: false, status: 400, error: `Provider ${provider} belum punya kredensial aktif.`, latencyMs: 0 };
   if (provider === "gemini") return modelGemini({ apiKey: kred.plaintext });
-  if (provider === "kenari") return modelOpenai({ baseUrl: baseKenari(env), apiKey: kred.plaintext, provider });
-  const baseUrl = BASE_OPENAI[provider];
+  // base_url dari kredensial menang atas env: user bisa membetulkan host sendiri
+  // dari UI tanpa menunggu deploy (mis. host Kenari yang berubah).
+  const baseKred = String(kred.base_url ?? "").trim().replace(/\/+$/, "");
+  if (provider === "kenari") return modelOpenai({ baseUrl: baseKred || baseKenari(env), apiKey: kred.plaintext, provider });
+  const baseUrl = baseKred || BASE_OPENAI[provider];
   if (!baseUrl) {
     return { ok: false, status: 400, error: `Provider ${provider} tidak menyediakan endpoint daftar model.`, latencyMs: 0 };
   }
@@ -183,9 +186,15 @@ export async function POST(request: Request) {
   if (aksi === "kredensial-simpan") {
     const h = await simpanKredensial(
       db,
-      { provider: teks(body.provider), label: teks(body.label), apiKey: teks(body.apiKey), oleh: uid },
+      { provider: teks(body.provider), label: teks(body.label), apiKey: teks(body.apiKey), baseUrl: teks(body.baseUrl), oleh: uid },
       getKunciEnkripsi()
     );
+    if (!h.ok) return json({ ok: false, error: h.error }, h.status);
+    return json({ ok: true, kredensial: h.kredensial });
+  }
+  // Ubah alamat dasar kredensial yang sudah ada (tanpa perlu isi ulang API key).
+  if (aksi === "kredensial-base") {
+    const h = await setBaseKredensial(db, angkaOpsional(body.id) ?? 0, teks(body.baseUrl));
     if (!h.ok) return json({ ok: false, error: h.error }, h.status);
     return json({ ok: true, kredensial: h.kredensial });
   }
@@ -331,7 +340,8 @@ export async function POST(request: Request) {
       provider === "gemini"
         ? await chatGemini({ apiKey: kred.plaintext, timeoutMs: 30000 }, { model, pesan, maksToken: 16 })
         : await (async () => {
-            const baseUrl = provider === "kenari" ? baseKenari(getEnvAi()) : BASE_OPENAI[provider];
+            const baseKred = String(kred.base_url ?? "").trim().replace(/\/+$/, "");
+            const baseUrl = baseKred || (provider === "kenari" ? baseKenari(getEnvAi()) : BASE_OPENAI[provider]);
             if (!baseUrl) return { ok: false as const, status: 400, error: `Provider ${provider} tidak mendukung chat teks.`, latencyMs: 0 };
             return chatOpenai({ baseUrl, apiKey: kred.plaintext, timeoutMs: 30000, provider }, { model, pesan, maksToken: 16 });
           })();

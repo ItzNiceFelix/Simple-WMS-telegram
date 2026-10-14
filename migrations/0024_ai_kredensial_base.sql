@@ -1,0 +1,11 @@
+-- 0024_ai_kredensial_base.sql — Alamat dasar (base URL) per kredensial.
+--
+-- MASALAH YANG DIPERBAIKI: provider `kenari` memakai base URL dari Worker secret
+-- (KENARI_BASE_URL). Bila secret itu belum diset, sistem jatuh ke bawaan
+-- https://api.kenari.ai/v1 — dan host itu tidak ada, sehingga Cloudflare membalas
+-- HTTP 530 dengan error code 1016 (DNS gagal). Pesannya membingungkan dan user
+-- tidak punya cara memperbaikinya dari UI.
+--
+-- Dengan kolom ini, alamat dasar bisa diisi dari halaman Pengaturan bersama API key.
+-- Kosong = pakai bawaan provider (perilaku lama, tetap aman).
+ALTER TABLE ai_kredensial ADD COLUMN base_url TEXT NOT NULL DEFAULT '';

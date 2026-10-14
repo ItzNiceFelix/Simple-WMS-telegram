@@ -25,7 +25,14 @@ export type Konteks = {
 /** Provider OpenAI-compatible = semua kecuali gemini. */
 const PROVIDER_OPENAI: ProviderNama[] = ["groq", "kenari", "openai", "openrouter"];
 
-function opsiUntuk(provider: ProviderNama, apiKey: string, ctx: Konteks, timeoutMs: number): OpsiAdapter | null {
+/**
+ * Base URL efektif untuk provider: alamat dari kredensial menang atas bawaan.
+ * Alasan: user bisa membetulkan host sendiri dari UI (mis. host Kenari berubah)
+ * tanpa perlu deploy ulang.
+ */
+function opsiUntuk(provider: ProviderNama, apiKey: string, ctx: Konteks, timeoutMs: number, baseKred = ""): OpsiAdapter | null {
+  const dariKred = String(baseKred ?? "").trim().replace(/\/+$/, "");
+  if (dariKred) return { baseUrl: dariKred, apiKey, timeoutMs, provider };
   if (provider === "kenari") return { baseUrl: baseKenari(ctx.env), apiKey, timeoutMs, provider };
   const baseUrl = BASE_OPENAI[provider];
   return baseUrl ? { baseUrl, apiKey, timeoutMs, provider } : null;
@@ -65,7 +72,7 @@ function ringkasGagal(catatan: Catatan[]): string {
   return `Semua percobaan gagal: ${catatan.map((c) => `${c.provider}/${c.model}: ${c.error}`).join(" | ")}`;
 }
 
-type Kandidat = { provider: ProviderNama; model: string; apiKey: string };
+type Kandidat = { provider: ProviderNama; model: string; apiKey: string; /** Alamat dasar dari kredensial; "" = pakai bawaan provider. */ baseUrl: string };
 
 /**
  * Kumpulkan kandidat berurutan: untuk tiap provider di `chain`, kredensial aktif
@@ -91,7 +98,7 @@ async function kandidatTeks(ctx: Konteks, jenis: "teks" | "vision", catatan: Cat
     const pilih = (provider === rantaiTeks[0] ? modelDiminta : undefined) ?? peta[provider];
     if (pilih) id.push(pilih);
     for (const m of aktif) if (!id.includes(m.model_id)) id.push(m.model_id);
-    for (const model of id) hasil.push({ provider, model, apiKey: kred.plaintext });
+    for (const model of id) hasil.push({ provider, model, apiKey: kred.plaintext, baseUrl: kred.base_url ?? "" });
   }
   return hasil;
 }
@@ -117,7 +124,7 @@ async function cobaTeks(
     kandidat.provider === "gemini"
       ? await chatGemini({ apiKey: kandidat.apiKey, timeoutMs }, permintaan)
       : await (async () => {
-          const opsi = opsiUntuk(kandidat.provider, kandidat.apiKey, ctx, timeoutMs);
+          const opsi = opsiUntuk(kandidat.provider, kandidat.apiKey, ctx, timeoutMs, kandidat.baseUrl);
           if (!opsi) return { ok: false as const, status: 400, error: `Provider ${kandidat.provider} tidak mendukung chat teks.`, latencyMs: 0 };
           return chatOpenai(opsi, permintaan);
         })();
@@ -235,7 +242,7 @@ export async function panggilGambar(
         provider === "gemini"
           ? await gambarGemini({ apiKey: kred.plaintext, timeoutMs: 120000 }, mintaGambar)
           : await (async () => {
-              const opsi = opsiUntuk(provider, kred.plaintext, ctx, 120000);
+              const opsi = opsiUntuk(provider, kred.plaintext, ctx, 120000, kred.base_url ?? "");
               if (!opsi) return { ok: false as const, status: 400, error: `Provider ${provider} tidak mendukung image gen.`, latencyMs: 0 };
               return gambarOpenai(opsi, mintaGambar);
             })();

@@ -92,19 +92,18 @@ function kapabilitasSimpan(
   modelId: string,
   data: { modalMasuk?: string[]; modalKeluar?: string[]; reasoningSkema?: string; reasoningPilihan?: string[]; reasoningHilir?: boolean }
 ): Pick<ModelAi, "modal_masuk" | "modal_keluar" | "reasoning_skema" | "reasoning_pilihan" | "reasoning_hilir" | "sumber"> {
-  const dariProvider = (data.modalMasuk?.length ?? 0) > 0 || (data.modalKeluar?.length ?? 0) > 0;
+  const dariProviderModal = (data.modalMasuk?.length ?? 0) > 0 || (data.modalKeluar?.length ?? 0) > 0;
   const modal = gabungModal({ masuk: data.modalMasuk, keluar: data.modalKeluar }, tebakModalDariNama(provider, modelId));
 
-  // Skema reasoning dari API hanya dipakai bila benar-benar memberi tingkat level.
+  // Skema reasoning dari API dipakai apa adanya (termasuk 'bool' — provider memang
+  // hanya bilang bisa/tidak). Heuristik hanya dipakai bila provider DIAM soal reasoning.
   const skemaProvider = String(data.reasoningSkema ?? "").trim();
-  const dariProviderReasoning = skemaProvider !== "" && skemaProvider !== "bool";
+  const adaSkemaProvider = skemaProvider !== "";
   const tebakan = tebakSkemaReasoning(provider, modelId);
-  const reasoning_skema = dariProviderReasoning ? skemaProvider : tebakan.skema || skemaProvider;
-  const reasoning_pilihan = dariProviderReasoning
+  const reasoning_skema = adaSkemaProvider ? skemaProvider : tebakan.skema;
+  const reasoning_pilihan = adaSkemaProvider
     ? (data.reasoningPilihan ?? []).join(",")
-    : tebakan.pilihan.length
-      ? tebakan.pilihan.join(",")
-      : (data.reasoningPilihan ?? []).join(",");
+    : tebakan.pilihan.join(",");
 
   return {
     modal_masuk: modal.masuk.join(","),
@@ -112,7 +111,10 @@ function kapabilitasSimpan(
     reasoning_skema,
     reasoning_pilihan,
     reasoning_hilir: data.reasoningHilir || reasoning_skema !== "" ? 1 : 0,
-    sumber: dariProvider ? "provider" : "heuristik",
+    // Sumber 'provider' bila provider memberi modal ATAU skema reasoning. Sebelumnya
+    // hanya melihat modal, sehingga model Kenari (yang memberi reasoning tanpa modal)
+    // salah ditandai 'heuristik' padahal datanya otentik.
+    sumber: dariProviderModal || adaSkemaProvider ? "provider" : "heuristik",
   };
 }
 

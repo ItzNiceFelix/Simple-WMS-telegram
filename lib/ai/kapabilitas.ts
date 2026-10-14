@@ -14,6 +14,23 @@ export const LEVEL_3 = ["low", "medium", "high"];
 const MODAL_SAH = ["text", "image", "audio", "video", "file", "pdf"];
 
 /**
+ * Normalisasi daftar nilai reasoning dari provider (mis. Kenari mengirim
+ * `reasoning_options: ['low','high','xhigh','max']`). Berbeda dari normalkanModal,
+ * fungsi ini TIDAK membatasi ke daftar tetap — provider berhak punya tingkat sendiri
+ * (xhigh/max/none). Yang dibuang hanya yang jelas tidak masuk akal.
+ */
+export function normalkanPilihanReasoning(v: unknown): string[] {
+  const bahan = Array.isArray(v) ? v : typeof v === "string" ? v.split(",") : [];
+  const hasil: string[] = [];
+  for (const x of bahan) {
+    const t = String(x ?? "").trim().toLowerCase();
+    if (!t || t.length > 12 || !/^[a-z_]+$/.test(t) || hasil.includes(t)) continue;
+    hasil.push(t);
+  }
+  return hasil;
+}
+
+/**
  * Normalisasi input modalitas: terima array atau string CSV apa adanya dari provider.
  * lowercase → trim → buang kosong/duplikat → hanya nilai yang dikenal.
  */

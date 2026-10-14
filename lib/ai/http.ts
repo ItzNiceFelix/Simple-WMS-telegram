@@ -96,7 +96,7 @@ export async function panggilJson<T>(url: string, init: RequestInit, opts: OpsiH
       const res = await fetch(url, { ...init, signal: ac.signal });
       const body = await res.text().catch(() => "");
       if (!res.ok) {
-        terakhir = pesanError(res.status, body || "(body kosong)");
+        terakhir = pesanCloudflare(res.status, body) ?? pesanError(res.status, body || "(body kosong)");
         if (bolehUlang(res.status) && percobaan < maksUlang) continue;
         return { ok: false, status: res.status, error: terakhir, latencyMs: Date.now() - mulai };
       }
@@ -122,6 +122,25 @@ export async function panggilJson<T>(url: string, init: RequestInit, opts: OpsiH
     }
   }
   return { ok: false, status: 0, error: terakhir, latencyMs: Date.now() - mulai };
+}
+
+/**
+ * Terjemahkan error Cloudflare yang tidak informatif menjadi pesan yang bisa ditindak.
+ * Kode 1016/1019/1003/1033 muncul saat host provider tidak bisa di-resolve/dihubungi —
+ * gejalanya "HTTP 530: error code: 1016" yang membingungkan tanpa penjelasan.
+ */
+function pesanCloudflare(status: number, body: string): string | null {
+  const kode = /error code:\s*(\d{4})/.exec(body)?.[1];
+  if (!kode) return null;
+  const arti: Record<string, string> = {
+    "1016": "DNS gagal: nama host provider tidak ditemukan",
+    "1019": "provider tidak punya record DNS yang sah",
+    "1003": "IP tujuan tidak diizinkan (Direct IP Access Not Allowed)",
+    "1033": "konfigurasi DNS provider bermasalah (Argo Tunnel error)",
+    "1014": "CORS atau skema URL provider salah",
+  };
+  const sebab = arti[kode] ?? "host provider tidak bisa dihubungi";
+  return `HTTP ${status} dari Cloudflare (kode ${kode}): ${sebab}. Periksa alamat dasar (base URL) provider di pengaturan — kemungkinan hostnya salah atau sudah tidak aktif. Potongan asli: ${body.slice(0, 200)}`;
 }
 
 /** Ambil potongan teks error dari respons provider apa pun bentuknya (string/objek). */
