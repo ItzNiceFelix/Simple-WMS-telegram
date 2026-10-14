@@ -52,8 +52,8 @@ export async function tambahModel(
   const modelId = String(data.model_id ?? "").trim();
   if (!provider) return gagal(400, "Provider wajib diisi.");
   if (!modelId) return gagal(400, "Nama model wajib diisi.");
-  const jenis = sahJenis(data.jenis) ? data.jenis : "teks";
   const k = kapabilitasSimpan(provider, modelId, data);
+  const jenis = simpulkanJenis(data);
 
   // INSERT OR IGNORE: impor ulang dari provider tidak boleh menimpa label yang sudah diubah user.
   const r = await db
@@ -84,9 +84,25 @@ export async function tambahModel(
 }
 
 /**
- * ATURAN GABUNG kapabilitas: data API provider menang (sumber='provider');
- * bila adapter tidak memberi modal/reasoning, pakai heuristik nama (sumber='heuristik').
+ * Simpulkan jenis model dari modalitasnya. Dipakai saat menarik dari provider,
+ * karena API hanya memberi modality — bukan jenis kita.
+ *
+ * MASALAH YANG DIPERBAIKI: sebelumnya semua model hasil tarik jatuh ke jenis
+ * 'teks', sehingga 20 model gambar Kenari ikut berlabel teks dan tidak muncul
+ * di saringan jenis 'gambar'. Sekarang modality yang menentukan.
+ *
+ * Aturan: keluaran memuat image → 'gambar'; masukan memuat image tapi keluaran
+ * teks → 'vision' (bisa membaca gambar); selain itu 'teks'.
  */
+function simpulkanJenis(data: { jenis?: string; modalMasuk?: string[]; modalKeluar?: string[] }): JenisModel {
+  if (sahJenis(data.jenis) && data.jenis !== "teks") return data.jenis;
+  const masuk = data.modalMasuk ?? [];
+  const keluar = data.modalKeluar ?? [];
+  if (keluar.includes("image")) return "gambar";
+  if (masuk.includes("image")) return "vision";
+  return "teks";
+}
+
 function kapabilitasSimpan(
   provider: string,
   modelId: string,
@@ -146,7 +162,7 @@ export async function tambahModelBanyak(
         p,
         modelId,
         String(m.label ?? "").slice(0, 80),
-        sahJenis(m.jenis) ? m.jenis : "teks",
+        simpulkanJenis(m),
         sekarang(),
         k.modal_masuk,
         k.modal_keluar,
