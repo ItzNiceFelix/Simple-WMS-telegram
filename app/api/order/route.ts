@@ -6,7 +6,7 @@
 // GET ?aksi=daftar&dari=&sampai=&mp=&status=&sku=&limit= → { ok, orders } (header+item+fee, tanpa laba).
 // Semua owner/admin.
 import { getDb } from "@/lib/d1/db";
-import { ambilProduk } from "@/lib/d1/produk";
+import { ambilProduk, normalisasiNama } from "@/lib/d1/produk";
 import { ambilOrder, imporPesanan, listOrder, transisiFulfill, type BarisPesanan, type OrderDetail } from "@/lib/d1/order";
 import { transisiFulfillBatch, type KeFulfill } from "@/lib/d1/orderTransisi";
 import { buatPicklist, buatPicklistPaket } from "@/lib/d1/picklist";
@@ -114,10 +114,14 @@ function teks(v: unknown): string {
 /**
  * SKU penanda untuk baris yang belum punya SKU sah.
  *
- * Awalan "+" dipilih karena FK `order_items.sku → products(sku)` menuntut nilai yang tidak
- * melanggar, tapi SKU asli tidak pernah diawali "+" (sudah diperiksa di produksi: nol
- * produk). Jadi penanda ini aman sekaligus jelas-jelas bukan produk asli saat dibaca
- * manusia di PDF.
+ * Awalan "+" membuat penanda TIDAK BENTROK dengan SKU asli (produksi: nol produk berawalan
+ * "+"). Tapi awalan itu SENDIRI TIDAK CUKUP: FK `order_items.sku → products(sku)` tetap
+ * menuntut barisnya ADA di `products`. Versi lama berkas ini mengklaim sebaliknya, dan
+ * akibatnya setiap baris bertanda menjatuhkan seluruh konfirmasi sebagai 500
+ * (`FOREIGN KEY constraint failed`) — produksi menunjukkan `products WHERE sku LIKE '+%'`
+ * = 0 dan `order_items WHERE perlu_sku=1` = 0, artinya fitur ini tidak pernah sekali pun
+ * berhasil. Sekarang tiap penanda juga DISISIPKAN ke `products` (lihat `siapkanProdukPenanda`)
+ * supaya FK terpenuhi dan barisnya benar-benar tersimpan.
  *
  * Sengaja deterministik dari (order, nama, variasi) supaya impor ulang file yang sama
  * menghasilkan penanda identik — bukan baris baru yang menumpuk.
@@ -128,6 +132,44 @@ function skuPenandaPerluSku(noPesanan: string, nama: string, variasi: string): s
   for (let i = 0; i < bahan.length; i++) h = (Math.imul(31, h) + bahan.charCodeAt(i)) | 0;
   return `+PERLU-SKU-${(h >>> 0).toString(36).toUpperCase()}`;
 }
+
+/**
+ * Keputusan (a) — sisipkan produk penanda, JANGAN buang FK (lihat brief keputusan 1).
+ *
+ * FK `order_items.sku → products(sku)` adalah jaring pengaman yang berguna untuk baris
+ * normal: tanpanya, SKU yang salah ketik ikut tersimpan dan baru ketahuan saat picklist
+ * kosong. Yang salah bukan FK-nya, tapi kode yang menulis penanda tanpa menyiapkan
+ * barisnya. Jadi yang diperbaiki: penanda dibuat MEMENUHI FK.
+ *
+ * Pilihan (b) membuang FK ditolak karena: (1) SQLite tidak bisa DROP CONSTRAINT, jadi harus
+ * recreate `order_items` — risiko jauh lebih besar daripada satu INSERT OR IGNORE; (2) FK
+ * yang sama juga melindungi jalur lain (impor excel, kledo, transisi) yang tidak boleh
+ * kehilangan penjagaannya; (3) `perlu_sku` sudah ada tepat untuk membedakan baris bertanda
+ * dari produk asli, jadi tidak perlu melonggarkan skema.
+ *
+ * Nama produknya menerangkan asalnya supaya terbaca jelas di picklist/daftar produk sebagai
+ * "belum dipetakan", bukan sebagai barang nyata. HPP 0 (bukan NULL) supaya laba tidak
+ * menghitung null sebagai tak diketahui; `perlu_sku=1` yang menandai barisnya bermasalah.
+ */
+function siapkanProdukPenanda(db: D1Database, daftar: { sku: string; nama: string }[], at: number): D1PreparedStatement[] {
+  return daftar.map((p) =>
+    db
+      .prepare(
+        `INSERT OR IGNORE INTO products (sku, nama_accurate, nama_accurate_normalized, hpp, is_online_product, updated_at)
+         VALUES (?, ?, ?, 0, 0, ?)`,
+      )
+      .bind(p.sku, p.nama.slice(0, 200), normalisasiNama(p.nama).slice(0, 200), at),
+  );
+}
+
+/**
+ * Pernyataan impor + nomor pesanan pemiliknya.
+ *
+ * Nomor pesanan dibawa berdampingan dengan pernyataannya, bukan disisipkan ke SQL lalu
+ * dibaca kembali: D1PreparedStatement tidak mengekspos parameter yang di-`bind`, dan
+ * menebak isinya lewat cast membuat laporan `dilewati` bisa salah tanpa error tipe.
+ */
+type StmtOrder = { no: string; stmt: D1PreparedStatement };
 
 /** Nama master + gudang tempat stok SKU benar-benar berada. */
 type InfoSku = { nama: string; lokasi: string; lokasiLain: string };
@@ -638,9 +680,12 @@ export async function POST(request: Request) {
         if (ref && sku) skuManual.set(`${ref}\u0000${nama}\u0000${variasi}`, sku);
       }
     }
-    const stmts: D1PreparedStatement[] = [];
+    const stmts: StmtOrder[] = [];
     let nItem = 0;
     const noList: string[] = [];
+    // Produk penanda yang WAJIB disisipkan sebelum `order_items` menunjuknya (FK). Kunci =
+    // SKU penanda supaya satu penanda yang muncul di beberapa baris tidak didaftarkan dua kali.
+    const produkPenanda = new Map<string, { sku: string; nama: string }>();
     // Item tanpa SKU yang ditandai "belum ada di MP": dicatat di sku_belum_mp untuk diurus
     // nanti, dan TIDAK ditulis ke order_items (belum punya SKU master untuk dirujuk).
     const kunciBelumMp = new Set<string>();
@@ -661,8 +706,9 @@ export async function POST(request: Request) {
     }
     for (const o of orders) {
       noList.push(o.no_pesanan);
-      stmts.push(
-        db
+      stmts.push({
+        no: o.no_pesanan,
+        stmt: db
           .prepare(
             `INSERT INTO orders (marketplace, no_pesanan, tanggal, buyer, status_fulfill, pajak_pph, pajak_ppn_persen, stok_dikurangi, no_resi,
               asal_import, opsi_kirim, antar_ke, status_mp, batch_import, jasa_kirim, tipe_layanan, cod, preorder, item_json)
@@ -678,8 +724,8 @@ export async function POST(request: Request) {
             o.no_pesanan, o.tanggal, o.buyer, o.statusAwal, o.noResi,
             o.opsiKirim, o.antarKe, o.statusMp, batch.id, o.jasaKirim, o.tipeLayanan, o.cod ? 1 : 0, o.preorder ? 1 : 0, JSON.stringify(o.items),
           ),
-      );
-      stmts.push(db.prepare("DELETE FROM order_items WHERE marketplace = 'shopee' AND no_pesanan = ?").bind(o.no_pesanan));
+      });
+      stmts.push({ no: o.no_pesanan, stmt: db.prepare("DELETE FROM order_items WHERE marketplace = 'shopee' AND no_pesanan = ?").bind(o.no_pesanan) });
       for (const item of o.items) {
         const kunci = `${o.no_pesanan}\u0000${item.nama_shopee}\u0000${item.variasi}`;
         const skuFinal = skuManual.get(kunci) ?? item.sku;
@@ -691,13 +737,16 @@ export async function POST(request: Request) {
             // picklist dengan kolom pembeda. Dulu barisnya di-`continue` (tidak masuk
             // order_items) sehingga picklist memakai INNER JOIN dan barangnya raib tanpa
             // pesan — checker menerima lembar tidak lengkap tanpa tahu.
-            stmts.push(
-              db
+            const skuTanda = skuPenandaPerluSku(o.no_pesanan, item.nama_shopee, item.variasi);
+            produkPenanda.set(skuTanda, { sku: skuTanda, nama: `[BELUM DI MP] ${item.nama_shopee}${item.variasi ? ` (${item.variasi})` : ""}` });
+            stmts.push({
+              no: o.no_pesanan,
+              stmt: db
                 .prepare(
                   "INSERT INTO order_items (marketplace, no_pesanan, sku, variasi, nama_shopee, qty, harga_satuan, hpp_snapshot, subtotal, sku_asal, perlu_sku) VALUES ('shopee', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
                 )
-                .bind(o.no_pesanan, skuPenandaPerluSku(o.no_pesanan, item.nama_shopee, item.variasi), item.variasi, item.nama_shopee, item.qty, item.harga_satuan, 0, item.subtotal, ""),
-            );
+                .bind(o.no_pesanan, skuTanda, item.variasi, item.nama_shopee, item.qty, item.harga_satuan, 0, item.subtotal, ""),
+            });
             nItem++;
             continue;
           }
@@ -710,27 +759,68 @@ export async function POST(request: Request) {
         if (!hpp) {
           // SKU tertulis di file tapi tidak ada di master: JANGAN buang ordernya. Simpan
           // sebagai baris bertanda supaya bisa dicetak di picklist dan diperbaiki nanti.
-          stmts.push(
-            db
+          const skuTanda = skuPenandaPerluSku(o.no_pesanan, item.nama_shopee, item.variasi);
+          produkPenanda.set(skuTanda, { sku: skuTanda, nama: `[PERLU SKU] ${item.nama_shopee} — file: ${skuFinal}` });
+          stmts.push({
+            no: o.no_pesanan,
+            stmt: db
               .prepare(
                 "INSERT INTO order_items (marketplace, no_pesanan, sku, variasi, nama_shopee, qty, harga_satuan, hpp_snapshot, subtotal, sku_asal, perlu_sku) VALUES ('shopee', ?, ?, ?, ?, ?, ?, 0, ?, ?, 1)",
               )
-              .bind(o.no_pesanan, skuPenandaPerluSku(o.no_pesanan, item.nama_shopee, item.variasi), item.variasi, item.nama_shopee, item.qty, item.harga_satuan, item.subtotal, skuFinal),
-          );
+              .bind(o.no_pesanan, skuTanda, item.variasi, item.nama_shopee, item.qty, item.harga_satuan, item.subtotal, skuFinal),
+          });
           nItem++;
           continue;
         }
-        stmts.push(
-          db
+        stmts.push({
+          no: o.no_pesanan,
+          stmt: db
             .prepare(
               "INSERT INTO order_items (marketplace, no_pesanan, sku, variasi, nama_shopee, qty, harga_satuan, hpp_snapshot, subtotal, sku_asal, perlu_sku) VALUES ('shopee', ?, ?, ?, ?, ?, ?, ?, ?, '', 0)",
             )
             .bind(o.no_pesanan, skuFinal, item.variasi, item.nama_shopee, item.qty, item.harga_satuan, hpp.hpp ?? 0, item.subtotal),
-        );
+        });
         nItem++;
       }
     }
-    for (let i = 0; i < stmts.length; i += 50) await db.batch(stmts.slice(i, i + 50));
+    // Produk penanda WAJIB masuk sebelum order_items menunjuknya, dan tanpa penundaan: satu
+    // batch terpisah yang kecil. `INSERT OR IGNORE` + pemetaan per penanda → impor ulang
+    // tidak membuat duplikat.
+    if (produkPenanda.size > 0) {
+      const at = Math.floor(Date.now() / 1000);
+      await db.batch(siapkanProdukPenanda(db, [...produkPenanda.values()], at));
+    }
+    // Baris yang tidak bisa disimpan — dibalas ke UI, BUKAN menggagalkan seluruh berkas.
+    // Sebelum ini `await db.batch(...)` telanjang: satu pernyataan buruk (mis. FK) melempar,
+    // seluruh konfirmasi jadi 500, order yang sehat ikut hilang, dan pesannya tidak
+    // menjelaskan apa pun. Sekarang batch dijalankan, lalu bila gagal diulang PER PERNYATAAN
+    // supaya baris baik tetap tersimpan.
+    const dilewati: { no_pesanan: string; pesan: string }[] = [];
+    let gagalTotal = 0;
+    for (let i = 0; i < stmts.length; i += 50) {
+      const potong = stmts.slice(i, i + 50);
+      try {
+        await db.batch(potong.map((s) => s.stmt));
+      } catch {
+        for (const s of potong) {
+          try {
+            await s.stmt.run();
+          } catch (e) {
+            gagalTotal++;
+            dilewati.push({
+              no_pesanan: s.no,
+              pesan: e instanceof Error ? e.message : "pernyataan ditolak D1",
+            });
+          }
+        }
+      }
+    }
+    // Semua pernyataan gagal = bukan satu baris buruk, tapi masalah skema/lingkungan.
+    // Balas error supaya tidak berpura-pura sukses menyimpan nol baris.
+    if (stmts.length > 0 && gagalTotal === stmts.length) {
+      return json({ ok: false, error: `Semua ${stmts.length} pernyataan impor ditolak (masalah skema/DB), bukan satu baris. Contoh: ${dilewati[0]?.pesan ?? "-"}` }, 500);
+    }
+    nItem -= dilewati.length;
     const bookingBaru = await simpanBooking(db, advance, batch.id);
     const jmlResi = await isiResiGrup(db, batch.id);
     await catatImportFile(db, {
@@ -742,7 +832,18 @@ export async function POST(request: Request) {
       by: String(user.tg_id),
     });
     await db.prepare("UPDATE import_batches SET status = 'done', sukses = ? WHERE id = ?").bind(nItem, batch.id).run();
-    return json({ ok: true, order: orders.length, item: nItem, advance: bookingBaru, advance_skip: advance.length - bookingBaru, resi_grup: jmlResi, batch_id: batch.id });
+    return json({
+      ok: true,
+      order: orders.length,
+      item: nItem,
+      advance: bookingBaru,
+      advance_skip: advance.length - bookingBaru,
+      resi_grup: jmlResi,
+      batch_id: batch.id,
+      // Baris yang ditolak D1 (biasanya FK). Order lain tetap tersimpan; UI menampilkan
+      // daftar ini supaya user tahu mana yang perlu diperbaiki, bukan 500 tanpa penjelasan.
+      dilewati,
+    });
   }
   if (aksi === "hapus") {
     const daftar = Array.isArray(body.targets) ? body.targets : [];

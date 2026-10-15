@@ -404,11 +404,16 @@ async function alirMendalam(
 
       const setting = await ambilSettingAnalisa(db, oleh);
       const kedalaman = bacaKedalaman(setting.kedalaman);
+      // Alasan stream berakhir; kosong = provider tidak melaporkannya.
+      let selesaiAlasan: string | undefined;
       const aliran = await panggilTeksStream(
         { db, kunci: getKunciEnkripsi(), env: getEnvAi() },
         {
           pesan: susunPesanMendalam(susunBahan(siap.hasil), kedalaman),
           reasoning: setting.reasoning,
+          // Teks pikiran diminta terpisah dari narasi (dikirim sebagai event `{pikir}`):
+          // user bisa melihat proses berpikir tanpa tercampur ke jawaban.
+          reasoningHilir: true,
           ...(setting.maks_token !== undefined ? { maksToken: setting.maks_token } : {}),
         }
       );
@@ -417,13 +422,18 @@ async function alirMendalam(
       try {
         for await (const p of aliran.potongan) {
           if (p.delta) kirim({ delta: p.delta });
+          // Pikiran model dikirim sebagai event TERPISAH supaya `{delta}` tetap murni narasi.
+          if (p.pikir) kirim({ pikir: p.pikir });
+          // Alasan stream berakhir (`length` = jawaban terpotong, `content_filter` = diblokir)
+          // ikut di event `{selesai}` supaya UI bisa menjelaskan jawaban yang tidak selesai.
+          if (p.selesaiAlasan) selesaiAlasan = p.selesaiAlasan;
         }
       } catch (e) {
         // Kegagalan SETELAH potongan pertama tidak difallback (teks sudah sampai ke user);
         // sampaikan sebabnya supaya jawaban yang terpotong tidak terlihat seperti selesai.
         return galat(e instanceof Error ? e.message : String(e));
       }
-      kirim({ selesai: true, provider: aliran.provider, model: aliran.model });
+      kirim({ selesai: true, provider: aliran.provider, model: aliran.model, ...(selesaiAlasan ? { selesaiAlasan } : {}) });
       tutup();
     },
   });
@@ -480,11 +490,15 @@ async function alirSaranIklan(
       kirim({ paket });
 
       const setting = await ambilSettingAnalisa(db, oleh);
+      // Alasan stream berakhir; kosong = provider tidak melaporkannya.
+      let selesaiAlasan: string | undefined;
       const aliran = await panggilTeksStream(
         { db, kunci: getKunciEnkripsi(), env: getEnvAi() },
         {
           pesan: susunPesanSkenario(paket, hariKe),
           reasoning: setting.reasoning,
+          // Sama seperti `alirMendalam`: teks pikiran diminta terpisah dari narasi.
+          reasoningHilir: true,
           ...(setting.maks_token !== undefined ? { maksToken: setting.maks_token } : {}),
         }
       );
@@ -493,11 +507,14 @@ async function alirSaranIklan(
       try {
         for await (const p of aliran.potongan) {
           if (p.delta) kirim({ delta: p.delta });
+          // Pikiran model dikirim terpisah; `{delta}` tetap murni narasi user.
+          if (p.pikir) kirim({ pikir: p.pikir });
+          if (p.selesaiAlasan) selesaiAlasan = p.selesaiAlasan;
         }
       } catch (e) {
         return galat(e instanceof Error ? e.message : String(e));
       }
-      kirim({ selesai: true, provider: aliran.provider, model: aliran.model });
+      kirim({ selesai: true, provider: aliran.provider, model: aliran.model, ...(selesaiAlasan ? { selesaiAlasan } : {}) });
       tutup();
     },
   });

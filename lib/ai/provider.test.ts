@@ -97,7 +97,7 @@ function model(provider: string, jumlah: number, mulaiId = 1): BarisModel[] {
   return keluar;
 }
 
-type Panggilan = { provider: string; model: string };
+type Panggilan = { provider: string; model: string; /** Body permintaan apa adanya — dipakai uji reasoning (mis. ada/tidaknya `reasoning_effort`). */ body?: string };
 
 /** Nama model dari body permintaan adapter; body bukan JSON = "" (bukan lempar). */
 function namaModelDariBody(body: BodyInit | null | undefined): string {
@@ -132,7 +132,7 @@ function fetchPalsu(aturan: { lambat: string[]; sukses: string[]; log: Panggilan
     const u = String(url);
     const provider = Object.entries(NAMA_PER_FRAGMEN).find(([frag]) => u.includes(frag))?.[1] ?? "lain";
     const model = namaModelDariBody(init?.body);
-    aturan.log.push({ provider, model });
+    aturan.log.push({ provider, model, body: String(init?.body ?? "") });
     if (aturan.sukses.includes(provider)) {
       return {
         ok: true,
@@ -171,12 +171,11 @@ async function denganJamPalsu<T>(fn: (maju: (ms: number) => void) => Promise<T>)
   const asliDateNow = Date.now;
   let jam = 1_000_000;
   Date.now = () => jam;
-  // Timer langsung menyala: adapter memutus percobaan seketika, jadi uji tidak
-  // menunggu puluhan detik nyata. Nilai balik timer tidak dipakai adapter.
-  globalThis.setTimeout = ((cb: () => void) => {
-    cb();
-    return asliSetTimeout(cb, 0);
-  }) as typeof globalThis.setTimeout;
+  // Timer "langsung menyala": adapter memutus percobaan seketika, jadi uji tidak menunggu
+  // puluhan detik nyata. Sengaja lewat MACROTASK (`setTimeout(…, 0)`), BUKAN panggilan
+  // sinkron: timer yang menyala sinkron selalu menang atas bacaan stream yang datanya sudah
+  // ada, sehingga jalur streaming tidak bisa dibedakan antara "potongan tiba" dan "timeout".
+  globalThis.setTimeout = ((cb: () => void) => asliSetTimeout(cb, 0)) as typeof globalThis.setTimeout;
   try {
     return await fn((ms) => (jam += ms));
   } finally {
@@ -537,6 +536,192 @@ describe("panggilTeksStream — gemini ikut dicoba", () => {
   });
 });
 
+/** Badan respons 200 yang TIDAK PERNAH mengirim potongan: model berpikir DIAM sampai timeout. */
+function badanTanpaPotongan(): ReadableStream<Uint8Array> {
+  return new ReadableStream<Uint8Array>({
+    start() {
+      // sengaja kosong: tidak pernah enqueue, tidak pernah close — meniru model yang diam.
+    },
+  });
+}
+
+/** SSE yang langsung berakhir tanpa satu pun potongan teks (`[DONE]` saja). */
+function badanSSETanpaTeks(): ReadableStream<Uint8Array> {
+  const enc = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    start(c) {
+      c.enqueue(enc.encode("data: [DONE]\n\n"));
+      c.close();
+    },
+  });
+}
+
+/**
+ * Cacat yang dikunci di sini: `streamJson`/`streamGemini` mengembalikan `ok: true` begitu
+ * HEADER 2xx tiba, bukan setelah potongan pertama. Dulu kandidat langsung dikunci di titik
+ * itu, sehingga model yang diam lebih lama dari batas waktu membuat timeout terjadi SETELAH
+ * `panggilTeksStream` sudah `return` — dan fallback ke provider berikutnya tidak pernah jalan.
+ */
+describe("panggilTeksStream — potongan pertama menentukan kandidat", () => {
+  it("TIMEOUT sebelum potongan pertama -> kandidat berikutnya DICOBA, user tetap dapat jawaban", async () => {
+    const db = buatDb({
+      kredensial: [await kred("kenari", "key-kenari", 1), await kred("groq", "key-groq", 2)],
+      model: [...model("kenari", 1, 1), ...model("groq", 1, 9)],
+      settings: {
+        textProvider: "kenari",
+        chainTeks: ["kenari", "groq"],
+        modelTeks: { kenari: "kenari-diam", groq: "groq-cepat" },
+        modelVision: {},
+        modelGambar: {},
+      },
+    });
+    const log: Panggilan[] = [];
+    await denganJamPalsu(async (maju) => {
+      globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        const u = String(url);
+        const provider = Object.entries(NAMA_PER_FRAGMEN).find(([frag]) => u.includes(frag))?.[1] ?? "lain";
+        log.push({ provider, model: namaModelDariBody(init?.body), body: String(init?.body ?? "") });
+        if (provider === "kenari") {
+          // 200 + header terkirim lalu DIAM: pembacaan digantung sampai adapter membatalkan
+          // lewat AbortController, persis seperti model yang berpikir lebih lama dari timeout.
+          maju(TIMEOUT_TEKS_MS);
+          return { ok: true, status: 200, body: badanTanpaPotongan() } as unknown as Response;
+        }
+        return { ok: true, status: 200, body: badanSSE(["dari groq"]) } as unknown as Response;
+      }) as unknown as typeof fetch;
+
+      const hasil = await panggilTeksStream({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }] });
+
+      assert.equal(hasil.ok, true, `timeout sebelum potongan pertama harus difallback: ${hasil.ok ? "" : hasil.error}`);
+      if (!hasil.ok) return;
+      assert.equal(hasil.provider, "groq", "kandidat kedua dipakai karena yang pertama diam tanpa potongan");
+      assert.equal(hasil.model, "groq-cepat");
+      let teks = "";
+      for await (const p of hasil.potongan) if (p.delta) teks += p.delta;
+      assert.equal(teks, "dari groq!");
+      assert.ok(log.some((p) => p.provider === "groq"), "groq HARUS benar-benar dipanggil walau kenari sudah membalas 200");
+    });
+  });
+
+  it("200 yang selesai TANPA potongan teks dianggap gagal -> lanjut kandidat berikutnya", async () => {
+    const db = buatDb({
+      kredensial: [await kred("kenari", "key-kenari", 1), await kred("groq", "key-groq", 2)],
+      model: [...model("kenari", 1, 1), ...model("groq", 1, 9)],
+      settings: {
+        textProvider: "kenari",
+        chainTeks: ["kenari", "groq"],
+        modelTeks: { kenari: "kenari-kosong", groq: "groq-cepat" },
+        modelVision: {},
+        modelGambar: {},
+      },
+    });
+    const log: Panggilan[] = [];
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const u = String(url);
+      const provider = Object.entries(NAMA_PER_FRAGMEN).find(([frag]) => u.includes(frag))?.[1] ?? "lain";
+      log.push({ provider, model: namaModelDariBody(init?.body) });
+      // 200, tapi user tidak akan menerima satu karakter pun: ini kegagalan, bukan jawaban kosong.
+      if (provider === "kenari") return { ok: true, status: 200, body: badanSSETanpaTeks() } as unknown as Response;
+      return { ok: true, status: 200, body: badanSSE(["dari groq"]) } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const hasil = await panggilTeksStream({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }] });
+    assert.equal(hasil.ok, true, `stream kosong harus difallback: ${hasil.ok ? "" : hasil.error}`);
+    if (!hasil.ok) return;
+    assert.equal(hasil.provider, "groq");
+    let teks = "";
+    for await (const p of hasil.potongan) if (p.delta) teks += p.delta;
+    assert.equal(teks, "dari groq!");
+    assert.ok(log.some((p) => p.provider === "groq"), "groq dicoba setelah kenari berakhir tanpa teks");
+  });
+
+  it("sisa anggaran < satu percobaan reasoning -> kandidat berikutnya dicoba TANPA reasoning", async () => {
+    // Rantai satu provider dengan DUA model, dan model pilihan user adalah yang PERTAMA.
+    // Jatah kandidat pertama adalah `batasPercobaanTeks` = max(MIN_SISA_MS, min(jatah, sisa)),
+    // yaitu SELURUH anggaran provider (karena TIMEOUT_TEKS_REASONING_MS = ANGGARAN_PROVIDER_MS),
+    // sehingga sisa anggaran provider menjadi 0 dan kandidat berikutnya DILEWATI — aturan
+    // "reasoning diturunkan" tidak pernah tersentuh. Uji ini karena itu memakai dua model:
+    // model pertama (kenari-model-1) diberi jatah pendek, sehingga sisa anggaran provider
+    // masih ada tetapi lebih kecil dari satu percobaan reasoning penuh. Itulah kondisi yang
+    // membuat aturan itu aktif, dan keadaannya realistis: satu model lambat memang menghabiskan
+    // sebagian besar jatah provider sebelum model cadangan sempat dicoba.
+    const db = buatDb({
+      kredensial: [await kred("kenari", "key-kenari", 1)],
+      model: model("kenari", 2, 1),
+      settings: { textProvider: "kenari", chainTeks: ["kenari"], modelTeks: { kenari: "kenari-diam" }, modelVision: {}, modelGambar: {} },
+    });
+    // Model pertama diberi jatah pendek (bukan seluruh anggaran provider), sehingga sisa
+    // anggaran provider masih ada tetapi lebih kecil dari satu percobaan reasoning penuh.
+    // Jam WAJIB dimajukan di dalam `pull()`, yaitu ketika stream benar-benar dibaca — bukan
+    // di dalam `fetch`. `totalMs`/`timeoutMs` sudah dihitung SEBELUM generator dikonsumsi, jadi
+    // memajukan jam saat `fetch` mengubah jatah kandidat berikutnya (sisa provider menjadi 0)
+    // dan uji tidak lagi menyentuh aturan yang mau diperiksa.
+    const jatahPertama = 20000;
+    const majuSelamaBaca = (maju: (ms: number) => void, jumlah: number): ReadableStream<Uint8Array> => {
+      let sudah = false;
+      return new ReadableStream<Uint8Array>({
+        pull() {
+          if (sudah) return new Promise<void>(() => {}); // bacaan berikutnya menggantung
+          sudah = true;
+          maju(jumlah);
+          return new Promise<void>(() => {});
+        },
+      });
+    };
+    const log: Panggilan[] = [];
+    await denganJamPalsu(async (maju) => {
+      globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+        const u = String(url);
+        log.push({
+          provider: Object.entries(NAMA_PER_FRAGMEN).find(([frag]) => u.includes(frag))?.[1] ?? "lain",
+          model: namaModelDariBody(init?.body),
+          body: String(init?.body ?? ""),
+        });
+        // 200 lalu diam; kandidat pertama memakai jatah pendek, kandidat berikutnya sisanya.
+        return {
+          ok: true,
+          status: 200,
+          body: majuSelamaBaca(maju, log.length === 1 ? jatahPertama : ANGGARAN_PROVIDER_MS),
+        } as unknown as Response;
+      }) as unknown as typeof fetch;
+
+      const hasil = await panggilTeksStream({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }], reasoning: "high" });
+
+      assert.equal(hasil.ok, false, "semua kandidat diam, jadi rantai memang gagal");
+      // Jumlah percobaan TIDAK dipatok: dengan MAKS_MODEL_PER_PROVIDER kandidat per provider,
+      // kandidat cadangan bisa menghabiskan sisa anggaran provider satu per satu, sehingga
+      // percobaan KEDUA (kalau ada) yang penting. Yang diuji adalah aturannya:
+      // begitu ada percobaan SETELAH percobaan ber-reasoning gagal, percobaan itu TIDAK lagi
+      // memakai reasoning dan sisa anggaran TIDAK membolehkannya dilewati.
+      assert.ok(log.length >= 2, `kandidat cadangan harus tetap dicoba, bukan dilewati (dicoba: ${log.length})`);
+      assert.match(log[0]?.body ?? "", /"reasoning_effort":"high"/, "kandidat pertama tetap memakai reasoning");
+      assert.doesNotMatch(
+        log[1]?.body ?? "",
+        /reasoning_effort/,
+        "percobaan setelah kegagalan ber-reasoning dicoba TANPA reasoning"
+      );
+      const upaya = hasil.ok ? [] : hasil.upaya ?? [];
+      // Kandidat yang DICOBA setelah downgrade adalah `kenari-model-1` (kandidat kedua dalam
+      // urutan: model pilihan user selalu nomor satu, sisanya urut `id`), bukan model-2.
+      // Model-2 memang sudah kehabisan anggaran provider (70s + 35s > ANGGARAN_PROVIDER_MS),
+      // dan itu perilaku yang benar — bukan yang sedang diuji di sini.
+      const kedua = upaya.find((u) => u.model === "kenari-model-1" && /Timeout provider/.test(u.error));
+      assert.match(kedua?.error ?? "", /Timeout provider setelah \d+ms/, `kandidat cadangan harus dicoba dan timeout: ${kedua?.error}`);
+      const jatahKedua = Number(/Timeout provider setelah (\d+)ms/.exec(kedua?.error ?? "")?.[1] ?? 0);
+      assert.ok(jatahKedua > 0, `jatah kandidat cadangan harus lebih dari nol: ${kedua?.error}`);
+      assert.ok(
+        jatahKedua <= TIMEOUT_TEKS_MS,
+        `jatah kandidat cadangan tidak boleh melebihi timeout tanpa reasoning (${TIMEOUT_TEKS_MS}ms): ${jatahKedua}ms`
+      );
+      const pesan = hasil.ok ? "" : hasil.error;
+      assert.match(pesan, /reasoning diturunkan/, `penurunan reasoning harus terlihat di pesan gagal: ${pesan}`);
+      // Yang dijaga: penurunan reasoning TERLIHAT, dan kandidat cadangan sempat DICOBA
+      // (dibuktikan `log.length >= 2` + catatan timeout di `kedua` di atas). Kandidat
+      // berikutnya boleh saja sudah kehabisan anggaran provider — itu perilaku benar.
+    });
+  });
+});
+
 /**
  * fetch yang SELALU menggantung sampai adapter membatalkannya lewat AbortController —
  * meniru model yang tidak menjawab (timeout provider nyata). `maju` mensimulasikan jam
@@ -545,7 +730,11 @@ describe("panggilTeksStream — gemini ikut dicoba", () => {
 function fetchHitung(log: Panggilan[], maju: (ms: number) => void, ms: number) {
   return async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const u = String(url);
-    log.push({ provider: Object.entries(NAMA_PER_FRAGMEN).find(([frag]) => u.includes(frag))?.[1] ?? "lain", model: namaModelDariBody(init?.body) });
+    log.push({
+      provider: Object.entries(NAMA_PER_FRAGMEN).find(([frag]) => u.includes(frag))?.[1] ?? "lain",
+      model: namaModelDariBody(init?.body),
+      body: String(init?.body ?? ""),
+    });
     maju(ms);
     return new Promise<Response>((_resolve, reject) => {
       const bunuh = () => {

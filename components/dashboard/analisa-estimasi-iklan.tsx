@@ -52,6 +52,12 @@ const GAYA_STATUS: Record<StatusEstimasi, { label: string; kelas: string }> = {
   belum_cukup_data: { label: "Belum cukup data", kelas: "bg-muted text-muted-foreground" },
 };
 
+/** Alasan berhenti dari server → peringatan yang dilihat pemilik. Tidak ada di sini = tidak dirender. */
+const PESAN_SELESAI: Record<string, string> = {
+  length: "Jawaban TERPOTONG karena plafon token. Naikkan Maks Token, lalu minta saran ulang.",
+  content_filter: "Jawaban diblokir penyedia (content filter). Ubah pertanyaan atau ganti model.",
+};
+
 /** null → "—". BUKAN 0: nol berarti terukur nol, null berarti belum ada datanya. */
 function angka(n: number | null): string {
   return n === null ? "—" : formatAngka(n);
@@ -85,6 +91,10 @@ export function AnalisaEstimasiIklan({
   const [ringkas, setRingkas] = useState<RingkasEstimasi | null>(null);
   const [memuat, setMemuat] = useState(false);
   const [saran, setSaran] = useState("");
+  /** Teks proses berpikir model — dipisah dari narasi supaya tidak tercampur jawaban. */
+  const [pikir, setPikir] = useState("");
+  /** Alasan server berhenti ("length" / "content_filter") — kosong berarti jawaban utuh. */
+  const [selesaiAlasan, setSelesaiAlasan] = useState("");
   /** Paket angka dari server (fakta + tiga skenario) — tiba SEBELUM narasi mengalir. */
   const [paket, setPaket] = useState<PaketSkenario | null>(null);
   const [memuatSaran, setMemuatSaran] = useState(false);
@@ -112,6 +122,8 @@ export function AnalisaEstimasiIklan({
     setHasil(null);
     setRingkas(null);
     setSaran("");
+    setPikir("");
+    setSelesaiAlasan("");
     setPaket(null);
   }, [presetId]);
 
@@ -193,13 +205,16 @@ export function AnalisaEstimasiIklan({
    * lama daripada batas tunggu mana pun: dengan aliran, potongan pertama tiba dalam hitungan
    * detik dan request tidak dianggap gagal hanya karena totalnya lama.
    *
-   * Server membalas `text/event-stream` berisi `{paket}` sekali, lalu `{delta}` berulang,
-   * lalu `{selesai}` atau `{error}`. Kita baca manual (bukan EventSource) karena endpoint
-   * ini POST + butuh sesi.
+   * Server membalas `text/event-stream` berisi `{paket}` sekali, lalu `{pikir}` berulang (teks
+   * proses berpikir model, terpisah dari jawaban), lalu `{delta}` berulang, lalu
+   * `{selesai, provider, model, selesaiAlasan?}` atau `{error}`. Kita baca manual (bukan
+   * EventSource) karena endpoint ini POST + butuh sesi.
    */
   async function mintaSaran() {
     setMemuatSaran(true);
     setSaran("");
+    setPikir("");
+    setSelesaiAlasan("");
     setPaket(null);
     // modalIklan = jumlah modal semua SKU terpilih; targetRoas = rata-rata target yang
     // diisi (0 bila tidak ada). Server memakai keduanya sebagai angka paket skenario.
@@ -237,6 +252,7 @@ export function AnalisaEstimasiIklan({
       const dekoder = new TextDecoder();
       let buffer = "";
       let teks = "";
+      let pikirTeks = "";
       for (;;) {
         const { done, value } = await pembaca.read();
         if (done) break;
@@ -248,7 +264,14 @@ export function AnalisaEstimasiIklan({
         for (const b of bagian) {
           const baris = b.split("\n").find((l) => l.startsWith("data: "));
           if (!baris) continue;
-          let ev: { delta?: string; error?: string; selesai?: boolean; paket?: PaketSkenario };
+          let ev: {
+            delta?: string;
+            error?: string;
+            selesai?: boolean;
+            paket?: PaketSkenario;
+            pikir?: string;
+            selesaiAlasan?: string;
+          };
           try {
             ev = JSON.parse(baris.slice(6)) as typeof ev;
           } catch {
@@ -264,7 +287,15 @@ export function AnalisaEstimasiIklan({
             teks += ev.delta;
             // Tampilkan bertahap supaya user melihat model sedang bekerja.
             setSaran(teks);
+            continue;
           }
+          // Pikiran model: state TERPISAH dari `teks`, tidak boleh masuk narasi jawaban.
+          if (ev.pikir) {
+            pikirTeks += ev.pikir;
+            setPikir(pikirTeks);
+            continue;
+          }
+          if (ev.selesaiAlasan) setSelesaiAlasan(ev.selesaiAlasan);
         }
       }
       if (teks.trim() === "") throw new Error("Model tidak mengembalikan narasi.");
@@ -526,7 +557,7 @@ export function AnalisaEstimasiIklan({
         ) : null}
 
         {/* ── Kartu saran AI ── */}
-        {memuatSaran || saran !== "" || paket !== null ? (
+        {memuatSaran || saran !== "" || paket !== null || pikir !== "" || selesaiAlasan !== "" ? (
           <Card data-testid="kartu-saran-langkah">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-base">
@@ -572,6 +603,33 @@ export function AnalisaEstimasiIklan({
                     ))}
                   </div>
                 </div>
+              ) : null}
+
+              {/* Pikiran model: TERTUTUP default dan di ATAS narasi. Tujuannya memeriksa
+                  model benar-benar merespons, bukan mengubah isi jawaban. */}
+              {pikir !== "" ? (
+                <details
+                  className="rounded-xl border border-border p-3 text-xs text-muted-foreground"
+                  data-testid="pikir-model"
+                >
+                  <summary className="cursor-pointer text-sm font-medium text-foreground">
+                    Proses berpikir model
+                  </summary>
+                  <p className="mt-2">
+                    Ini pikiran internal model, bukan jawaban — abaikan bila narasinya sudah masuk akal.
+                  </p>
+                  <p className="mt-2 whitespace-pre-wrap leading-relaxed">{pikir}</p>
+                </details>
+              ) : null}
+
+              {/* Jawaban berhenti karena plafon token / diblokir penyedia. */}
+              {selesaiAlasan !== "" ? (
+                <p
+                  className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-700 dark:text-amber-400"
+                  data-testid="peringatan-selesai"
+                >
+                  {PESAN_SELESAI[selesaiAlasan] ?? `Jawaban berhenti lebih awal (${selesaiAlasan}).`}
+                </p>
               ) : null}
 
               {memuatSaran ? (

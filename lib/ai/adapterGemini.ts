@@ -40,7 +40,11 @@ function pisahSistem(pesan: BagianChat[]): { sistem: string; isi: IsiGemini[] } 
 
 type ResponsGemini = {
   candidates?: {
-    content?: { parts?: ({ text?: string } | { functionCall?: { name?: string; args?: unknown } })[] };
+    // `thought: true` = part teks ini PIKIRAN model, bukan jawaban (Gemini menandainya
+    // eksplisit; tanpa penanda ini teks pikiran tercampur ke jawaban user).
+    content?: { parts?: ({ text?: string; thought?: boolean } | { functionCall?: { name?: string; args?: unknown } })[] };
+    /** "STOP" = wajar, "MAX_TOKENS" = terpotong plafon token, "SAFETY" = diblokir. */
+    finishReason?: string;
   }[];
   usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
   error?: unknown;
@@ -98,7 +102,9 @@ function bangunBody(permintaan: PermintaanChat): Record<string, unknown> {
   if (sistem) body.systemInstruction = { parts: [{ text: sistem }] };
   if (permintaan.tool && permintaan.tool.length > 0) body.tools = [{ functionDeclarations: permintaan.tool.map(keToolGemini) }];
   const generasi: Record<string, unknown> = {
-    ...terapkanReasoning("gemini", permintaan.reasoning, { hilir: permintaan.reasoningHilir }),
+    // `model` WAJIB ikut: parameter reasoning Gemini bergantung versi (2.5 → thinkingBudget
+    // angka, 3+ → thinkingLevel); bentuk yang salah berbalas 400.
+    ...terapkanReasoning("gemini", permintaan.reasoning, { hilir: permintaan.reasoningHilir, model: permintaan.model }),
   };
   if (permintaan.maksToken !== undefined) generasi.maxOutputTokens = permintaan.maksToken;
   if (permintaan.suhu !== undefined) generasi.temperature = permintaan.suhu;
@@ -150,13 +156,27 @@ function potonganDariBarisGemini(baris: string): PotonganStream | null {
     return null;
   }
   const potong: PotonganStream = { delta: "" };
-  for (const p of v.candidates?.[0]?.content?.parts ?? []) {
-    if ("text" in p && typeof p.text === "string") potong.delta += p.text;
+  const kand = v.candidates?.[0];
+  for (const p of kand?.content?.parts ?? []) {
+    if (!("text" in p) || typeof p.text !== "string") continue;
+    // Part bertanda `thought` adalah pikiran model: masuk `pikir`, JANGAN PERNAH `delta`,
+    // supaya jawaban user tidak berisi curahan pikiran model.
+    if (p.thought === true) potong.pikir = (potong.pikir ?? "") + p.text;
+    else potong.delta += p.text;
   }
+  // `finishReason` diteruskan apa adanya (mis. MAX_TOKENS = jawaban terpotong): pemanggil
+  // yang menjelaskan ke user, di sini cukup dilaporkan.
+  if (typeof kand?.finishReason === "string" && kand.finishReason) potong.selesaiAlasan = kand.finishReason;
   // `usageMetadata` bisa datang di potongan mana pun, bukan hanya yang terakhir.
   if (v.usageMetadata?.promptTokenCount !== undefined) potong.tokenMasuk = v.usageMetadata.promptTokenCount;
   if (v.usageMetadata?.candidatesTokenCount !== undefined) potong.tokenKeluar = v.usageMetadata.candidatesTokenCount;
-  return potong.delta || potong.tokenMasuk !== undefined || potong.tokenKeluar !== undefined ? potong : null;
+  return potong.delta ||
+    potong.pikir ||
+    potong.selesaiAlasan ||
+    potong.tokenMasuk !== undefined ||
+    potong.tokenKeluar !== undefined
+    ? potong
+    : null;
 }
 
 /**
@@ -195,6 +215,12 @@ export async function streamGemini(
   });
 
   let res: Response;
+  // FASE HUBUNG: timer dipasang SEBELUM `await fetch`. `ac.abort()` hanya dipanggil dari
+  // `batalkan()`, dan generator baru berjalan setelah dikonsumsi — jadi tanpa timer ini
+  // provider yang menahan header menggantung TANPA BATAS dan user tidak menerima apa pun.
+  // Batasnya `idleMs`, bukan `totalMs` (lihat alasan di lib/ai/stream.ts). Dibersihkan di
+  // `finally` supaya tidak menahan event loop.
+  const tHubung = setTimeout(() => ac.abort(), idleMs);
   try {
     res = await fetch(
       `${(minta.baseUrl || BASE).replace(/\/+$/, "")}/models/${encodeURIComponent(minta.model)}:streamGenerateContent?alt=sse&key=${encodeURIComponent(minta.apiKey)}`,
@@ -206,7 +232,16 @@ export async function streamGemini(
       }
     );
   } catch (e) {
-    return { ok: false, status: 0, error: `Gagal menghubungi provider: ${e instanceof Error ? e.message : String(e)}` };
+    const sebab = e instanceof Error ? e.message : String(e);
+    return {
+      ok: false,
+      status: 0,
+      error: ac.signal.aborted
+        ? `Gagal menghubungi provider: timeout fase hubung ${idleMs}ms tanpa balasan header.`
+        : `Gagal menghubungi provider: ${sebab}`,
+    };
+  } finally {
+    clearTimeout(tHubung);
   }
 
   // Bukan 2xx: body dibaca sebagai teks dan dilaporkan apa adanya (status + potongan
@@ -222,34 +257,35 @@ export async function streamGemini(
     const decoder = new TextDecoder();
     let buffer = "";
     let habis = false;
+    // SATU deadline kumulatif untuk seluruh stream (lihat lib/ai/stream.ts untuk alasan
+    // lengkapnya): timer "total" yang dibuat ulang tiap iterasi adalah KODE MATI, sehingga
+    // tidak ada batas durasi keseluruhan. Sekarang timer yang dipasang = `min(idleMs, sisa)`.
+    const batas = Date.now() + totalMs;
     try {
       while (!habis) {
+        const sisa = batas - Date.now();
+        if (sisa <= 0) {
+          batalkan();
+          throw new Error(`Timeout total ${totalMs}ms.`);
+        }
+        const tunggu = Math.min(idleMs, sisa);
         const baca = reader.read();
-        // Timer ganda: `idle` untuk jeda antar-potongan (model berpikir), `total`
-        // sebagai pagar terakhir supaya koneksi menggantung tidak menahan request.
-        // Keduanya WAJIB dibersihkan setelah balapan selesai: tanpa `clearTimeout`, tiap
-        // potongan meninggalkan dua timer yang tetap hidup sampai waktunya habis, sehingga
-        // proses (mis. uji) ikut tertahan menunggu event loop kosong.
-        let tIdle: ReturnType<typeof setTimeout> | undefined;
-        let tTotal: ReturnType<typeof setTimeout> | undefined;
-        let hasil: { jenis: "baca"; r: ReadableStreamReadResult<Uint8Array> } | { jenis: "idle" } | { jenis: "total" };
+        const jedaIdle = Promise.withResolvers<{ jenis: "idle" }>();
+        // Timer idle dibersihkan setelah balapan selesai: tanpa `clearTimeout`, tiap potongan
+        // meninggalkan timer yang tetap hidup sampai waktunya habis sehingga proses (mis. uji)
+        // ikut tertahan menunggu event loop kosong.
+        const tIdle = setTimeout(() => jedaIdle.resolve({ jenis: "idle" }), tunggu);
+        let hasil: { jenis: "baca"; r: ReadableStreamReadResult<Uint8Array> } | { jenis: "idle" };
         try {
-          hasil = await Promise.race([
-            baca.then((r) => ({ jenis: "baca" as const, r })),
-            new Promise<{ jenis: "idle" }>((r) => {
-              tIdle = setTimeout(() => r({ jenis: "idle" }), idleMs);
-            }),
-            new Promise<{ jenis: "total" }>((r) => {
-              tTotal = setTimeout(() => r({ jenis: "total" }), totalMs);
-            }),
-          ]);
+          hasil = await Promise.race([baca.then((r) => ({ jenis: "baca" as const, r })), jedaIdle.promise]);
         } finally {
           clearTimeout(tIdle);
-          clearTimeout(tTotal);
         }
         if (hasil.jenis !== "baca") {
           batalkan();
-          throw new Error(hasil.jenis === "idle" ? `Timeout provider setelah ${idleMs}ms tanpa potongan.` : `Timeout total ${totalMs}ms.`);
+          throw new Error(
+            tunggu < idleMs ? `Timeout total ${totalMs}ms.` : `Timeout provider setelah ${idleMs}ms tanpa potongan.`
+          );
         }
         if (hasil.r.done) break;
         buffer += decoder.decode(hasil.r.value, { stream: true });
@@ -269,7 +305,8 @@ export async function streamGemini(
             if (!potong) continue;
             if (potong.tokenMasuk !== undefined) masukMs = potong.tokenMasuk;
             if (potong.tokenKeluar !== undefined) keluarMs = potong.tokenKeluar;
-            if (potong.delta) yield { delta: potong.delta };
+            // Pikiran dan alasan selesai diteruskan apa adanya; `delta` tetap hanya jawaban.
+            if (potong.delta || potong.pikir || potong.selesaiAlasan) yield potong;
           }
         }
       }

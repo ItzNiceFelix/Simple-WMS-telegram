@@ -57,6 +57,8 @@ type ResiMulti = { no_resi: string; no_pesanan: string[]; jumlah_order: number }
 type Kriteria = { no_resi: string; no_pesanan: string[]; alasan: string[] }
 type Compare = { sku: string; nama_shopee: string; nama_d1: string; sama: boolean }
 type Gagal = { no_pesanan: string; sku?: string; pesan: string }
+/** Baris yang ditolak D1 saat konfirmasi (mis. FK). Order lain tetap tersimpan. */
+type Dilewati = { no_pesanan: string; pesan: string }
 
 type Preview = {
   batch_id: number
@@ -122,6 +124,8 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
   const [manual, setManual] = useState<Record<string, string>>({})
   const [master, setMaster] = useState<OpsiSku[]>([])
   const [tandai, setTandai] = useState<Set<string>>(new Set())
+  /** Baris yang DITOLAK saat konfirmasi — ditampilkan supaya user tahu mana yang perlu diperbaiki. */
+  const [dilewatiHasil, setDilewatiHasil] = useState<(Dilewati & { berkas: string })[]>([])
 
   function kunciBaris(b: BarisBelumSku): string {
     return `${b.order_ref}\u0000${b.nama_shopee}\u0000${b.variasi}`
@@ -135,6 +139,7 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
       setProgres(null)
       setManual({})
       setTandai(new Set())
+      setDilewatiHasil([])
     }
     onOpenChange(v)
   }
@@ -260,6 +265,8 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
       const total = { order: 0, item: 0, advance: 0 }
       const sukses: string[] = []
       const gagal: string[] = []
+      const dilewati: (Dilewati & { berkas: string })[] = []
+      setDilewatiHasil([])
       for (const [i, h] of siap.entries()) {
         setProgres({ nama: h.nama, ke: i + 1, dari: siap.length })
         const skuManual = Object.entries(manual).flatMap(([k, sku]) => {
@@ -292,7 +299,7 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
             credentials: "include",
           })
           const raw = (await res.json().catch(() => null)) as
-            | { ok?: boolean; error?: string; order?: number; item?: number; advance?: number }
+            | { ok?: boolean; error?: string; order?: number; item?: number; advance?: number; dilewati?: Dilewati[] }
             | null
           if (!res.ok || !raw?.ok) {
             gagal.push(`${h.nama} (${raw?.error ?? `HTTP ${res.status}`})`)
@@ -301,6 +308,7 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
           total.order += raw.order ?? 0
           total.item += raw.item ?? 0
           total.advance += raw.advance ?? 0
+          for (const d of raw.dilewati ?? []) dilewati.push({ ...d, berkas: h.nama })
           sukses.push(h.nama)
         } catch (e) {
           // Batch yang sudah sukses tetap sukses; yang gagal hanya disebut namanya.
@@ -308,16 +316,21 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
         }
       }
 
+      setDilewatiHasil(dilewati)
       if (sukses.length === 0) {
         tampilkanGagalTulis(`Semua konfirmasi gagal: ${gagal.join("; ")}`)
         return
       }
       toast.success(
         `Import selesai: ${total.order} order, ${total.item} item, ${total.advance} booking advance. ` +
-          `${sukses.length} berkas sukses${gagal.length > 0 ? `, ${gagal.length} gagal: ${gagal.join("; ")}` : ""}.`
+          `${sukses.length} berkas sukses${gagal.length > 0 ? `, ${gagal.length} gagal: ${gagal.join("; ")}` : ""}` +
+          `${dilewati.length > 0 ? `, ${dilewati.length} baris dilewati` : ""}.`
       )
-      tutup(false)
+      // Daftar order di belakang dialog perlu disegarkan walau dialog tetap terbuka: order
+      // yang sehat SUDAH tersimpan walau ada baris dilewati.
       onSukses?.()
+      // Ada baris ditolak → JANGAN tutup dialog; user harus melihat mana yang perlu diperbaiki.
+      if (dilewati.length === 0) tutup(false)
     } catch {
       tampilkanGagalTulis("Jaringan gagal. Coba lagi.")
     } finally {
@@ -576,6 +589,21 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
               </div>
             )}
 
+            {dilewatiHasil.length > 0 && (
+              <div className="space-y-1 rounded-lg bg-red-50 p-3 text-xs text-red-900" data-testid="dilewati-import-order">
+                <b>
+                  {dilewatiHasil.length} baris dilewati D1 (order lain tetap tersimpan) — perbaiki lalu impor ulang:
+                </b>
+                <ul className="max-h-40 space-y-0.5 overflow-y-auto">
+                  {dilewatiHasil.slice(0, 50).map((d, i) => (
+                    <li key={`${i}-${d.berkas}-${d.no_pesanan}`}>
+                      [{d.berkas}] {d.no_pesanan || "-"}: {d.pesan}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
             {gagalBaris.length > 0 && (
               <ul className="max-h-32 space-y-1 overflow-y-auto rounded-lg bg-muted p-3 text-xs" data-testid="gagal-import-order">
                 {gagalBaris.slice(0, 50).map((g, i) => (
@@ -606,7 +634,7 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
                   {progres.nama} — {progres.ke}/{progres.dari}
                 </p>
               )}
-              <Button variant="secondary" onClick={() => { setHasil(null); setManual({}); setTandai(new Set()) }} disabled={mengirim}>
+              <Button variant="secondary" onClick={() => { setHasil(null); setManual({}); setTandai(new Set()); setDilewatiHasil([]) }} disabled={mengirim}>
                 Ganti file
               </Button>
               <Button onClick={konfirmasi} disabled={mengirim || !siapCommit()} data-testid="konfirmasi-import-order">

@@ -16,8 +16,24 @@ import { terapkanReasoning } from "./reasoning";
  * gagal karena totalnya panjang, dan user melihat kemajuan alih-alih layar kosong.
  */
 
-/** Satu potongan teks dari provider, sudah siap dikirim ke user. */
-export type PotonganStream = { delta: string; tokenMasuk?: number; tokenKeluar?: number };
+/**
+ * Satu potongan dari provider, sudah siap dikirim ke user.
+ *
+ * `pikir` TERPISAH dari `delta` dengan sengaja: teks penalaran model (`reasoning_content` /
+ * `reasoning` pada OpenAI-compatible, part `thought` pada Gemini) BUKAN jawaban. Kalau
+ * keduanya digabung ke `delta`, jawaban user berisi curahan pikiran model.
+ *
+ * `selesaiAlasan` = `finish_reason` (OpenAI) / `finishReason` (Gemini) apa adanya. Tidak
+ * pernah melempar: `length` (jawaban terpotong plafon token) dan `content_filter`
+ * (diblokir) hanya DILAPORKAN supaya pemanggil bisa menjelaskan ke user.
+ */
+export type PotonganStream = {
+  delta: string;
+  pikir?: string;
+  selesaiAlasan?: string;
+  tokenMasuk?: number;
+  tokenKeluar?: number;
+};
 
 export type MintaStream = {
   baseUrl: string;
@@ -39,13 +55,21 @@ export type MintaStream = {
 };
 
 type DataSSE = {
-  choices?: { delta?: { content?: string | null } }[];
+  choices?: {
+    delta?: { content?: string | null; reasoning_content?: string | null; reasoning?: string | null };
+    finish_reason?: string | null;
+  }[];
   usage?: { prompt_tokens?: number; completion_tokens?: number };
 };
 
 /**
- * Baca satu baris `data: {...}` dari SSE dan kembalikan potongan teksnya (null bila
- * bentuknya bukan delta teks yang kita pakai: role-only, tool_call, `usage`, atau JSON cacat).
+ * Baca satu baris `data: {...}` dari SSE dan kembalikan potongannya (null bila bentuknya
+ * tidak memuat apa pun yang kita pakai: role-only, tool_call, atau JSON cacat).
+ *
+ * Teks pikiran (`delta.reasoning_content` / `delta.reasoning`) masuk `pikir`, TIDAK PERNAH
+ * ke `delta`: mencampurnya berarti jawaban user berisi curahan pikiran model.
+ * `finish_reason` diteruskan apa adanya lewat `selesaiAlasan` (mis. `length` = terpotong).
+ *
  * SENGAJA tidak melempar: provider berbeda-beda bentuknya, dan satu baris asing tidak
  * boleh menggagalkan seluruh jawaban.
  */
@@ -58,12 +82,24 @@ function potonganDariBaris(baris: string): PotonganStream | null {
   } catch {
     return null;
   }
+  const c = v.choices?.[0];
   const potong: PotonganStream = { delta: "" };
-  const isi = v.choices?.[0]?.delta?.content;
+  const isi = c?.delta?.content;
   if (typeof isi === "string" && isi) potong.delta = isi;
+  // Nama field pikiran beda per provider (DeepSeek/Kenari `reasoning_content`, OpenRouter
+  // `reasoning`), jadi ambil yang pertama ada.
+  const pikir = c?.delta?.reasoning_content ?? c?.delta?.reasoning;
+  if (typeof pikir === "string" && pikir) potong.pikir = pikir;
+  if (typeof c?.finish_reason === "string" && c.finish_reason) potong.selesaiAlasan = c.finish_reason;
   if (v.usage?.prompt_tokens !== undefined) potong.tokenMasuk = v.usage.prompt_tokens;
   if (v.usage?.completion_tokens !== undefined) potong.tokenKeluar = v.usage.completion_tokens;
-  return potong.delta || potong.tokenMasuk !== undefined || potong.tokenKeluar !== undefined ? potong : null;
+  return potong.delta ||
+    potong.pikir ||
+    potong.selesaiAlasan ||
+    potong.tokenMasuk !== undefined ||
+    potong.tokenKeluar !== undefined
+    ? potong
+    : null;
 }
 
 /**
@@ -95,6 +131,13 @@ export async function streamJson(
   );
 
   let res: Response;
+  // FASE HUBUNG: timer dipasang SEBELUM `await fetch`. `ac.abort()` hanya dipanggil dari
+  // `batalkan()`, dan generator baru berjalan setelah dikonsumsi — jadi tanpa timer ini
+  // provider yang menahan header (mis. mengantre varian `:free`) menggantung TANPA BATAS
+  // dan user tidak menerima apa pun. Batasnya `idleMs`, bukan `totalMs`: provider yang lambat
+  // menjawab header tidak boleh dianggap gagal lebih cepat daripada model yang lambat berpikir.
+  // Dibersihkan di `finally` supaya tidak menahan event loop.
+  const tHubung = setTimeout(() => ac.abort(), idleMs);
   try {
     res = await fetch(`${minta.baseUrl.replace(/\/+$/, "")}/chat/completions`, {
       method: "POST",
@@ -103,7 +146,16 @@ export async function streamJson(
       signal: ac.signal,
     });
   } catch (e) {
-    return { ok: false, status: 0, error: `Gagal menghubungi provider: ${e instanceof Error ? e.message : String(e)}` };
+    const sebab = e instanceof Error ? e.message : String(e);
+    return {
+      ok: false,
+      status: 0,
+      error: ac.signal.aborted
+        ? `Gagal menghubungi provider: timeout fase hubung ${idleMs}ms tanpa balasan header.`
+        : `Gagal menghubungi provider: ${sebab}`,
+    };
+  } finally {
+    clearTimeout(tHubung);
   }
 
   // Bukan 2xx: body dibaca sebagai teks dan dilaporkan apa adanya (status + potongan body),
@@ -119,34 +171,37 @@ export async function streamJson(
     const decoder = new TextDecoder();
     let buffer = "";
     let habis = false;
+    // SATU deadline kumulatif untuk seluruh stream. Sebelumnya timer "total" dibuat ulang dan
+    // dibersihkan pada SETIAP iterasi, jadi ia tidak pernah sempat menyala: cabang `"total"`
+    // adalah KODE MATI dan stream yang mengirim satu potongan tiap (idle-1)ms berjalan
+    // selamanya. Sekarang sisanya dihitung dari deadline ini dan timer yang dipasang adalah
+    // `min(idleMs, sisa)`, sehingga potongan yang mengalir terus TETAP dihentikan saat deadline.
+    const batas = Date.now() + totalMs;
     try {
       while (!habis) {
+        const sisa = batas - Date.now();
+        if (sisa <= 0) {
+          batalkan();
+          throw new Error(`Timeout total ${totalMs}ms.`);
+        }
+        const tunggu = Math.min(idleMs, sisa);
         const baca = reader.read();
-        // Timer ganda: `idle` untuk jeda antar-potongan (model berpikir), `total` sebagai
-        // pagar terakhir supaya koneksi menggantung tidak menahan request selamanya.
-        // Keduanya WAJIB dibersihkan setelah balapan selesai: tanpa `clearTimeout`, tiap
-        // potongan meninggalkan dua timer yang tetap hidup sampai waktunya habis, sehingga
-        // proses (mis. uji) ikut tertahan menunggu event loop kosong.
-        let tIdle: ReturnType<typeof setTimeout> | undefined;
-        let tTotal: ReturnType<typeof setTimeout> | undefined;
-        let hasil: { jenis: "baca"; r: ReadableStreamReadResult<Uint8Array> } | { jenis: "idle" } | { jenis: "total" };
+        const jedaIdle = Promise.withResolvers<{ jenis: "idle" }>();
+        // Timer idle dibersihkan setelah balapan selesai: tanpa `clearTimeout`, tiap potongan
+        // meninggalkan timer yang tetap hidup sampai waktunya habis sehingga proses (mis. uji)
+        // ikut tertahan menunggu event loop kosong.
+        const tIdle = setTimeout(() => jedaIdle.resolve({ jenis: "idle" }), tunggu);
+        let hasil: { jenis: "baca"; r: ReadableStreamReadResult<Uint8Array> } | { jenis: "idle" };
         try {
-          hasil = await Promise.race([
-            baca.then((r) => ({ jenis: "baca" as const, r })),
-            new Promise<{ jenis: "idle" }>((r) => {
-              tIdle = setTimeout(() => r({ jenis: "idle" }), idleMs);
-            }),
-            new Promise<{ jenis: "total" }>((r) => {
-              tTotal = setTimeout(() => r({ jenis: "total" }), totalMs);
-            }),
-          ]);
+          hasil = await Promise.race([baca.then((r) => ({ jenis: "baca" as const, r })), jedaIdle.promise]);
         } finally {
           clearTimeout(tIdle);
-          clearTimeout(tTotal);
         }
         if (hasil.jenis !== "baca") {
           batalkan();
-          throw new Error(hasil.jenis === "idle" ? `Timeout provider setelah ${idleMs}ms tanpa potongan.` : `Timeout total ${totalMs}ms.`);
+          throw new Error(
+            tunggu < idleMs ? `Timeout total ${totalMs}ms.` : `Timeout provider setelah ${idleMs}ms tanpa potongan.`
+          );
         }
         if (hasil.r.done) break;
         buffer += decoder.decode(hasil.r.value, { stream: true });
@@ -167,7 +222,8 @@ export async function streamJson(
             if (!potong) continue;
             if (potong.tokenMasuk !== undefined) masukMs = potong.tokenMasuk;
             if (potong.tokenKeluar !== undefined) keluarMs = potong.tokenKeluar;
-            if (potong.delta) yield { delta: potong.delta };
+            // Pikiran dan alasan selesai diteruskan apa adanya; `delta` tetap hanya jawaban.
+            if (potong.delta || potong.pikir || potong.selesaiAlasan) yield potong;
           }
         }
       }

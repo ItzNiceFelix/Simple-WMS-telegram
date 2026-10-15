@@ -4,8 +4,10 @@
 // bukan di UI. Adapter hanya memanggil `terapkanReasoning()`.
 //
 // Skema sah (dari riset dokumentasi resmi, lihat lib/ai/kapabilitas.ts):
-//   Groq       : reasoning_effort = none|default|low|medium|high
-//   Gemini     : thinkingConfig.thinkingLevel = minimal|low|medium|high
+//   Groq       : reasoning_effort = none|default|low|medium|high (+ reasoning_format "parsed")
+//   Gemini 3+  : thinkingConfig.thinkingLevel = minimal|low|medium|high
+//                (khusus varian pro: HANYA low|high)
+//   Gemini 2.5 : thinkingConfig.thinkingBudget = ANGKA token (bukan level)
 //   OpenRouter : reasoning: { effort } + include_reasoning
 //   OpenAI     : reasoning_effort = minimal|low|medium|high
 //
@@ -51,14 +53,27 @@ export function normalkanTingkatReasoning(reasoning: string | undefined | null):
 }
 
 /**
+ * Perkiraan anggaran pikiran (`thinkingBudget`, satuan token) untuk seri Gemini 2.5.
+ * PERKIRAAN WAJAR, BUKAN angka resmi: seri 2.5 hanya menerima `thinkingBudget` ANGKA
+ * (lihat `terapkanReasoning`), dan harga per tingkat tidak dipublikasikan seragam untuk
+ * semua varian. Bila model Gemini 2.5 baru muncul atau dokumentasinya berubah, ANGKA INI
+ * HARUS DIVERIFIKASI ke dokumentasi resmi Google — nilai di luar rentang model berbalas 400.
+ */
+const BUDGET_2_5: Record<string, number> = { minimal: 128, low: 1024, medium: 8192, high: 24576 };
+
+/**
  * Ubah satu nilai reasoning menjadi parameter provider. Kembalikan objek KOSONG
  * bila reasoning kosong/tidak dikenal — pemanggil TIDAK boleh menambahkan
  * parameter sama sekali, biar provider memakai defaultnya sendiri.
+ *
+ * `opsi.model` = nama model yang akan dipanggil, dipakai provider yang parameternya
+ * BERGANTUNG VERSI MODEL (Gemini). Opsional: pemanggil yang tidak mengisinya tetap
+ * mendapat perilaku lama.
  */
 export function terapkanReasoning(
   provider: ProviderNama | string,
   reasoning: string | undefined | null,
-  opsi: { hilir?: boolean; jsonMode?: boolean; adaTool?: boolean } = {}
+  opsi: { hilir?: boolean; jsonMode?: boolean; adaTool?: boolean; model?: string } = {}
 ): ParameterReasoning {
   // Kosong = jangan kirim parameter sama sekali, biar provider pakai defaultnya sendiri.
   if (!String(reasoning ?? "").trim()) return {};
@@ -71,7 +86,24 @@ export function terapkanReasoning(
   if (provider === "gemini") {
     // Gemini memakai thinkingConfig di dalam generationConfig.
     // Catatan: `raw` tidak berlaku di sini; Gemini memakai includeThoughts.
-    const cfg: Record<string, unknown> = { thinkingLevel: tingkat };
+    //
+    // Parameternya BERGANTUNG VERSI MODEL (dokumentasi resmi Google, dibaca 2026-10-15):
+    // Gemini 3 ke atas memakai `thinkingLevel` (minimal|low|medium|high), sedangkan seri 2.5
+    // memakai `thinkingBudget` berupa ANGKA. Mengirim bentuk yang salah berbalas 400, jadi
+    // reasoning mati total di jalur itu — dan katalog produksi memakai KEDUA versi
+    // (`gemini-2.5-flash`, `gemini-2.5-pro`, `gemini-3-flash-preview`, varian `*-latest`).
+    // Nama model kosong/tak dikenal (mis. jalur gambar) memakai perilaku lama `thinkingLevel`
+    // supaya tidak ada pemanggil yang rusak karena perubahan ini.
+    const model = String(opsi.model ?? "").trim().toLowerCase();
+    // Varian `gemini-3-*-pro` hanya menerima `low`/`high` (minimal/medium dikirim = 400),
+    // jadi tingkat netral hasil normalisasi (`minimal` dari `none`, `medium` dari nilai tak
+    // dikenal) dipetakan ke tetangga terdekatnya. Gemini 3 non-pro dan nama model
+    // kosong/tak dikenal memakai tingkat apa adanya (perilaku lama).
+    const pro3 = model.includes("gemini-3") && model.includes("pro");
+    const level = pro3 ? (tingkat === "medium" || tingkat === "high" ? "high" : "low") : tingkat;
+    const cfg: Record<string, unknown> = model.includes("gemini-2.5")
+      ? { thinkingBudget: BUDGET_2_5[tingkat] }
+      : { thinkingLevel: level };
     if (hilir) cfg.includeThoughts = true;
     return { thinkingConfig: cfg };
   }
@@ -84,13 +116,14 @@ export function terapkanReasoning(
   }
 
   if (provider === "groq") {
-    // Groq: reasoning_format dan include_reasoning SALING EKSKLUSIF.
-    // Dengan tool calling / JSON mode, reasoning_format TIDAK BOLEH 'raw' (400).
+    // Groq: reasoning dikembalikan lewat field TERSENDIRI (`reasoning`) memakai
+    // reasoning_format "parsed".
+    // KENAPA BUKAN "raw": format `raw` menaruh teks pikiran DI DALAM `content` dengan tag
+    // ` thinking`, sedangkan parser kita membaca `delta.content` sebagai narasi user — jadi
+    // `raw` akan MENCAMPUR pikiran model ke jawaban. "parsed" memisahkannya ke field
+    // sendiri, dan aman juga saat jsonMode/tool (raw memang terlarang di dua mode itu).
     const out: ParameterReasoning = { reasoning_effort: tingkat };
-    if (hilir) {
-      if (opsi.jsonMode || opsi.adaTool) out.reasoning_format = "parsed";
-      else out.reasoning_format = "raw";
-    }
+    if (hilir) out.reasoning_format = "parsed";
     return out;
   }
 

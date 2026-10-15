@@ -8,10 +8,21 @@
 --   2. Order tampil normal di /order dengan 0 item, tanpa penanda.
 --   3. User tidak punya tempat untuk memperbaiki — datanya memang sudah tidak tersimpan.
 --
--- SOLUSI: baris bermasalah TETAP disimpan, tapi ditandai. `sku` diisi penanda yang tidak
--- bisa bentrok dengan SKU asli (diawali "+"), sehingga:
---   - FK tidak dilanggar (tidak ada produk yang memakai awalan "+"; SKU riil berupa
---     angka/huruf biasa).
+-- SOLUSI: baris bermasalah TETAP disimpan, tapi ditandai. `sku` diisi penanda yang diawali
+-- "+" sehingga TIDAK BENTROK dengan SKU asli (SKU riil tidak pernah diawali "+").
+--
+-- KOREKSI PENTING (dulu komentar di sini SALAH): awalan "+" mencegah BENTROK, tetapi TIDAK
+-- memenuhi FK `order_items.sku → products(sku)`. FK tetap menuntut barisnya ADA di `products`.
+-- Tidak pernah ada kode yang menyisipkan penanda ke `products`, jadi setiap kali fitur ini
+-- dipakai, `db.batch()` melanggar FK dan SELURUH konfirmasi gagal 500. Produksi membuktikan
+-- itu: `SELECT COUNT(*) FROM products WHERE sku LIKE '+%'` = 0 dan
+-- `SELECT COUNT(*) FROM order_items WHERE perlu_sku=1` = 0 — fitur ini tidak pernah sekali pun
+-- berhasil menyimpan baris.
+--
+-- Cara baris bertanda disimpan sekarang ada di `app/api/order/route.ts`: tiap penanda juga
+-- DISISIPKAN ke `products` (INSERT OR IGNORE, nama diawali "[PERLU SKU]"/"[BELUM DI MP]")
+-- sehingga FK terpenuhi. Lihat kode terbaru, bukan berkas migrasi ini, untuk perilaku terkini.
+--
 --   - Baris ikut tercetak di picklist dengan kolom pembeda, jadi checker tahu.
 --   - Bisa diperbaiki nanti: SKU penanda diganti SKU sebenarnya, atau dihapus.
 --

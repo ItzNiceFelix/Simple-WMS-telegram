@@ -396,11 +396,22 @@ export async function panggilTeks(
  * jawaban selesai (lihat KENAPA STREAMING di lib/ai/stream.ts).
  *
  * ATURAN PEMILIHAN PROVIDER (penting, tidak bisa dibatalkan):
- * kandidat pertama yang BERHASIL MENGIRIM potongan pertama dianggap terpilih dan
+ * kandidat pertama yang potongan PERTAMANYA benar-benar tiba dianggap terpilih dan
  * stream ditutup setelahnya. Setelah ada potongan sampai ke user, pindah provider
  * akan menghasilkan jawaban campur dua model — jadi kegagalan SETELAH potongan
  * pertama dilaporkan apa adanya, bukan difallback. Provider yang gagal SEBELUM ada
- * potongan (kredensial kosong, 4xx/5xx, timeout handshake) dilewati seperti rantai biasa.
+ * potongan (kredensial kosong, 4xx/5xx, timeout hubung, timeout menunggu potongan
+ * pertama) dilewati seperti rantai biasa.
+ *
+ * KENAPA potongan pertama DIAMBIL SEBELUM kandidat dikunci: `streamJson`/`streamGemini`
+ * mengembalikan `ok: true` begitu HEADER 2xx tiba, sementara generator pembacanya belum
+ * dijalankan sama sekali. Jadi `ok: true` TIDAK berarti ada teks. Dulu kandidat langsung
+ * dikunci di situ, sehingga model yang berpikir DIAM lebih lama daripada batas waktu
+ * membuat generator melempar timeout SETELAH `panggilTeksStream` selesai `return` — dan
+ * fallback ke provider berikutnya tidak pernah terjadi (user hanya melihat `{error}`).
+ * Karena itu potongan pertama diambil di dalam try/catch sebelum kandidat dikunci:
+ * fallback hanya sah selama BELUM ada satu byte pun yang sampai ke klien, dan pada titik
+ * itu memang belum ada.
  *
  * Pembaca SSE berbeda per keluarga provider: OpenAI-compatible lewat `streamJson`
  * (lib/ai/stream.ts), Gemini lewat `streamGemini` (lib/ai/adapterGemini.ts) — Gemini
@@ -436,6 +447,10 @@ export async function panggilTeksStream(
   // berbagi sisa, dan tidak ada percobaan yang melewati sisa anggaran provider/total.
   let indeksProvider = 0;
   const pakaiReasoning = !!String(minta.reasoning ?? "").trim();
+  // Menyala begitu SATU percobaan ber-reasoning gagal; memicu aturan "reasoning diturunkan"
+  // di dalam loop (lihat komentarnya di sana): percobaan berikutnya dijalankan tanpa
+  // reasoning bila sisa anggaran tidak cukup untuk satu percobaan reasoning penuh.
+  let adaReasoningGagal = false;
   for (const k of kandidat) {
     if (k.provider !== providerKini) {
       providerKini = k.provider;
@@ -468,10 +483,27 @@ export async function panggilTeksStream(
       });
       continue;
     }
+    // Aturan "reasoning diturunkan": percobaan ber-reasoning yang GAGAL tidak diulang
+    // dengan reasoning bila sisa anggaran lebih kecil dari satu percobaan reasoning penuh.
+    // Alasan: kandidat cadangan dengan (mis.) 10 detik sisa hampir pasti timeout LAGI kalau
+    // tetap dipaksa berpikir, sedangkan jawaban tanpa reasoning masih berguna bagi user —
+    // dan percobaan tanpa reasoning memang memakai jatah jauh lebih pendek (TIMEOUT_TEKS_MS).
+    const sisaReasoning = Math.min(sisaProvider, sisaTotal);
+    const turunkanReasoning = adaReasoningGagal && sisaReasoning < TIMEOUT_TEKS_REASONING_MS;
+    const pakaiReasoningKini = pakaiReasoning && !turunkanReasoning;
+    // Dicatat supaya keputusan ini terlihat di pesan gagal akhir (bukan keputusan diam-diam).
+    if (turunkanReasoning) {
+      catatan.push({
+        provider: k.provider,
+        model: k.model,
+        error: `reasoning diturunkan ke tanpa reasoning: sisa anggaran ${sisaReasoning}ms < ${TIMEOUT_TEKS_REASONING_MS}ms`,
+      });
+    }
+    const reasoningPercobaan = pakaiReasoningKini ? minta.reasoning : undefined;
     // Batas waktu TANPA potongan: model yang benar-benar berpikir tidak mengirim apa pun
     // sementara ia bekerja, jadi reasoning dapat jatah panjang (sama seperti non-stream).
     // Tanpa reasoning angkanya TIDAK berubah (TIMEOUT_TEKS_MS).
-    const timeoutMs = batasPercobaanTeks(pakaiReasoning, pertamaProvider, sisaProvider, sisaTotal);
+    const timeoutMs = batasPercobaanTeks(pakaiReasoningKini, pertamaProvider, sisaProvider, sisaTotal);
     // Pagar TOTAL percobaan ini juga tidak boleh melewati sisa anggaran provider: stream
     // tidak boleh berjalan lebih lama daripada jatah provider yang sedang dipakainya.
     const totalMs = Math.max(1000, Math.min(sisaTotal, sisaProvider));
@@ -489,7 +521,7 @@ export async function panggilTeksStream(
             pesan: minta.pesan,
             tool: minta.tool,
             maksToken: minta.maksToken,
-            reasoning: minta.reasoning,
+            reasoning: reasoningPercobaan,
             reasoningHilir: minta.reasoningHilir,
             timeoutMs,
             totalMs,
@@ -505,7 +537,7 @@ export async function panggilTeksStream(
               pesan: minta.pesan,
               tool: minta.tool,
               maksToken: minta.maksToken,
-              reasoning: minta.reasoning,
+              reasoning: reasoningPercobaan,
               reasoningHilir: minta.reasoningHilir,
               timeoutMs,
               totalMs,
@@ -513,13 +545,39 @@ export async function panggilTeksStream(
           })();
     if (!s.ok) {
       // Gagal SEBELUM potongan apa pun: aman pindah kandidat berikutnya.
+      if (pakaiReasoningKini) adaReasoningGagal = true;
       catatan.push({ provider: k.provider, model: k.model, error: s.error });
       continue;
     }
 
-    // Potongan pertama sudah menentukan kandidat ini. Token/usage dari SSE (bila provider
-    // mengirimnya) dicatat sebagai agregat satu baris; kegagalan pencatatan tidak boleh
-    // menggagalkan jawaban yang sudah terkirim ke user.
+    // `ok: true` HANYA berarti header 2xx sudah tiba; generator pembacanya belum berjalan,
+    // jadi belum tentu ada teks. Potongan pertama diambil DI SINI di dalam try/catch supaya
+    // kandidat yang menggantung (model berpikir diam lalu timeout) masih bisa difallback:
+    // pada titik ini BELUM ada byte yang dikirim ke user, jadi mengganti provider masih sah.
+    let awal: PotonganStream;
+    try {
+      const p = await s.iter.next();
+      const nilai = p.done ? undefined : p.value;
+      if (!nilai || (!nilai.delta && !nilai.pikir)) {
+        // 200 lalu stream selesai tanpa satu pun potongan teks (mis. hanya `[DONE]` atau
+        // hanya usage): user tidak menerima apa pun, jadi ini KEGAGALAN, bukan jawaban kosong.
+        s.batalkan();
+        if (pakaiReasoningKini) adaReasoningGagal = true;
+        catatan.push({ provider: k.provider, model: k.model, error: "stream selesai tanpa potongan teks" });
+        continue;
+      }
+      awal = nilai;
+    } catch (e) {
+      // Timeout menunggu potongan pertama / koneksi putus: kandidat berikutnya dicoba.
+      s.batalkan();
+      if (pakaiReasoningKini) adaReasoningGagal = true;
+      catatan.push({ provider: k.provider, model: k.model, error: e instanceof Error ? e.message : String(e) });
+      continue;
+    }
+
+    // Potongan pertama benar-benar tiba → kandidat ini TERKUNCI (aturan di atas). Token/usage
+    // dari SSE (bila provider mengirimnya) dicatat sebagai agregat satu baris; kegagalan
+    // pencatatan tidak boleh menggagalkan jawaban yang sudah terkirim ke user.
     const dalam = s.iter;
     const dipakai = { provider: k.provider, model: k.model };
     const masuk = { nilai: 0 };
@@ -527,6 +585,10 @@ export async function panggilTeksStream(
     async function* potongan(): AsyncGenerator<PotonganStream> {
       let teksAda = false;
       try {
+        // Potongan pertama (yang sudah tiba SEBELUM kandidat dikunci) dikeluarkan lebih dulu
+        // supaya tidak ada byte yang hilang karena pengambilan awal itu.
+        if (awal.delta) teksAda = true;
+        yield awal;
         for await (const p of dalam) {
           if (p.tokenMasuk !== undefined) masuk.nilai = p.tokenMasuk;
           if (p.tokenKeluar !== undefined) keluar.nilai = p.tokenKeluar;

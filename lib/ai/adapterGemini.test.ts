@@ -48,8 +48,7 @@ function sseGemini(kandidat: unknown[][], mentah: string[] = []): ReadableStream
 /** Jalankan stream lalu kumpulkan potongan — gagal bila `streamGemini` tidak ok. */
 async function kumpulkan(m: OpsiGemini & MintaStream): Promise<{ teks: string; potongan: PotonganStream[] }> {
   const s = await streamGemini(m);
-  assert.equal(s.ok, true, `stream harus ok: ${s.ok ? "" : s.error}`);
-  if (!s.ok) throw new Error(s.error);
+  if (!s.ok) throw new Error(`stream harus ok: ${s.error}`);
   const potongan: PotonganStream[] = [];
   for await (const p of s.iter) potongan.push(p);
   return { teks: potongan.map((p) => p.delta).join(""), potongan };
@@ -156,15 +155,120 @@ describe("streamGemini — kegagalan dan body permintaan", () => {
 
     const data = JSON.parse(body) as {
       contents?: { role?: string; parts?: { text?: string }[] }[];
-      generationConfig?: { maxOutputTokens?: number; thinkingConfig?: { thinkingLevel?: string } };
+      generationConfig?: { maxOutputTokens?: number; thinkingConfig?: { thinkingBudget?: number; thinkingLevel?: string } };
     };
     assert.equal(data.contents?.[0]?.parts?.[0]?.text, "halo", "pesan user harus ikut di body");
     assert.equal(data.generationConfig?.maxOutputTokens, 100);
+    // `gemini-2.5-flash` hanya menerima thinkingBudget ANGKA — thinkingLevel berbalas 400,
+    // jadi bentuk per versi model inilah yang harus sampai ke Gemini.
     assert.equal(
-      data.generationConfig?.thinkingConfig?.thinkingLevel,
-      "high",
+      data.generationConfig?.thinkingConfig?.thinkingBudget,
+      24576,
       "setelan reasoning harus sampai ke Gemini lewat jalur stream juga (bukan diabaikan)"
     );
+  });
+});
+
+describe("streamGemini — pikiran tidak pernah masuk delta", () => {
+  it("part thought:true masuk `pikir`, part biasa masuk `delta`", async () => {
+    globalThis.fetch = (async () =>
+      responsSSE(
+        sseGemini([
+          [{ text: "berpikir dulu", thought: true }],
+          [{ text: "Jawaban" }],
+          [{ text: " akhir", thought: true }, { text: "!" }],
+        ])
+      )) as unknown as typeof fetch;
+
+    const { teks, potongan } = await kumpulkan(minta({ reasoningHilir: true }));
+    assert.equal(teks, "Jawaban!", "hanya jawaban yang boleh masuk delta");
+    assert.equal(potongan.map((p) => p.pikir ?? "").join(""), "berpikir dulu akhir", "teks pikiran harus lewat `pikir`");
+    assert.equal(
+      potongan.some((p) => p.delta.includes("berpikir") || p.delta.includes("akhir")),
+      false,
+      "teks pikiran TIDAK BOLEH muncul di delta"
+    );
+  });
+});
+
+describe("streamGemini — finishReason", () => {
+  it("finishReason MAX_TOKENS diteruskan sebagai selesaiAlasan tanpa dilempar", async () => {
+    globalThis.fetch = (async () =>
+      responsSSE(
+        sseGemini([[{ text: "terpotong" }]], [
+          JSON.stringify({ candidates: [{ content: { parts: [] }, finishReason: "MAX_TOKENS" }] }),
+        ])
+      )) as unknown as typeof fetch;
+
+    const { potongan } = await kumpulkan(minta());
+    assert.equal(potongan[potongan.length - 1]?.selesaiAlasan, "MAX_TOKENS", "alasan selesai diteruskan apa adanya");
+  });
+});
+
+describe("streamGemini — pagar waktu", () => {
+  it("fetch yang tidak membalas header digagalkan timeout fase hubung (bukan menggantung)", async () => {
+    // fetch palsu yang hanya selesai kalau signal di-abort = provider yang menahan header.
+    // Timer NYATA (kecil) disengaja: yang diuji justru plafon jam dinding pada
+    // fetch/AbortController asli, yang tidak bisa digerakkan oleh jam palsu.
+    globalThis.fetch = ((_u: unknown, init?: RequestInit) => {
+      const { promise, reject } = Promise.withResolvers<Response>();
+      // Jaring: kalau timer fase hubung hilang, uji ini GAGAL cepat alih-alih menggantung.
+      // Batas 3s jauh di atas timeoutMs 40ms, jadi tidak pernah menyala di jalur yang benar;
+      // pesannya sengaja TIDAK memuat "fase hubung" supaya kegagalan tidak lolos pemeriksaan.
+      const jaring = setTimeout(() => reject(new Error("provider tidak pernah membalas header")), 3000);
+      init?.signal?.addEventListener("abort", () => {
+        clearTimeout(jaring);
+        reject(new DOMException("The operation was aborted.", "AbortError"));
+      });
+      return promise;
+    }) as unknown as typeof fetch;
+
+    const mulai = Date.now();
+    const s = await streamGemini(minta({ timeoutMs: 40, totalMs: 5000 }));
+    assert.equal(s.ok, false, "menahan header tidak boleh dianggap sukses");
+    if (s.ok) return;
+    assert.equal(s.status, 0);
+    assert.match(s.error, /Gagal menghubungi provider/);
+    assert.match(s.error, /fase hubung/, "pesan harus menyebut fase hubung, beda dari timeout antar-potongan");
+    assert.ok(Date.now() - mulai < 2000, "harus gagal lewat timeout hubung, bukan menunggu tanpa batas");
+  });
+
+  it("potongan yang terus mengalir tetap dihentikan saat deadline total tercapai", async () => {
+    const enc = new TextEncoder();
+    let n = 0;
+    // Pasokan potongan DIBATASI (tapi koneksi tidak pernah ditutup) supaya regresi — pagar
+    // total mati lagi — berakhir sebagai KEGAGALAN cepat lewat timeout idle, bukan uji yang
+    // menggantung selamanya. 30 potongan × 20ms = 600ms, jauh melewati totalMs 300ms.
+    let sisa = 30;
+    // Potongan datang tiap 20ms, lebih cepat daripada idleMs — inilah bentuk stream yang dulu
+    // berjalan selamanya karena pagar total tidak pernah menyala. Jeda nyata dipakai karena
+    // jeda antar-potongan ITU yang diuji; ReadableStream asli tidak bisa didorong jam palsu.
+    const banjir = new ReadableStream<Uint8Array>({
+      async pull(c) {
+        const { promise, resolve } = Promise.withResolvers<void>();
+        setTimeout(resolve, 20);
+        await promise;
+        if (sisa-- <= 0) return;
+        c.enqueue(enc.encode(`data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text: `x${n++}` }] } }] })}\n\n`));
+      },
+    });
+    globalThis.fetch = (async () => responsSSE(banjir)) as unknown as typeof fetch;
+
+    const s = await streamGemini(minta({ timeoutMs: 80, totalMs: 300 }));
+    assert.equal(s.ok, true, `stream harus ok: ${s.ok ? "" : s.error}`);
+    if (!s.ok) return;
+
+    const mulai = Date.now();
+    let teks = "";
+    let galat = "";
+    try {
+      for await (const p of s.iter) teks += p.delta;
+    } catch (e) {
+      galat = e instanceof Error ? e.message : String(e);
+    }
+    assert.match(galat, /Timeout total 300ms/, "stream yang tidak menutup koneksi harus dihentikan pagar total, bukan timeout idle");
+    assert.ok(teks.length > 0, "potongan harus sempat mengalir sebelum pagar total menyala");
+    assert.ok(Date.now() - mulai < 2000, "pagar total harus menghentikan stream, bukan menunggu tanpa batas");
   });
 });
 
@@ -183,9 +287,10 @@ describe("chatGemini — pembangun body yang sama", () => {
     const opsi: OpsiGemini = { apiKey: "key-gemini", timeoutMs: 500 };
     const h1 = await chatGemini(opsi, { model: "gemini-2.5-flash", pesan: PESAN, reasoning: "max", maksToken: 100 });
     assert.equal(h1.ok, true, `chatGemini harus ok: ${h1.ok ? "" : h1.error}`);
-    const dengan = JSON.parse(bodyTerkirim[0] ?? "{}") as { generationConfig?: { thinkingConfig?: { thinkingLevel?: string } } };
-    // `max` dinormalisasi ke `high` di lib/ai/reasoning.ts — nilai sah HTTP API.
-    assert.equal(dengan.generationConfig?.thinkingConfig?.thinkingLevel, "high");
+    const dengan = JSON.parse(bodyTerkirim[0] ?? "{}") as { generationConfig?: { thinkingConfig?: { thinkingBudget?: number; thinkingLevel?: string } } };
+    // `max` dinormalisasi ke tingkat `high` di lib/ai/reasoning.ts, lalu dipetakan ke bentuk
+    // yang sah untuk `gemini-2.5-flash`: thinkingBudget ANGKA (thinkingLevel berbalas 400).
+    assert.equal(dengan.generationConfig?.thinkingConfig?.thinkingBudget, 24576);
 
     const h2 = await chatGemini(opsi, { model: "gemini-2.5-flash", pesan: PESAN });
     assert.equal(h2.ok, true, `chatGemini harus ok: ${h2.ok ? "" : h2.error}`);
