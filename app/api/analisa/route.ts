@@ -4,6 +4,7 @@
 // GET  ?aksi=cepat&presetId=&tanggal=    → analisa cepat (angka murni, tanpa AI)
 // GET  ?aksi=saran-iklan&presetId=&tanggal= → ROAS titik impas + urutan prioritas
 // GET  ?aksi=estimasi-iklan&presetId=&items=sku:modal:target,… → estimasi per SKU (angka murni)
+// GET  ?aksi=model-analisa                → model yang AKAN dipakai analisa + provider yang dilewati
 // POST { aksi:'mendalam', ... }          → narasi AI (T8; dibalas jelas bila belum siap)
 // POST { aksi:'mendalam-stream', ... }   → narasi AI sebagai text/event-stream (potongan bertahap)
 // POST { aksi:'saran-iklan-stream', ... } → paket skenario iklan + narasi bertahap (text/event-stream)
@@ -24,6 +25,9 @@ import { petaSkuDariKodeProduk } from "@/lib/d1/shopeePeta";
 import { analisaMendalam, susunBahan, susunPesanMendalam, susunPesanSkenario, type Kedalaman } from "@/lib/analisa/ai";
 import { bangunPaketSkenario } from "@/lib/analisa/skenarioIklan";
 import { panggilTeksStream } from "@/lib/ai/provider";
+import { ambilPengaturanAI } from "@/lib/d1/pengaturan";
+import { ambilKredensial } from "@/lib/d1/aiKredensial";
+import { modelAktif } from "@/lib/d1/aiModel";
 import type { HasilAnalisa } from "@/lib/analisa/tipe";
 import {
   analisaCepat, janganDiiklankan, urutSaranIklan,
@@ -54,6 +58,29 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const aksi = url.searchParams.get("aksi") ?? "preset";
   const db = getDb();
+
+  // Murni BACA (tanpa AI, tanpa panggilan provider): user harus tahu model mana yang akan
+  // berjalan SEBELUM menekan tombol analisa — katalog tidak menyimpan harga, jadi satu-satunya
+  // pengaman biaya adalah user memilih modelnya sendiri lebih dulu.
+  if (aksi === "model-analisa") {
+    const set = await ambilPengaturanAI(db, getEnvAi());
+    // Rantai efektif = `chainTeks`, dengan cadangan `textProvider` bila rantai kosong —
+    // SAMA dengan yang dipakai `kandidatTeks` di lib/ai/provider.ts. Isinya sudah disaring
+    // `bersihkanChain` (hanya provider sah), jadi tidak disaring ulang di sini.
+    const rantai = set.chainTeks.length > 0 ? set.chainTeks : [set.textProvider || "groq"];
+    const kunci = getKunciEnkripsi();
+    const chain: { provider: string; modelDipilih: string | null; siap: boolean }[] = [];
+    for (const provider of rantai) {
+      const modelDipilih = String(set.modelTeks[provider] ?? "").trim() || null;
+      // Kredensial diperiksa HANYA untuk provider yang sudah punya pilihan: tanpa pilihan,
+      // provider itu pasti dilewati analisa (lib/ai/provider.ts `kandidatHanyaDipilih`), dan
+      // mendekripsi kredensial provider yang tidak akan dipakai cuma membuang kerja.
+      const kred = modelDipilih && kunci ? await ambilKredensial(db, provider, kunci) : null;
+      const siap = !!modelDipilih && !!kred?.plaintext && !!(await modelAktif(db, provider, "teks"));
+      chain.push({ provider, modelDipilih, siap });
+    }
+    return json({ ok: true, chain, siapTotal: chain.some((c) => c.siap) });
+  }
 
   if (aksi === "estimasi-iklan") {
     // Dihitung dari histori per SKU (lib/d1) + lib/analisa/iklanEstimasi (murni).
@@ -415,6 +442,8 @@ async function alirMendalam(
           // user bisa melihat proses berpikir tanpa tercampur ke jawaban.
           reasoningHilir: true,
           ...(setting.maks_token !== undefined ? { maksToken: setting.maks_token } : {}),
+          // Analisa keuangan: HANYA model yang dipilih user (lihat lib/analisa/ai.ts).
+          hanyaModelDipilih: true,
         }
       );
       if (!aliran.ok) return galat(aliran.error);
@@ -500,6 +529,8 @@ async function alirSaranIklan(
           // Sama seperti `alirMendalam`: teks pikiran diminta terpisah dari narasi.
           reasoningHilir: true,
           ...(setting.maks_token !== undefined ? { maksToken: setting.maks_token } : {}),
+          // Analisa keuangan: HANYA model yang dipilih user (lihat lib/analisa/ai.ts).
+          hanyaModelDipilih: true,
         }
       );
       if (!aliran.ok) return galat(aliran.error);

@@ -211,11 +211,43 @@ type Kandidat = { provider: ProviderNama; model: string; apiKey: string; /** Ala
  * model keempat..keduapuluh tiga hampir pasti gagal juga — yang terjadi hanyalah user
  * menunggu sampai anggaran habis tanpa provider sehat di belakangnya pernah dicoba.
  */
+/**
+ * Kandidat per provider saat `hanyaModelDipilih` menyala: SATU model = model yang dipilih
+ * user, TANPA cadangan dari katalog.
+ *
+ * KENAPA: katalog `ai_model` tidak menyimpan harga (kolom `modal_masuk`/`modal_keluar` itu
+ * modality: text/file), jadi sistem TIDAK BISA menilai mana model mahal. Satu-satunya cara
+ * mencegah tagihan tak terduga adalah tidak pernah memakai model yang tidak dipilih user —
+ * bukan menebak lewat nama model.
+ *
+ * Provider tanpa pilihan DILEWATI dengan catatan yang bisa ditindak; menambal dari katalog
+ * justru mengembalikan lubang yang sedang ditutup. Rantai TETAP dilanjutkan ke provider
+ * berikutnya yang sudah punya pilihan, jadi satu provider yang belum diisi tidak mematikan
+ * seluruh analisa.
+ */
+function kandidatHanyaDipilih(
+  provider: ProviderNama,
+  modelDipilih: string | undefined,
+  kred: { plaintext: string; base_url: string | null },
+  catatan: Catatan[]
+): Kandidat[] {
+  if (!modelDipilih) {
+    catatan.push({
+      provider,
+      model: "-",
+      error: `dilewati: provider ${provider} belum punya model default dipilih — isi di Pengaturan AI → Model Default`,
+    });
+    return [];
+  }
+  return [{ provider, model: modelDipilih, apiKey: kred.plaintext, baseUrl: kred.base_url ?? "" }];
+}
+
 async function kandidatTeks(
   ctx: Konteks,
   jenis: "teks" | "vision",
   catatan: Catatan[],
-  modelDiminta?: string
+  modelDiminta?: string,
+  hanyaModelDipilih?: boolean
 ): Promise<{ kandidat: Kandidat[]; rantai: string[] }> {
   const set = await ambilPengaturanAI(ctx.db, ctx.env);
   const rantaiTeks = (set.chainTeks.length > 0 ? set.chainTeks : [set.textProvider || "groq"]).filter(
@@ -231,8 +263,14 @@ async function kandidatTeks(
     }
     const katalog = await daftarModel(ctx.db, provider, jenis);
     const aktif = katalog.filter((m) => m.aktif === 1).sort((a, b) => a.id - b.id);
-    const id: string[] = [];
     const pilih = (provider === rantaiTeks[0] ? modelDiminta : undefined) ?? peta[provider];
+    // Jalur analisa: HANYA model yang dipilih user, tanpa cadangan katalog (lihat
+    // `kandidatHanyaDipilih`). Provider tanpa pilihan dilewati, rantai lanjut.
+    if (hanyaModelDipilih) {
+      hasil.push(...kandidatHanyaDipilih(provider, pilih, kred, catatan));
+      continue;
+    }
+    const id: string[] = [];
     if (pilih) id.push(pilih);
     for (const m of aktif) if (!id.includes(m.model_id)) id.push(m.model_id);
     // Model berakhiran `:free` DITARUH DI BELAKANG model berbayar. Alasan: varian gratis
@@ -297,7 +335,22 @@ async function cobaTeks(
  */
 export async function panggilTeks(
   ctx: Konteks,
-  minta: { pesan: BagianChat[]; tool?: unknown[]; modelDiminta?: string; reasoning?: string; reasoningHilir?: boolean; maksToken?: number },
+  minta: {
+    pesan: BagianChat[];
+    tool?: unknown[];
+    modelDiminta?: string;
+    reasoning?: string;
+    reasoningHilir?: boolean;
+    maksToken?: number;
+    /**
+     * `true` = HANYA model yang dipilih user (`modelTeks`/`modelVision`) boleh dipakai;
+     * provider tanpa pilihan DILEWATI dengan catatan yang bisa ditindak, TIDAK ditambal
+     * dari katalog. Dipakai jalur analisa keuangan (lihat lib/analisa/ai.ts): katalog tidak
+     * menyimpan harga, jadi model yang tidak dipilih user tidak boleh berjalan diam-diam.
+     * Kosong/`false` = perilaku lama apa adanya (bot chat, vision).
+     */
+    hanyaModelDipilih?: boolean;
+  },
   jenis: "teks" | "vision" = "teks"
 ): Promise<
   Hasil<{
@@ -312,7 +365,7 @@ export async function panggilTeks(
 > {
   const catatan: Catatan[] = [];
   if (!ctx.kunci && !ctx.env?.AI_KEY_ENCRYPTION_KEY) return gagal(500, "AI_KEY_ENCRYPTION_KEY belum diset.");
-  const { kandidat, rantai } = await kandidatTeks(ctx, jenis, catatan, minta.modelDiminta);
+  const { kandidat, rantai } = await kandidatTeks(ctx, jenis, catatan, minta.modelDiminta, minta.hanyaModelDipilih);
   if (kandidat.length === 0) return gagal(502, ringkasGagal(catatan, rantai), catatan);
 
   // Anggaran hanya berlaku untuk "teks" — vision sudah dibatasi satu panggilan pendek.
@@ -426,6 +479,8 @@ export async function panggilTeksStream(
     reasoning?: string;
     reasoningHilir?: boolean;
     maksToken?: number;
+    /** Sama seperti `panggilTeks.hanyaModelDipilih` — jalur analisa TIDAK boleh memakai model lain. */
+    hanyaModelDipilih?: boolean;
   }
 ): Promise<
   Hasil<{
@@ -437,7 +492,7 @@ export async function panggilTeksStream(
 > {
   const catatan: Catatan[] = [];
   if (!ctx.kunci && !ctx.env?.AI_KEY_ENCRYPTION_KEY) return gagal(500, "AI_KEY_ENCRYPTION_KEY belum diset.");
-  const { kandidat, rantai } = await kandidatTeks(ctx, "teks", catatan, minta.modelDiminta);
+  const { kandidat, rantai } = await kandidatTeks(ctx, "teks", catatan, minta.modelDiminta, minta.hanyaModelDipilih);
   if (kandidat.length === 0) return gagal(502, ringkasGagal(catatan, rantai), catatan);
 
   const mulai = Date.now();

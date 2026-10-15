@@ -912,3 +912,92 @@ describe("urutan kandidat: model :free di belakang model berbayar", () => {
     assert.deepEqual(await urutanKandidat({ kenari: "model-c:free" }), ["model-c:free", "model-b", "model-d", "model-a:free"]);
   });
 });
+
+/**
+ * `hanyaModelDipilih` — jalur analisa keuangan. Katalog `ai_model` TIDAK menyimpan harga
+ * (`modal_masuk`/`modal_keluar` = modality: text/file), jadi sistem tidak bisa menilai mana
+ * model mahal. Satu-satunya pengaman biaya: JANGAN pernah memakai model yang tidak dipilih
+ * user — termasuk jangan menambal provider tanpa pilihan dari katalog.
+ */
+describe("hanyaModelDipilih: analisa tidak boleh memakai model yang tidak dipilih user", () => {
+  /** Urutan MODEL unik yang benar-benar dipanggil; jaringan mati supaya semua kandidat dijejer. */
+  async function urutanDipanggil(
+    settings: Record<string, unknown>,
+    kredensial: BarisKred[],
+    katalog: BarisModel[],
+    minta: { modelDiminta?: string; hanyaModelDipilih?: boolean } = {}
+  ): Promise<{ model: string[]; provider: string[]; pesan: string }> {
+    const db = buatDb({ kredensial, model: katalog, settings });
+    const log: Panggilan[] = [];
+    let pesan = "";
+    await denganJamPalsu(async () => {
+      globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+        const u = String(url);
+        log.push({
+          provider: Object.entries(NAMA_PER_FRAGMEN).find(([frag]) => u.includes(frag))?.[1] ?? "lain",
+          model: namaModelDariBody(init?.body),
+        });
+        throw new Error("jaringan mati");
+      }) as unknown as typeof fetch;
+      const hasil = await panggilTeks(
+        { db, kunci: KUNCI },
+        { pesan: [{ role: "user", teks: "halo" }], ...minta }
+      );
+      pesan = hasil.ok ? "" : hasil.error;
+    });
+    return { model: [...new Set(log.map((p) => p.model))], provider: [...new Set(log.map((p) => p.provider))], pesan };
+  }
+
+  it("provider tanpa model dipilih DILEWATI (tidak di-fetch) + catatannya bisa ditindak", async () => {
+    // gemini punya kredensial DAN katalog, tetapi TIDAK punya entri `modelTeks` — persis
+    // keadaan produksi (di sana hanya kenari yang punya pilihan).
+    const { provider, pesan } = await urutanDipanggil(
+      { textProvider: "kenari", chainTeks: ["kenari", "gemini"], modelTeks: { kenari: "kenari-pilih" }, modelVision: {}, modelGambar: {} },
+      [await kred("kenari", "key-kenari", 1), await kred("gemini", "key-gemini", 2)],
+      [...model("kenari", 2, 1), ...model("gemini", 3, 50)],
+      { hanyaModelDipilih: true }
+    );
+    assert.equal(provider.includes("gemini"), false, "provider tanpa model dipilih TIDAK boleh di-fetch sama sekali");
+    assert.match(pesan, /gemini/, `provider yang dilewati harus disebut: ${pesan}`);
+    assert.match(pesan, /belum punya model default/, `catatan harus bisa ditindak: ${pesan}`);
+  });
+
+  it("provider dengan model dipilih: HANYA model itu yang dicoba, katalog tidak disentuh", async () => {
+    const { model: dicoba } = await urutanDipanggil(
+      { textProvider: "kenari", chainTeks: ["kenari"], modelTeks: { kenari: "model-c" }, modelVision: {}, modelGambar: {} },
+      [await kred("kenari", "key-kenari", 1)],
+      [
+        { id: 1, provider: "kenari", model_id: "model-a", jenis: "teks", aktif: 1 },
+        { id: 2, provider: "kenari", model_id: "model-b", jenis: "teks", aktif: 1 },
+        { id: 3, provider: "kenari", model_id: "model-c", jenis: "teks", aktif: 1 },
+        { id: 4, provider: "kenari", model_id: "model-d", jenis: "teks", aktif: 1 },
+      ],
+      { hanyaModelDipilih: true }
+    );
+    assert.deepEqual(dicoba, ["model-c"], "hanya model yang dipilih user yang boleh dicoba");
+  });
+
+  it("tanpa opsi (bot/vision/gambar): perilaku LAMA tetap — model aktif pertama katalog dipakai", async () => {
+    const { model: dicoba } = await urutanDipanggil(
+      { textProvider: "kenari", chainTeks: ["kenari"], modelTeks: {}, modelVision: {}, modelGambar: {} },
+      [await kred("kenari", "key-kenari", 1)],
+      [
+        { id: 1, provider: "kenari", model_id: "model-a", jenis: "teks", aktif: 1 },
+        { id: 2, provider: "kenari", model_id: "model-b", jenis: "teks", aktif: 1 },
+      ]
+    );
+    assert.ok(dicoba.length > 0, "tanpa opsi, katalog tetap dipakai seperti sebelumnya");
+    assert.equal(dicoba[0], "model-a", "model aktif pertama katalog (urut id) tetap kandidat pertama");
+    assert.ok(dicoba.includes("model-b"), "cadangan katalog tetap dicoba — perilaku lama tidak boleh berubah");
+  });
+
+  it("modelDiminta tetap menang atas modelTeks walau hanyaModelDipilih menyala", async () => {
+    const { model: dicoba } = await urutanDipanggil(
+      { textProvider: "kenari", chainTeks: ["kenari"], modelTeks: { kenari: "model-c" }, modelVision: {}, modelGambar: {} },
+      [await kred("kenari", "key-kenari", 1)],
+      [{ id: 1, provider: "kenari", model_id: "model-a", jenis: "teks", aktif: 1 }],
+      { modelDiminta: "model-d", hanyaModelDipilih: true }
+    );
+    assert.deepEqual(dicoba, ["model-d"], "model yang diminta eksplisit tetap nomor satu");
+  });
+});

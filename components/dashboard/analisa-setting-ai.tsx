@@ -163,6 +163,15 @@ export function AnalisaSettingAi({ open, onOpenChange }: Props) {
                   ? "Seberapa lama model berpikir sebelum menjawab. Reasoning tinggi = lebih teliti, lebih mahal."
                   : "Model teks yang dipakai sekarang tidak punya pilihan reasoning — hanya Default model yang berlaku."}
               </FieldDescription>
+              {/* Biaya reasoning dinyatakan sebagai WAKTU/token, bukan rupiah: repo ini tidak
+                  menyimpan harga model, dan menebak "mahal" akan menyesatkan. Yang benar dan
+                  bisa dipastikan: reasoning membuat model berpikir lebih lama = lebih banyak token. */}
+              <p className="text-xs text-muted-foreground" data-testid="catatan-biaya-reasoning">
+                Reasoning membuat model berpikir lebih lama, sehingga token yang dipakai lebih
+                banyak — dan itu berarti lebih mahal. Level rendah (<b>low</b>) lebih hemat dan
+                biasanya sudah cukup.
+              </p>
+
               {/* Peringatan nyata dari keluhan "high effort, lama banget": model `:free`
                   mengantre di sisi penyedia, dan reasoning tinggi memperpanjang antrean itu.
                   Pilihan TIDAK dicabut — hanya konsekuensinya yang dinyatakan di depan.

@@ -274,6 +274,11 @@ export async function analisaMendalam(
       pesan,
       reasoning: opsi.reasoning,
       ...(opsi.maksToken !== undefined ? { maksToken: opsi.maksToken } : {}),
+      // Analisa memakai ANGKA KEUANGAN nyata dan berjalan otomatis di latar, jadi biaya per
+      // panggilan harus bisa diprediksi user: model yang tidak dipilih user TIDAK boleh
+      // dipakai tanpa persetujuan. Provider tanpa model terpilih dilewati (dengan catatan),
+      // bukan ditambal dari katalog — katalog tidak menyimpan harga.
+      hanyaModelDipilih: true,
     },
     "teks"
   );
@@ -350,6 +355,9 @@ export async function saranLangkahIklan(
       pesan: susunPesanSkenario(paket, opsi.hariKe),
       reasoning: opsi.reasoning,
       ...(opsi.maksToken !== undefined ? { maksToken: opsi.maksToken } : {}),
+      // Sama seperti `analisaMendalam`: angka keuangan nyata + biaya harus bisa diprediksi,
+      // jadi HANYA model yang dipilih user yang boleh dipakai.
+      hanyaModelDipilih: true,
     },
     "teks"
   );

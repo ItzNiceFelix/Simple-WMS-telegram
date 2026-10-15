@@ -73,6 +73,12 @@ type SaranIklan = {
 
 type Preset = { id: number; nama: string };
 
+// ── Rantai model dari GET /api/analisa?aksi=model-analisa ──
+// Dipakai untuk memberi tahu user model APA yang akan berjalan SEBELUM tombol ditekan.
+// Repo ini tidak menyimpan harga model, jadi halaman ini TIDAK menebak "mahal/murah":
+// satu-satunya hal yang bisa dipastikan adalah model mana yang benar-benar akan dipakai.
+type ModelRantai = { provider: string; modelDipilih: string | null; siap: boolean };
+
 /** Warna per tingkat keparahan. Dipakai untuk garis tepi kartu temuan. */
 const GAYA_KEPARAHAN: Record<Temuan["keparahan"], { tepi: string; label: string; variasi: "destructive" | "secondary" | "outline" }> = {
   kritis: { tepi: "border-l-4 border-l-red-500", label: "Perlu tindakan segera", variasi: "destructive" },
@@ -143,6 +149,14 @@ function Analisa() {
   const [memuat, setMemuat] = useState(true);
   const [memuatIklan, setMemuatIklan] = useState(false);
   const [bukaSetting, setBukaSetting] = useState(false);
+  /** Rantai model yang AKAN dipakai analisa mendalam. `null` = belum termuat. */
+  const [modelRantai, setModelRantai] = useState<ModelRantai[] | null>(null);
+  const [siapTotal, setSiapTotal] = useState(true);
+  const [memuatModel, setMemuatModel] = useState(true);
+  /** Model yang benar-benar akan dipakai. Menjadi SATU sumber untuk kartu DAN tombol,
+   *  supaya peringatan dan keadaan tombol tidak pernah saling bertentangan. */
+  const modelTerpakai = (modelRantai ?? []).filter((m) => m.siap && m.modelDipilih);
+  const belumSiap = modelRantai !== null && (!siapTotal || modelTerpakai.length === 0);
 
   // Muat daftar preset + tanggal snapshot yang tersedia.
   useEffect(() => {
@@ -177,6 +191,37 @@ function Analisa() {
     if (!ada) return;
     if (!ada.includes(tanggal)) setTanggal(ada[0] ?? "");
   }, [presetId, tanggalPerPreset, tanggal]);
+
+  // Muat rantai model yang akan dipakai. Diulang saat dialog Pengaturan AI ditutup: admin
+  // atau user bisa mengubah pilihan model global di sana, dan tanpa muat ulang halaman akan
+  // terus menyebut model lama — justru informasi yang menyesatkan sebelum menekan tombol.
+  useEffect(() => {
+    if (bukaSetting) return; // jangan ambil saat dialog terbuka; ambil setelah ditutup
+    let batal = false;
+    void (async () => {
+      setMemuatModel(true);
+      try {
+        const res = await fetch("/api/analisa?aksi=model-analisa", { credentials: "include" });
+        const d = (await res.json().catch(() => null)) as {
+          ok?: boolean; chain?: ModelRantai[]; siapTotal?: boolean; error?: string;
+        } | null;
+        if (batal) return;
+        if (!res.ok || !d?.ok) throw new Error(d?.error ?? `Gagal memuat daftar model (${res.status}).`);
+        setModelRantai(d.chain ?? []);
+        setSiapTotal(d.siapTotal === true);
+      } catch (e) {
+        if (batal) return;
+        // Gagal memuat BUKAN alasan mengunci tombol: ketidakmampuan membaca daftar model
+        // tidak sama dengan "tidak ada model". Tombol dibiarkan aktif; hanya peringatannya
+        // yang hilang, bukan aksesnya.
+        setModelRantai(null);
+        tampilkanGagalTulis(e instanceof Error ? e.message : "Gagal memuat daftar model.");
+      } finally {
+        if (!batal) setMemuatModel(false);
+      }
+    })();
+    return () => { batal = true; };
+  }, [bukaSetting]);
 
   const muatAnalisa = useCallback(async (pid: number, tgl: string) => {
     if (!pid || !tgl) return;
@@ -434,16 +479,32 @@ function Analisa() {
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="flex flex-col gap-3">
+                  <KartuModel
+                    rantai={modelRantai}
+                    terpakai={modelTerpakai}
+                    belumSiap={belumSiap}
+                    memuat={memuatModel}
+                    onBukaSetting={() => setBukaSetting(true)}
+                  />
+
                   <div>
                     <Button
                       className="h-11 md:h-8"
-                      disabled={memuatMendalam}
+                      disabled={memuatMendalam || belumSiap}
                       onClick={() => void jalankanMendalam()}
+                      title={belumSiap ? "Belum ada model default yang dipilih — atur di Pengaturan AI." : undefined}
                       data-testid="tombol-mendalam"
                     >
                       {memuatMendalam ? <Spinner data-icon="inline-start" /> : <Sparkles className="size-4" aria-hidden />}
                       {memuatMendalam ? "Menyusun…" : "Analisa Mendalam"}
                     </Button>
+                    {/* Alasan tombol mati ditulis sebagai teks, bukan hanya title=: tooltip tidak
+                        terbaca di layar sentuh dan tidak terbaca pembaca layar pada tombol mati. */}
+                    {belumSiap ? (
+                      <p className="mt-1 text-xs text-destructive" data-testid="alasan-tombol-mati">
+                        Tombol dinonaktifkan: belum ada model default yang dipilih (Pengaturan AI).
+                      </p>
+                    ) : null}
                   </div>
 
                   {mendalam ? (
@@ -879,6 +940,83 @@ function KelompokKeputusan({ baris }: { baris: BarisSku[] }) {
         ))}
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Daftar model yang AKAN dipakai analisa mendalam, ditampilkan DI ATAS tombol.
+ *
+ * Kenapa ini ada: analisa mendalam mengeluarkan biaya token, dan repo ini tidak menyimpan
+ * harga model — jadi halaman tidak bisa (dan tidak boleh) menebak "murah/mahal". Yang BISA
+ * dipastikan cuma satu: model mana yang benar-benar akan berjalan. Itu yang ditampilkan,
+ * sebelum user menekan tombol.
+ */
+function KartuModel({ rantai, terpakai, belumSiap, memuat, onBukaSetting }: {
+  rantai: ModelRantai[] | null;
+  terpakai: ModelRantai[];
+  belumSiap: boolean;
+  memuat: boolean;
+  onBukaSetting: () => void;
+}) {
+  if (memuat) {
+    return <Skeleton className="h-12 w-full rounded-lg" data-testid="model-analisa-memuat" />;
+  }
+  // Gagal memuat: tidak ada yang bisa dikatakan. Diam lebih baik daripada mengarang model.
+  if (!rantai) return null;
+
+  const dilewati = rantai.filter((m) => !m.siap || !m.modelDipilih);
+  const adaFree = terpakai.some((m) => (m.modelDipilih ?? "").endsWith(":free"));
+
+  return (
+    <div className="flex flex-col gap-2" data-testid="model-analisa">
+      {belumSiap ? (
+        <Alert variant="destructive" data-testid="model-belum-siap">
+          <TriangleAlert aria-hidden />
+          <AlertTitle>Analisa mendalam belum bisa dijalankan</AlertTitle>
+          <AlertDescription>
+            Belum ada model default yang dipilih, jadi tidak ada model yang akan dipakai. Buka{" "}
+            <button type="button" className="font-medium underline underline-offset-2" onClick={onBukaSetting} data-testid="tautan-setting-model">
+              Pengaturan AI
+            </button>{" "}
+            lalu pilih model default terlebih dahulu.
+          </AlertDescription>
+        </Alert>
+      ) : (
+        <div className="rounded-lg border border-border bg-muted/40 p-3" data-testid="model-terpakai">
+          <p className="text-xs font-medium text-muted-foreground">
+            {terpakai.length === 1 ? "Akan memakai:" : "Akan memakai (urutan cadangan):"}
+          </p>
+          <ol className="mt-1 flex flex-col gap-0.5">
+            {terpakai.map((m, i) => (
+              <li key={`${m.provider}-${i}`} className="text-sm">
+                {terpakai.length > 1 ? <span className="mr-1 text-muted-foreground">{i + 1}.</span> : null}
+                <span className="font-medium">{m.provider}</span>
+                <span className="text-muted-foreground"> · </span>
+                <span className="font-mono text-xs">{m.modelDipilih}</span>
+              </li>
+            ))}
+          </ol>
+          {terpakai.length > 1 ? (
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              Yang pertama dipakai lebih dulu; berikutnya dicoba bila yang di depan gagal.
+            </p>
+          ) : null}
+        </div>
+      )}
+
+      {adaFree ? (
+        <p className="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400" data-testid="peringatan-free">
+          <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+          Model <code>:free</code> mengantre di sisi penyedia, sering timeout.
+        </p>
+      ) : null}
+
+      {dilewati.length > 0 ? (
+        <p className="text-[11px] text-muted-foreground" data-testid="model-dilewati">
+          Dilewati: {dilewati.map((m) => m.provider).join(", ")} — belum punya model default atau kredensial.
+        </p>
+      ) : null}
+    </div>
   );
 }
 
