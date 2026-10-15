@@ -14,7 +14,7 @@
 // puluhan detik nyata untuk membuktikan urutan percobaan.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { ANGGARAN_PROVIDER_MS, MAKS_MODEL_PER_PROVIDER, panggilTeks } from "./provider";
+import { ANGGARAN_PROVIDER_MS, MAKS_MODEL_PER_PROVIDER, panggilTeks, panggilTeksStream } from "./provider";
 import { enkripsi } from "./kripto";
 
 const KUNCI = "Y2JjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY=";
@@ -249,7 +249,7 @@ describe("rantai kandidat teks", () => {
       assert.equal(modelUnik[0], "solar-mini4:free", "model yang diminta user harus nomor satu");
       // Sisa katalog harus DISEBUT, bukan dibiarkan tampak sudah dicoba habis.
       const pesan = hasil.ok ? "" : hasil.error;
-      assert.match(pesan, /21 model lain tidak dicoba/, `pesan harus menyebut sisa katalog: ${pesan}`);
+      assert.match(pesan, new RegExp(`${21 - (MAKS_MODEL_PER_PROVIDER - 3)} model lain tidak dicoba`), `pesan harus menyebut sisa katalog: ${pesan}`);
     });
   });
 
@@ -316,5 +316,164 @@ describe("rantai kandidat teks", () => {
       assert.match(pesan, /Masih ada provider yang bisa dicoba/, `harus ada kalimat penutup penuntun: ${pesan}`);
       assert.match(pesan, /Kredensial Provider/, "harus menuntun ke tempat mengisi API key");
     });
+  });
+});
+
+/**
+ * SSE palsu: potongan dibalas bertahap lewat ReadableStream, jadi jalur streaming
+ * diuji apa adanya (parsing buffer + `data: [DONE]`), bukan lewat mock fungsi.
+ */
+function badanSSE(isi: string[], opsi: { usage?: boolean } = {}): ReadableStream<Uint8Array> {
+  const enc = new TextEncoder();
+  const potongan = [
+    ...isi.map((d) => `data: ${JSON.stringify({ choices: [{ delta: { content: d } }] })}\n\n`),
+    // Baris asing TIDAK boleh menggagalkan stream — bentuk ini nyata dikirim provider.
+    "data: {\"choices\":[{\"delta\":{\"role\":\"assistant\"}}]}\n\n",
+    "data: bukan-json\n\n",
+    ...(opsi.usage ? [`data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: 7, completion_tokens: 3 } })}\n\n`] : []),
+    // Sebagian provider memakai CRLF — harus terbaca sama.
+    `data: ${JSON.stringify({ choices: [{ delta: { content: "!" } }] })}\r\n\r\n`,
+    "data: [DONE]\n\n",
+  ];
+  return new ReadableStream<Uint8Array>({
+    start(c) {
+      for (const p of potongan) c.enqueue(enc.encode(p));
+      c.close();
+    },
+  });
+}
+
+describe("panggilTeksStream", () => {
+  const settings = {
+    textProvider: "kenari",
+    chainTeks: ["kenari", "groq"],
+    modelTeks: { kenari: "kenari-cepat" },
+    modelVision: {},
+    modelGambar: {},
+  };
+
+  it("mengembalikan potongan bertahap (bukan satu blok) + metadata provider/model", async () => {
+    const db = buatDb({
+      kredensial: [await kred("kenari", "key-kenari", 1)],
+      model: model("kenari", 1, 1),
+      settings,
+    });
+    globalThis.fetch = (async () =>
+      ({ ok: true, status: 200, body: badanSSE(["Ha", "lo", " dunia"], { usage: true }) }) as unknown as Response) as unknown as typeof fetch;
+
+    const hasil = await panggilTeksStream({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }] });
+    assert.equal(hasil.ok, true, `harus ok: ${hasil.ok ? "" : hasil.error}`);
+    if (!hasil.ok) return;
+    assert.equal(hasil.provider, "kenari");
+    assert.equal(hasil.model, "kenari-cepat", "model pilihan user harus yang dipakai");
+    let teks = "";
+    let jumlahPotongan = 0;
+    for await (const p of hasil.potongan) {
+      if (p.delta) {
+        teks += p.delta;
+        jumlahPotongan += 1;
+      }
+    }
+    assert.equal(teks, "Halo dunia!");
+    assert.equal(jumlahPotongan, 4, "tiap delta harus terkirim terpisah, bukan digabung di akhir (termasuk event CRLF)");
+    // Token dari event usage dicatat sebagai agregat; kegagalan catat tidak boleh melempar.
+    assert.deepEqual(db.pemakaian[0]?.slice(1, 6), ["kenari", "kenari-cepat", "teks", 7, 3]);
+  });
+
+  it("gagal SEBELUM potongan -> lanjut kandidat berikutnya; provider kedua dipakai", async () => {
+    const db = buatDb({
+      kredensial: [await kred("kenari", "key-kenari", 1), await kred("groq", "key-groq", 2)],
+      model: [...model("kenari", 1, 1), ...model("groq", 1, 9)],
+      settings: { ...settings, modelTeks: { kenari: "kenari-cepat", groq: "groq-cepat" } },
+    });
+    const dipanggil: string[] = [];
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const u = String(url);
+      dipanggil.push(u);
+      if (u.includes("kenari")) return { ok: false, status: 400, text: async () => "kredensial ditolak" } as unknown as Response;
+      return { ok: true, status: 200, body: badanSSE(["dari groq"]) } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const hasil = await panggilTeksStream({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }] });
+    assert.equal(hasil.ok, true, `harus pindah ke groq: ${hasil.ok ? "" : hasil.error}`);
+    if (!hasil.ok) return;
+    assert.equal(hasil.provider, "groq");
+    let teks = "";
+    for await (const p of hasil.potongan) teks += p.delta;
+    assert.equal(teks, "dari groq!");
+    assert.ok(dipanggil.some((u) => u.includes("kenari")), "kenari harus dicoba lebih dulu");
+    assert.ok(dipanggil.some((u) => u.includes("groq")), "groq harus dicoba setelah kenari gagal sebelum potongan");
+    assert.ok(
+      dipanggil.findIndex((u) => u.includes("groq")) > dipanggil.findIndex((u) => u.includes("kenari")),
+      "urutan percobaan harus mengikuti rantai: semua kandidat kenari dulu, baru groq"
+    );
+  });
+
+  it("semua provider gagal sebelum potongan -> pesan menyebut provider/model yang dicoba", async () => {
+    const db = buatDb({
+      kredensial: [await kred("kenari", "key-kenari", 1)],
+      model: model("kenari", 1, 1),
+      settings,
+    });
+    globalThis.fetch = (async () => {
+      throw new Error("jaringan mati");
+    }) as unknown as typeof fetch;
+
+    const hasil = await panggilTeksStream({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }] });
+    assert.equal(hasil.ok, false);
+    const pesan = hasil.ok ? "" : hasil.error;
+    assert.match(pesan, /kenari\/kenari-model-1/);
+    assert.match(pesan, /jaringan mati/);
+  });
+});
+
+describe("panggilTeksStream — aturan tidak pindah provider setelah potongan pertama", () => {
+  it("stream yang putus SETELAH potongan pertama TIDAK difallback ke provider berikutnya", async () => {
+    const settings = {
+      textProvider: "kenari",
+      chainTeks: ["kenari", "groq"],
+      modelTeks: { kenari: "kenari-cepat", groq: "groq-cepat" },
+      modelVision: {},
+      modelGambar: {},
+    };
+    const db = buatDb({
+      kredensial: [await kred("kenari", "key-kenari", 1), await kred("groq", "key-groq", 2)],
+      model: [...model("kenari", 1, 1), ...model("groq", 1, 9)],
+      settings,
+    });
+    const enc = new TextEncoder();
+    const dipanggil: string[] = [];
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const u = String(url);
+      dipanggil.push(u);
+      if (u.includes("groq")) return { ok: true, status: 200, body: badanSSE(["dari groq"]) } as unknown as Response;
+      // Kenari: kirim satu potongan lalu MATI di tengah jalan (bukan [DONE]).
+      let kirim = 0;
+      return {
+        ok: true,
+        status: 200,
+        body: new ReadableStream<Uint8Array>({
+          pull(c) {
+            if (kirim === 0) {
+              kirim += 1;
+              c.enqueue(enc.encode(`data: ${JSON.stringify({ choices: [{ delta: { content: "awal" } }] })}\n\n`));
+              return;
+            }
+            c.error(new Error("koneksi putus di tengah jawaban"));
+          },
+        }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const hasil = await panggilTeksStream({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }] });
+    assert.equal(hasil.ok, true, "stream kenari sudah terpilih saat potongan pertama terkirim");
+    if (!hasil.ok) return;
+    assert.equal(hasil.provider, "kenari");
+    let teks = "";
+    await assert.rejects(async () => {
+      for await (const p of hasil.potongan) teks += p.delta;
+    }, /koneksi putus/);
+    assert.equal(teks, "awal", "potongan yang sudah terkirim tidak boleh hilang");
+    assert.equal(dipanggil.some((u) => u.includes("groq")), false, "provider TIDAK boleh diganti setelah ada potongan terkirim");
   });
 });

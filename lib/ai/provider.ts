@@ -12,6 +12,7 @@ import { gagal, type Hasil } from "@/lib/d1/hasil";
 import { BASE_OPENAI, baseKenari, chatOpenai, gambarOpenai, type OpsiAdapter } from "./adapterOpenai";
 import { chatGemini, gambarGemini } from "./adapterGemini";
 import type { BagianChat, JawabanChat, PermintaanChat } from "./http";
+import { streamJson, type PotonganStream } from "./stream";
 
 export type ProviderNama = "gemini" | "groq" | "kenari" | "openai" | "openrouter";
 
@@ -37,6 +38,15 @@ const PROVIDER_OPENAI: ProviderNama[] = ["groq", "kenari", "openai", "openrouter
 export const TIMEOUT_TEKS_MS = 35000;
 
 /**
+ * Batas waktu SATU percobaan teks yang MEMAKAI reasoning (model benar-benar berpikir).
+ * Model penalaran perlu waktu jauh lebih lama daripada jawaban biasa: dengan 35 detik
+ * permintaan yang sebenarnya akan berhasil di-DROP lebih dulu — persis keluhan pemilik
+ * repo ("reasoning selalu timeout"). Nilai reasoning sudah dinormalisasi di
+ * lib/ai/reasoning.ts (max/xhigh → high), ini pagar waktu untuk tingkat yang sah itu.
+ */
+export const TIMEOUT_TEKS_REASONING_MS = 70000;
+
+/**
  * Batas waktu SATU percobaan vision (model gambar biasa yang membaca gambar). Tidak dinaikkan.
  */
 export const TIMEOUT_VISION_MS = 60000;
@@ -47,27 +57,51 @@ export const TIMEOUT_VISION_MS = 60000;
  * lambat membakar seluruh jatah (satu model 60 detik + model berikutnya) dan provider
  * di belakangnya selalu "dilewati: anggaran total habis" — praktisnya tidak pernah
  * dicoba, padahal kredensialnya sehat. Batas per-provider membuat tiap provider dapat
- * giliran nyata: 35 detik × 3 provider ≈ 105 detik, pas dengan ANGGARAN_TEKS_MS.
+ * giliran nyata.
+ * Perhitungan: satu provider boleh memakai sampai timeout percobaan terpanjangnya —
+ * 70000ms (TIMEOUT_TEKS_REASONING_MS), jadi anggarannya 70000 juga. Model cadangan di
+ * provider yang sama praktis hanya kebagian bila model pertama gagal cepat.
  */
-export const ANGGARAN_PROVIDER_MS = 35000;
+export const ANGGARAN_PROVIDER_MS = 70000;
 
 /**
  * Anggaran TOTAL rantai teks (semua provider dijumlahkan) — pagar terakhir.
- * Dinaikkan dari 100000 ke 105000 supaya tiga provider × ANGGARAN_PROVIDER_MS
- * benar-benar kebagian; dengan 100000 provider ketiga selalu terpotong.
+ *
+ * Perhitungan SEKARANG: 2 provider × ANGGARAN_PROVIDER_MS = 140000.
+ * Turun dari 210000 (= 3 provider) SETELAH jalur streaming ada: pada streaming,
+ * provider yang sama sudah dipakai lebih dari satu kali gagal sebelum ada potongan,
+ * jadi provider pertama yang berhasil membalas TIDAK diganti — jumlah provider yang
+ * benar-benar perlu dicoba berkurang. 140000 tetap memberi tiap provider jatah penuh
+ * satu percobaan reasoning (70000) plus satu cadangan yang gagal cepat.
+ *
+ * CATATAN: ini anggaran jalur NON-stream (`panggilTeks`), yang pemakainya masih ada
+ * (chat, vision, saran iklan). Angkanya TIDAK memperlambat jawaban biasa:
+ * batas satu percobaan tetap TIMEOUT_TEKS_MS (35000).
  */
-export const ANGGARAN_TEKS_MS = 105000;
+export const ANGGARAN_TEKS_MS = 140000;
 
 /**
- * Jumlah model yang dicoba per provider: 1 model yang diminta user + 2 cadangan.
+ * Jumlah model yang dicoba per provider: 1 model yang diminta user + 4 cadangan.
  * MASALAH YANG DIPERBAIKI: dulu SEMUA model aktif provider ikut masuk kandidat —
  * pada katalog nyata itu 23 model kenari dijejer berurutan sebelum provider
  * berikutnya (gemini) sempat dicoba. Itu bukan fallback, itu penjelajahan katalog:
  * satu provider yang sedang bermasalah menghabiskan seluruh anggaran waktu.
- * Batas kecil ini menjaga arti "cadangan" tetap: kalau 3 model berturut-turut gagal,
+ * Batas ini menjaga arti "cadangan" tetap: kalau 5 model berturut-turut gagal,
  * masalahnya provider/kredensial, jadi lebih baik segera pindah provider.
+ *
+ * Dinaikkan dari 3 ke 5: katalog nyata sudah ~160 model, jadi hanya 2 cadangan
+ * sesudah model pilihan user terlalu sedikit — satu model mati + satu kuota habis
+ * sudah mengakhiri provider yang sebenarnya sehat.
+ *
+ * ANGGARAN: 5 model × TIMEOUT_TEKS_REASONING_MS (70000) = 350000ms jauh melebihi
+ * ANGGARAN_PROVIDER_MS (70000ms). Itu memang disengaja dan bukan bug: anggaran
+ * provider adalah pagar waktu, bukan kuota model — model pertama selalu dapat
+ * jatah penuh (70000ms = TIMEOUT_TEKS_REASONING_MS saat reasoning aktif, atau
+ * 35000ms = TIMEOUT_TEKS_MS saat tidak), jadi tidak mungkin provider ini
+ * kehabisan anggaran sebelum model pilihannya selesai dicoba. Model ke-2..5
+ * hanya kebagian sisa anggaran bila model sebelumnya gagal cepat (bukan timeout).
  */
-export const MAKS_MODEL_PER_PROVIDER = 3;
+export const MAKS_MODEL_PER_PROVIDER = 5;
 
 /**
  * Base URL efektif untuk provider: alamat dari kredensial menang atas bawaan.
@@ -192,7 +226,10 @@ async function cobaTeks(
   jenis: "teks" | "vision",
   opsiReasoning?: { reasoning?: string; reasoningHilir?: boolean; maksToken?: number }
 ): Promise<Hasil<{ jawaban: JawabanChat; latencyMs: number }>> {
-  const timeoutMs = jenis === "vision" ? TIMEOUT_VISION_MS : TIMEOUT_TEKS_MS;
+  const pakaiReasoning = jenis === "teks" && !!String(opsiReasoning?.reasoning ?? "").trim();
+  // Reasoning aktif → model benar-benar berpikir, butuh jatah waktu jauh lebih panjang.
+  // Tanpa reasoning angkanya TIDAK berubah (TIMEOUT_TEKS_MS).
+  const timeoutMs = jenis === "vision" ? TIMEOUT_VISION_MS : pakaiReasoning ? TIMEOUT_TEKS_REASONING_MS : TIMEOUT_TEKS_MS;
   const permintaan: PermintaanChat = {
     model: kandidat.model,
     pesan,
@@ -284,6 +321,132 @@ export async function panggilTeks(
       tokenKeluar: keluar,
     });
     return { ok: true, teks: h.jawaban.teks, provider: k.provider, model: k.model, tokenMasuk: masuk, tokenKeluar: keluar, toolCall: h.jawaban.toolCall };
+  }
+  return gagal(502, ringkasGagal(catatan, rantai), catatan);
+}
+
+/**
+ * Varian STREAMING dari `panggilTeks` — TIDAK menggantikannya; pemakai lama tetap
+ * memakai jalur non-stream. Rantai kandidatnya SAMA (`kandidatTeks`), yang berbeda
+ * hanya cara percobaannya: potongan teks dikembalikan begitu tiba, bukan menunggu
+ * jawaban selesai (lihat KENAPA STREAMING di lib/ai/stream.ts).
+ *
+ * ATURAN PEMILIHAN PROVIDER (penting, tidak bisa dibatalkan):
+ * kandidat pertama yang BERHASIL MENGIRIM potongan pertama dianggap terpilih dan
+ * stream ditutup setelahnya. Setelah ada potongan sampai ke user, pindah provider
+ * akan menghasilkan jawaban campur dua model — jadi kegagalan SETELAH potongan
+ * pertama dilaporkan apa adanya, bukan difallback. Provider yang gagal SEBELUM ada
+ * potongan (kredensial kosong, 4xx/5xx, timeout handshake) dilewati seperti rantai biasa.
+ *
+ * `jenis` hanya "teks": Gemini belum punya jalur streaming di repo ini.
+ */
+export async function panggilTeksStream(
+  ctx: Konteks,
+  minta: {
+    pesan: BagianChat[];
+    tool?: unknown[];
+    modelDiminta?: string;
+    reasoning?: string;
+    reasoningHilir?: boolean;
+    maksToken?: number;
+  }
+): Promise<
+  Hasil<{
+    /** Kandidat yang akhirnya dipakai — dikirim ke user saat stream selesai. */
+    provider: string;
+    model: string;
+    potongan: AsyncGenerator<PotonganStream>;
+  }>
+> {
+  const catatan: Catatan[] = [];
+  if (!ctx.kunci && !ctx.env?.AI_KEY_ENCRYPTION_KEY) return gagal(500, "AI_KEY_ENCRYPTION_KEY belum diset.");
+  const { kandidat, rantai } = await kandidatTeks(ctx, "teks", catatan, minta.modelDiminta);
+  if (kandidat.length === 0) return gagal(502, ringkasGagal(catatan, rantai), catatan);
+
+  const mulai = Date.now();
+  let providerKini = kandidat[0]!.provider;
+  let mulaiProvider = mulai;
+  for (const k of kandidat) {
+    if (k.provider !== providerKini) {
+      providerKini = k.provider;
+      mulaiProvider = Date.now();
+    }
+    // Pagar anggaran sama seperti panggilTeks: provider yang kebablasan tidak menghentikan
+    // rantai — kandidat provider berikutnya tetap dicoba.
+    if (Date.now() - mulai >= ANGGARAN_TEKS_MS) {
+      catatan.push({ provider: k.provider, model: k.model, error: `dilewati: anggaran total ${ANGGARAN_TEKS_MS}ms habis` });
+      continue;
+    }
+    if (Date.now() - mulaiProvider >= ANGGARAN_PROVIDER_MS) {
+      catatan.push({
+        provider: k.provider,
+        model: k.model,
+        error: `dilewati: anggaran provider ${k.provider} habis, lanjut provider berikutnya`,
+      });
+      continue;
+    }
+    const pakaiReasoning = !!String(minta.reasoning ?? "").trim();
+    // Batas waktu TANPA potongan: model yang benar-benar berpikir tidak mengirim apa pun
+    // sementara ia bekerja, jadi reasoning dapat jatah panjang (sama seperti non-stream).
+    // Tanpa reasoning angkanya TIDAK berubah (TIMEOUT_TEKS_MS).
+    const timeoutMs = pakaiReasoning ? TIMEOUT_TEKS_REASONING_MS : TIMEOUT_TEKS_MS;
+    if (k.provider === "gemini") {
+      catatan.push({ provider: k.provider, model: k.model, error: "dilewati: jalur streaming belum tersedia untuk gemini" });
+      continue;
+    }
+    const opsi = opsiUntuk(k.provider, k.apiKey, ctx, timeoutMs, k.baseUrl);
+    if (!opsi) {
+      catatan.push({ provider: k.provider, model: k.model, error: `Provider ${k.provider} tidak mendukung chat teks.` });
+      continue;
+    }
+    const s = await streamJson({
+      baseUrl: opsi.baseUrl,
+      apiKey: opsi.apiKey,
+      provider: k.provider,
+      model: k.model,
+      pesan: minta.pesan,
+      tool: minta.tool,
+      maksToken: minta.maksToken,
+      reasoning: minta.reasoning,
+      reasoningHilir: minta.reasoningHilir,
+      timeoutMs,
+      totalMs: Math.max(1000, ANGGARAN_TEKS_MS - (Date.now() - mulai)),
+    });
+    if (!s.ok) {
+      // Gagal SEBELUM potongan apa pun: aman pindah kandidat berikutnya.
+      catatan.push({ provider: k.provider, model: k.model, error: s.error });
+      continue;
+    }
+
+    // Potongan pertama sudah menentukan kandidat ini. Token/usage dari SSE (bila provider
+    // mengirimnya) dicatat sebagai agregat satu baris; kegagalan pencatatan tidak boleh
+    // menggagalkan jawaban yang sudah terkirim ke user.
+    const dalam = s.iter;
+    const dipakai = { provider: k.provider, model: k.model };
+    const masuk = { nilai: 0 };
+    const keluar = { nilai: 0 };
+    async function* potongan(): AsyncGenerator<PotonganStream> {
+      let teksAda = false;
+      try {
+        for await (const p of dalam) {
+          if (p.tokenMasuk !== undefined) masuk.nilai = p.tokenMasuk;
+          if (p.tokenKeluar !== undefined) keluar.nilai = p.tokenKeluar;
+          if (p.delta) teksAda = true;
+          yield p;
+        }
+      } finally {
+        if (teksAda) {
+          await catatPemakaian(ctx.db, {
+            provider: dipakai.provider,
+            model: dipakai.model,
+            jenis: "teks",
+            tokenMasuk: masuk.nilai,
+            tokenKeluar: keluar.nilai,
+          }).catch(() => undefined);
+        }
+      }
+    }
+    return { ok: true, provider: k.provider, model: k.model, potongan: potongan() };
   }
   return gagal(502, ringkasGagal(catatan, rantai), catatan);
 }

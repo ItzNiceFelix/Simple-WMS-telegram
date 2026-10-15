@@ -14,6 +14,7 @@ import { toast } from "sonner"
 import { Save } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
+import { Combobox } from "@/components/ui/combobox"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Spinner } from "@/components/ui/spinner"
 import { tampilkanGagalTulis } from "@/components/dashboard/umpan-tulis"
@@ -103,15 +104,29 @@ export function AiModelDefault({ bolehUbah, onBerubah }: Props) {
     }
   }
 
-  /** Provider yang punya minimal satu model untuk jenis itu. */
+  /**
+   * Provider yang bisa dipakai untuk jenis itu.
+   * Dilonggarkan: SEMUA provider ber-model aktif dianggap punya model untuk jenis itu,
+   * karena daftar pilihan sekarang lintas jenis (lihat `kandidat`).
+   */
   function providerUntuk(jenis: string): string[] {
-    const unik = new Set(model.filter((m) => m.jenis === jenis).map((m) => m.provider))
+    const unik = new Set(model.filter((m) => m.aktif === 1).map((m) => m.provider))
     return [...unik].sort()
   }
 
-  /** Model kandidat untuk (provider, jenis) — hanya yang aktif, urut id. */
+  /**
+   * Model kandidat untuk (provider, jenis) — hanya yang aktif.
+   *
+   * TIDAK menyaring `jenis`. Katalog kenari menaruh model seperti `muse-spark-1-3`
+   * di `jenis='vision'` padahal model itu bisa dipakai untuk teks; menyaring `jenis`
+   * membuat model yang sah tidak bisa dipilih sama sekali — itulah keluhan pemilik repo.
+   * Model yang `jenis`-nya COCOK ditampilkan lebih dulu, sisanya menyusul dengan
+   * penanda jenis di label supaya user tahu asalnya tapi tetap bisa memilih.
+   */
   function kandidat(provider: string, jenis: string): ModelAi[] {
-    return model.filter((m) => m.provider === provider && m.jenis === jenis && m.aktif === 1).sort((a, b) => a.id - b.id)
+    return model
+      .filter((m) => m.provider === provider && m.aktif === 1)
+      .sort((a, b) => (a.jenis === jenis ? 0 : 1) - (b.jenis === jenis ? 0 : 1) || a.id - b.id)
   }
 
   return (
@@ -147,26 +162,38 @@ export function AiModelDefault({ bolehUbah, onBerubah }: Props) {
                       const nilai = (draf[jenis] ?? {})[prov] ?? ""
                       const berubah = nilai !== (punyaUI[prov] ?? "")
                       const kunci = `${jenis}-${prov}`
+                      // Combobox memakai `null` untuk kosong = "model aktif pertama".
+                      const items = opsi.map((m) => ({
+                        value: m.model_id,
+                        label: m.jenis === jenis ? m.model_id : `${m.model_id} · ${m.jenis}`,
+                      }))
                       return (
                         <li key={prov} className="flex flex-col gap-2 sm:flex-row sm:items-center">
                           <span className="w-32 shrink-0 text-sm">{LABEL_PROVIDER[prov] ?? prov}</span>
-                          <select
-                            className="h-11 w-full rounded-md border border-input bg-transparent px-2 text-sm md:h-8"
-                            value={nilai}
-                            disabled={!bolehUbah}
-                            onChange={(e) => {
-                              const v = e.target.value
-                              setDraf((d) => ({ ...d, [jenis]: { ...d[jenis], [prov]: v } }))
+                          <Combobox
+                            items={items}
+                            value={nilai || null}
+                            onChange={(v) => {
+                              const baru = v ?? ""
+                              setDraf((d) => ({ ...d, [jenis]: { ...d[jenis], [prov]: baru } }))
                             }}
+                            placeholder="(model aktif pertama)"
+                            kosongTeks="Model tidak ditemukan"
+                            disabled={!bolehUbah}
                             data-testid={`default-${jenis}-${prov}`}
-                          >
-                            <option value="">(model aktif pertama)</option>
-                            {opsi.map((m) => (
-                              <option key={m.id} value={m.model_id}>
-                                {m.model_id}
-                              </option>
-                            ))}
-                          </select>
+                          />
+                          {nilai ? (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              className="h-9 shrink-0 md:h-7"
+                              disabled={!bolehUbah}
+                              onClick={() => setDraf((d) => ({ ...d, [jenis]: { ...d[jenis], [prov]: "" } }))}
+                              data-testid={`kosongkan-default-${jenis}-${prov}`}
+                            >
+                              Kosongkan
+                            </Button>
+                          ) : null}
                           <Button
                             size="sm"
                             className="h-9 shrink-0 md:h-7"

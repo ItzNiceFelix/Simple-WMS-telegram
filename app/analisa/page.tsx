@@ -17,6 +17,7 @@ import { toast } from "sonner";
 import { PageHeader } from "@/components/dashboard/page-header";
 import { ButuhAkses } from "@/components/dashboard/butuh-akses";
 import { AnalisaPetaSku } from "@/components/dashboard/analisa-peta-sku";
+import { AnalisaEstimasiIklan } from "@/components/dashboard/analisa-estimasi-iklan";
 import { tampilkanGagalTulis } from "@/components/dashboard/umpan-tulis";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -771,6 +772,9 @@ function Analisa() {
                       </CardContent>
                     </Card>
                   ) : null}
+
+                  {/* Estimasi per SKU: modal & target diatur user, hasil dari lib murni server */}
+                  <AnalisaEstimasiIklan presetId={presetId} tanggal={tanggal} />
                 </>
               )}
             </TabsContent>

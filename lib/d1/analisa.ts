@@ -211,6 +211,57 @@ export async function performaPerSku(
   return peta;
 }
 
+/** Satu hari historis penjualan sebuah SKU, seperti dipakai `estimasiIklan`. */
+export type BarisHistoriSku = {
+  tanggal: string; omzet: number; unit: number; marginSatuan: number; hargaJual: number;
+};
+
+/**
+ * Histori penjualan per SKU dari SEMUA snapshot preset ini, urut tanggal MENAIK.
+ *
+ * Sumber angkanya `rincian_json` per tanggal; omzet = `hargaJual × unit`, bukan kolom
+ * terpisah — `rincian_json` tidak menyimpan omzet dan menebaknya dari kolom lain akan
+ * membuat angka iklan tidak bisa diaudit.
+ *
+ * Rusak → DILEWATI, bukan melempar: satu tanggal dengan JSON cacat tidak boleh
+ * menghapus histori tanggal lain (gaya sama dengan `performaPerSku`/`ambilSnapshot`).
+ */
+export async function historiPerSku(
+  db: D1Database,
+  presetId: number
+): Promise<Map<string, BarisHistoriSku[]>> {
+  const peta = new Map<string, BarisHistoriSku[]>();
+  const { results } = await db
+    .prepare("SELECT tanggal, rincian_json FROM laba_snapshot WHERE preset_id = ? ORDER BY tanggal ASC")
+    .bind(presetId)
+    .all<{ tanggal: string; rincian_json: string | null }>();
+  for (const s of results ?? []) {
+    const tanggal = String(s.tanggal ?? "");
+    if (tanggal === "") continue;
+    let arr: unknown;
+    try {
+      arr = JSON.parse(String(s.rincian_json ?? "[]"));
+    } catch {
+      continue; // rincian_json rusak pada tanggal ini → lewati tanggal itu saja
+    }
+    if (!Array.isArray(arr)) continue;
+    for (const r of arr as RincianSnapshot[]) {
+      const sku = String(r?.sku ?? "");
+      const unit = Number(r?.unit ?? 0);
+      const hargaJual = Number(r?.hargaJual ?? 0);
+      const marginSatuan = Number(r?.marginSatuan ?? 0);
+      if (sku === "" || !Number.isFinite(unit) || !Number.isFinite(hargaJual) || !Number.isFinite(marginSatuan)) continue;
+      // SKU tidak dijual di tanggal ini = tidak ada baris. Jangan tambahkan hari bernilai
+      // nol; itu akan dihitung sebagai "hari terburuk" dan membuat estimasi terlalu pesimis.
+      if (unit <= 0) continue;
+      const daftar = peta.get(sku) ?? [];
+      daftar.push({ tanggal, omzet: hargaJual * unit, unit, marginSatuan, hargaJual });
+      peta.set(sku, daftar);
+    }
+  }
+  return peta;
+}
+
 /** Apakah ada data performa produk untuk rentang ini. */
 export async function adaPerforma(db: D1Database, presetId: number): Promise<boolean> {
   const r = await db

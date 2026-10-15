@@ -8,11 +8,47 @@
 //   Gemini     : thinkingConfig.thinkingLevel = minimal|low|medium|high
 //   OpenRouter : reasoning: { effort } + include_reasoning
 //   OpenAI     : reasoning_effort = minimal|low|medium|high
+//
+// Kosakata katalog provider (`max`, `xhigh`, `none`, `default`) BUKAN kosakata HTTP API.
+// Semua nilai dinormalisasi ke `minimal|low|medium|high` sebelum dikirim.
 
 import type { ProviderNama } from "@/lib/ai/provider";
 
 /** Parameter reasoning yang siap ditempel ke body permintaan provider. */
 export type ParameterReasoning = Record<string, unknown>;
+
+/**
+ * Tingkat reasoning yang diakui HTTP API provider. Inilah satu-satunya kosakata
+ * yang boleh keluar dari berkas ini.
+ */
+const TINGKAT_SAH = ["minimal", "low", "medium", "high"];
+
+/**
+ * KENAPA normalisasi ini WAJIB ADA (keluhan utama pemilik repo: "reasoning selalu timeout"):
+ * katalog provider menyimpan `reasoning_pilihan` dengan kosakata INTERNAL mereka sendiri —
+ * `low,high,max` (kenari), `high,xhigh` (kenari), `none,low,high` (groq). Tapi HTTP API
+ * provider hanya menerima `minimal|low|medium|high`; `max`/`xhigh`/`none` BUKAN nilai sah.
+ * Dulu nilai itu diteruskan VERBATIM (`reasoning_effort: "max"`), sehingga provider menganggap
+ * tingkatnya tidak dikenal lalu berpikir jauh lebih lama / menolak → percobaan melewati
+ * timeout teks dan user SELALU melihat "timeout" setiap memakai level reasoning.
+ *
+ * Pemetaan: kosakata internal → kosakata HTTP API.
+ *   max, xhigh          → high   (API tidak punya tingkat di atas high)
+ *   none                → minimal
+ *   on/true/1           → high ; off/false/0 → minimal (skema 'bool' cuma hidup/mati)
+ *   minimal/low/high    → tetap
+ *   medium              → tetap
+ *   nilai tak dikenal   → medium (netral; JANGAN lempar — lebih baik satu permintaan
+ *                         berjalan dengan tingkat netral daripada seluruh analisa gagal)
+ */
+export function normalkanTingkatReasoning(reasoning: string | undefined | null): string {
+  const nilai = String(reasoning ?? "").trim().toLowerCase();
+  if (nilai === "on" || nilai === "true" || nilai === "1") return "high";
+  if (nilai === "off" || nilai === "false" || nilai === "0") return "minimal";
+  if (nilai === "max" || nilai === "xhigh") return "high";
+  if (nilai === "none") return "minimal";
+  return TINGKAT_SAH.includes(nilai) ? nilai : "medium";
+}
 
 /**
  * Ubah satu nilai reasoning menjadi parameter provider. Kembalikan objek KOSONG
@@ -24,15 +60,13 @@ export function terapkanReasoning(
   reasoning: string | undefined | null,
   opsi: { hilir?: boolean; jsonMode?: boolean; adaTool?: boolean } = {}
 ): ParameterReasoning {
-  const nilai = String(reasoning ?? "").trim().toLowerCase();
-  if (!nilai) return {};
+  // Kosong = jangan kirim parameter sama sekali, biar provider pakai defaultnya sendiri.
+  if (!String(reasoning ?? "").trim()) return {};
   const hilir = opsi.hilir === true;
-  // Skema 'bool' hanya punya hidup/mati. Petakan ke nilai netral tiap provider
-  // supaya model seperti gemini-3-pro-image tetap dapat parameter yang sah.
-  const on = nilai === "on" || nilai === "true" || nilai === "1";
-  const off = nilai === "off" || nilai === "false" || nilai === "0";
-  const bool = on || off;
-  const tingkat = on ? "high" : off ? "minimal" : nilai;
+  // SATU pintu keluar untuk semua provider: nilai apa pun dinormalisasi ke kosakata
+  // sah `minimal|low|medium|high` sebelum ditempel ke body. Lihat alasannya di
+  // normalkanTingkatReasoning() — `max`/`xhigh` dari katalog provider bukan nilai sah.
+  const tingkat = normalkanTingkatReasoning(reasoning);
 
   if (provider === "gemini") {
     // Gemini memakai thinkingConfig di dalam generationConfig.
@@ -43,7 +77,8 @@ export function terapkanReasoning(
   }
 
   if (provider === "openrouter") {
-    const out: ParameterReasoning = { reasoning: { effort: bool ? (on ? "high" : "low") : nilai } };
+    // OpenRouter memakai reasoning.effort dengan kosakata yang sama (minimal..high).
+    const out: ParameterReasoning = { reasoning: { effort: tingkat } };
     if (hilir) out.include_reasoning = true;
     return out;
   }

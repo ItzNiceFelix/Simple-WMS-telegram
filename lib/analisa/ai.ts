@@ -24,6 +24,7 @@
 import { panggilTeks, type Konteks } from "@/lib/ai/provider";
 import type { UpayaGagal } from "@/lib/d1/hasil";
 import { keputusanIklan, organikCr } from "./hitung";
+import type { PaketSkenario } from "./skenarioIklan";
 import type { BarisSku, HasilAnalisa } from "./tipe";
 
 /** Tingkat kedalaman jawaban yang boleh diminta pengguna. */
@@ -242,6 +243,16 @@ export function susunPesan(bahan: string, kedalaman: Kedalaman): { role: "user";
 }
 
 /**
+ * Susun pasangan pesan (sistem + instruksi) untuk analisa mendalam — DIPAKAI BERSAMA
+ * oleh jalur JSON (`analisaMendalam`) dan jalur streaming (`panggilTeksStream` di route).
+ * Kalau tiap jalur menyusunnya sendiri, dua endpoint bisa mengirim instruksi berbeda
+ * untuk angka yang sama dan hasilnya tidak lagi bisa dibandingkan.
+ */
+export function susunPesanMendalam(bahan: string, kedalaman: Kedalaman): { role: "system" | "user"; teks: string }[] {
+  return [{ role: "system" as const, teks: PROMPT_SISTEM }, susunPesan(bahan, kedalaman)];
+}
+
+/**
  * Jalankan analisa mendalam.
  * `opsi.reasoning` diambil dari setting PER USER (`ai_analisa_setting.reasoning`,
  * lihat lib/d1/aiAnalisaSetting.ts); kosong =
@@ -255,10 +266,7 @@ export async function analisaMendalam(
 ): Promise<{ ok: true; data: HasilMendalam } | { ok: false; status: number; error: string; upaya?: UpayaGagal[] }> {
   const bahan = susunBahan(h);
 
-  const pesan = [
-    { role: "system" as const, teks: PROMPT_SISTEM },
-    susunPesan(bahan, opsi.kedalaman),
-  ];
+  const pesan = susunPesanMendalam(bahan, opsi.kedalaman);
 
   const hasil = await panggilTeks(
     ctx,
@@ -282,4 +290,97 @@ export async function analisaMendalam(
       bahan,
     },
   };
+}
+
+/**
+ * Prompt sistem untuk saran langkah iklan. Dipisah dan diekspor supaya bisa diuji apa
+ * adanya (tanpa memanggil model) — yang diuji di sini adalah LARANGANNYA, bukan gaya
+ * bahasanya: model yang mengarang angka pemicu membuat rencana tidak bisa diaudit.
+ */
+export const PROMPT_SISTEM_SKENARIO =
+  `Anda menyusun rencana BERTAHAP per skenario untuk pemilik toko online Indonesia
+yang sedang beriklan. Paket data di bawah SUDAH DIHITUNG sistem.
+
+ATURAN YANG TIDAK BOLEH DILANGGAR:
+1. Seluruh angka ada di paket data. Anda DILARANG mengarang, menaksir, atau menghitung
+   ulang angka apa pun — termasuk perkiraan omzet, perkiraan biaya, dan angka setelan
+   iklan. Bila perlu angka yang tidak ada di paket, tulis terus terang bahwa datanya
+   belum ada, jangan menebaknya.
+2. Anda DILARANG menyebut suatu target ROAS sebagai "yang terbaik" dan DILARANG
+   mengklaim tahu cara kerja setelan iklan Shopee (GMV MAX, AUTO ROAS).
+3. Ikuti TIGA skenario yang ada di paket dengan urutan sama, dan pakai ambang pemicu
+   (angka "kapan") apa adanya. Jangan mengganti ambangnya dengan angka sendiri.
+4. Tiap langkah WAJIB menyebut angka pemicunya; langkah tanpa angka harus dicabut.
+5. DILARANG memakai frasa lindung: "tergantung", "bisa jadi", "perlu dipertimbangkan",
+   "salah satu opsi". Bila data belum cukup untuk memutuskan, katakan datanya kurang
+   dan sebutkan data apa yang kurang.
+6. Bahasa Indonesia sederhana, tanpa istilah teknis.
+
+Bentuk jawaban:
+- Satu paragraf singkat keadaan iklan pada hari yang disebut pengguna.
+- Untuk SETIAP skenario: judul, pemicunya (angka), lalu langkah-langkah bernomor
+  berurutan yang bisa langsung dijalankan hari itu.
+- Satu baris "Yang belum bisa dinilai" berisi data yang tidak tersedia di paket.`;
+
+/** Bahan yang dikirim ke AI beserta hari yang disebut pengguna — ditampilkan di UI. */
+export type HasilSaranIklan = {
+  teks: string;
+  provider: string;
+  model: string;
+};
+
+/**
+ * Jalankan saran langkah iklan dari paket skenario yang sudah dihitung murni.
+ *
+ * AI hanya menarasikan paket INI: seluruh angka berasal dari `bangunPaketSkenario()`,
+ * bukan dari model. `opsi.reasoning` diteruskan ke `panggilTeks` sama seperti
+ * `analisaMendalam`, sehingga setelan PER USER (`ai_analisa_setting.reasoning`) tetap
+ * berlaku — jalur parameternya satu, tidak ada jalur kedua yang bisa menyimpang.
+ */
+export async function saranLangkahIklan(
+  ctx: Konteks,
+  paket: PaketSkenario,
+  opsi: { reasoning: string; maksToken?: number; hariKe: number }
+): Promise<{ ok: true; data: HasilSaranIklan & { bahan: string } } | { ok: false; status: number; error: string; upaya?: UpayaGagal[] }> {
+  const bahan = susunBahanSkenario(paket, opsi.hariKe);
+
+  const hasil = await panggilTeks(
+    ctx,
+    {
+      pesan: [
+        { role: "system" as const, teks: PROMPT_SISTEM_SKENARIO },
+        {
+          role: "user" as const,
+          teks:
+            `Hari yang diminta pengguna: hari ke-${opsi.hariKe}.\n` +
+            `Susun rencana bertahap untuk hari ke-${opsi.hariKe} berdasarkan paket berikut. ` +
+            `Pakai angka paket apa adanya; jangan mengarang angka di luar paket.\n\n` +
+            `${bahan}`,
+        },
+      ],
+      reasoning: opsi.reasoning,
+      ...(opsi.maksToken !== undefined ? { maksToken: opsi.maksToken } : {}),
+    },
+    "teks"
+  );
+  if (!hasil.ok) return hasil;
+
+  return {
+    ok: true,
+    data: { teks: hasil.teks.trim(), provider: hasil.provider, model: hasil.model, bahan },
+  };
+}
+
+/** Paket skenario jadi teks untuk prompt; angka ditulis apa adanya supaya bisa dikutip model. */
+export function susunBahanSkenario(paket: PaketSkenario, hariKe: number): string {
+  const baris: string[] = [`HARI KE-${hariKe} dinilai pada rencana ini.`, "FAKTA (sudah dihitung sistem):"];
+  for (const f of paket.fakta) baris.push(`- ${f}`);
+  baris.push("SKENARIO (sudah dihitung sistem, kutip angkanya apa adanya):");
+  for (const s of paket.skenario) {
+    baris.push(`[${s.id}] ${s.judul}`);
+    baris.push(`  kapan: ${s.kapan}`);
+    for (const a of s.angka) baris.push(`  angka: ${a}`);
+    baris.push(`  langkah sistem: ${s.langkah.join(" | ")}`);
+  }
+  return baris.join("\n");
 }
