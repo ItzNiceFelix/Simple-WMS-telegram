@@ -129,6 +129,37 @@ export async function totalIklanPeriode(
   return Number(r.n) > 0 ? Number(r.total) : null;
 }
 
+/**
+ * Metrik iklan per SKU untuk satu rentang tanggal.
+ *
+ * Kosong (Map tanpa isi) bila tabel `ads_produk` belum ada / belum diimpor — sengaja
+ * TIDAK melempar, karena halaman analisa harus tetap tampil walau importer belum jalan.
+ * Gaya sama dengan `totalIklanPeriode`: null/kosong berarti "belum diketahui", bukan nol.
+ */
+export async function metrikIklanPerSku(
+  db: D1Database,
+  presetId: number,
+  dari: string,
+  sampai: string
+): Promise<Map<string, { dilihat: number; klik: number; biaya: number; omzet: number }>> {
+  const peta = new Map<string, { dilihat: number; klik: number; biaya: number; omzet: number }>();
+  const r = await db
+    .prepare(
+      "SELECT sku, COALESCE(SUM(dilihat), 0) AS dilihat, COALESCE(SUM(klik), 0) AS klik, " +
+        "COALESCE(SUM(biaya), 0) AS biaya, COALESCE(SUM(omzet_iklan), 0) AS omzet " +
+        "FROM ads_produk WHERE preset_id = ? AND tanggal BETWEEN ? AND ? GROUP BY sku"
+    )
+    .bind(presetId, dari, sampai)
+    .all<{ sku: string; dilihat: number; klik: number; biaya: number; omzet: number }>()
+    .catch(() => null);
+  for (const x of r?.results ?? []) {
+    const angka = [Number(x.dilihat ?? 0), Number(x.klik ?? 0), Number(x.biaya ?? 0), Number(x.omzet ?? 0)];
+    if (!angka.every(Number.isFinite)) continue; // baris rusak dilewati, bukan meracuni seluruh tabel
+    peta.set(String(x.sku), { dilihat: angka[0], klik: angka[1], biaya: angka[2], omzet: angka[3] });
+  }
+  return peta;
+}
+
 /** Apakah ada data performa produk untuk rentang ini. */
 export async function adaPerforma(db: D1Database, presetId: number): Promise<boolean> {
   const r = await db

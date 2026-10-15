@@ -80,6 +80,18 @@ export type BarisSku = {
   hppNaik: number;
   /** Stok total lintas gudang (kecuali ONLINE) — untuk silang kontribusi vs stok. */
   stok: number | null;
+  /** Jumlah tayangan iklan (dilihat). null = data iklan SKU ini belum diimpor. */
+  dilihat: number | null;
+  /** Jumlah klik iklan. null = data iklan SKU ini belum diimpor. */
+  klik: number | null;
+  /** CTR = klik ÷ dilihat × 100 (persen). null bila dilihat 0/tidak ada — BUKAN Infinity. */
+  ctr: number | null;
+  /** CR = unit terjual dari iklan ÷ klik × 100 (persen). null bila klik 0/tidak ada. */
+  cr: number | null;
+  /** Biaya iklan SKU ini pada periode. null = belum diimpor, bukan nol. */
+  biayaIklan: number | null;
+  /** ROAS aktual = omzet iklan ÷ biaya iklan. null bila biaya 0/tidak ada — BUKAN Infinity. */
+  roasAktual: number | null;
 };
 
 /** Hasil lengkap analisa cepat. */
@@ -121,3 +133,18 @@ export type JawabanSku = {
   /** SKU yang dipilih/diketik; '' berarti "bukan produk kita". */
   sku: string;
 };
+
+/**
+ * Nilai sah untuk kedalaman analisa AI.
+ *
+ * Ditaruh di modul ini (bukan di `lib/d1/aiAnalisaSetting.ts`) karena berkas ini NOL import
+ * dan karenanya bisa dipakai komponen klien. `lib/d1/*` menarik `D1Database` yang hanya ada
+ * di Cloudflare, jadi menyalin konstanta ke klien akan membuat dua sumber kebenaran — persis
+ * kesalahan yang dulu terjadi pada tipe `BarisSku`.
+ */
+export const KEDALAMAN_SAH = ["ringkas", "sedang", "panjang"] as const;
+export type Kedalaman = (typeof KEDALAMAN_SAH)[number];
+
+/** Batas plafon token. Ini PELINDUNG, bukan target: analisa tetap boleh jauh lebih pendek. */
+export const MAKS_TOKEN_MIN = 1000;
+export const MAKS_TOKEN_MAKS = 32000;

@@ -110,7 +110,7 @@ async function cobaTeks(
   tool: unknown[] | undefined,
   ctx: Konteks,
   jenis: "teks" | "vision",
-  opsiReasoning?: { reasoning?: string; reasoningHilir?: boolean }
+  opsiReasoning?: { reasoning?: string; reasoningHilir?: boolean; maksToken?: number }
 ): Promise<Hasil<{ jawaban: JawabanChat; latencyMs: number }>> {
   const timeoutMs = jenis === "vision" ? 60000 : 30000;
   const permintaan: PermintaanChat = {
@@ -119,6 +119,7 @@ async function cobaTeks(
     tool,
     ...(opsiReasoning?.reasoning ? { reasoning: opsiReasoning.reasoning } : {}),
     ...(opsiReasoning?.reasoningHilir ? { reasoningHilir: true } : {}),
+    ...(opsiReasoning?.maksToken !== undefined ? { maksToken: opsiReasoning.maksToken } : {}),
   };
   const h =
     kandidat.provider === "gemini"
@@ -138,7 +139,7 @@ async function cobaTeks(
  */
 export async function panggilTeks(
   ctx: Konteks,
-  minta: { pesan: BagianChat[]; tool?: unknown[]; modelDiminta?: string; reasoning?: string; reasoningHilir?: boolean },
+  minta: { pesan: BagianChat[]; tool?: unknown[]; modelDiminta?: string; reasoning?: string; reasoningHilir?: boolean; maksToken?: number },
   jenis: "teks" | "vision" = "teks"
 ): Promise<
   Hasil<{
@@ -160,6 +161,7 @@ export async function panggilTeks(
     const h = await cobaTeks(k, minta.pesan, minta.tool, ctx, jenis, {
       reasoning: minta.reasoning,
       reasoningHilir: minta.reasoningHilir,
+      maksToken: minta.maksToken,
     });
     if (!h.ok) {
       catatan.push({ provider: k.provider, model: k.model, error: h.error });

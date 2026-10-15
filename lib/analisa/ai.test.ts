@@ -6,7 +6,7 @@
 // justru yang paling penting.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { susunBahan, PROMPT_SISTEM } from "./ai";
+import { susunBahan, PROMPT_SISTEM, ATURAN_KEDALAMAN, susunPesan } from "./ai";
 import { analisaCepat, type MasukanAnalisa } from "./hitung";
 import type { BarisSku, HasilAnalisa, Temuan } from "./tipe";
 
@@ -29,8 +29,18 @@ const barisUji: BarisSku[] = [
     sku: "001562", nama: "Gayung Siba", unit: 10, hppSatuan: 3712, hargaJual: 6500,
     marginSatuan: 2788, marginPersen: 42.9, kontribusi: 27880, roasImpas: 2.33,
     hppMaster: 3712, hppNaik: 0, stok: 50,
+    dilihat: null, klik: null, ctr: null, cr: null, biayaIklan: null, roasAktual: null,
   },
 ];
+
+/** Baris dengan data iklan lengkap — dipakai menguji blok KEPUTUSAN IKLAN. */
+function barisIklan(ubah: Partial<BarisSku> = {}): BarisSku {
+  return {
+    ...barisUji[0],
+    dilihat: 2000, klik: 80, ctr: 4, cr: 12.5, biayaIklan: 10000, roasAktual: 5,
+    ...ubah,
+  };
+}
 
 function hasilUji(ubah: Partial<HasilAnalisa> = {}): HasilAnalisa {
   return {
@@ -142,14 +152,15 @@ describe("susunBahan", () => {
     assert.match(b, /tidak ada temuan yang perlu ditindaklanjuti/i);
   });
 
-  it("hanya mengirim 10 SKU teratas (bahan tidak membengkak)", () => {
+  it("hanya mengirim 20 SKU teratas (bahan tidak membengkak)", () => {
     const banyak: BarisSku[] = Array.from({ length: 40 }, (_, i) => ({
       ...barisUji[0], sku: `SKU-${String(i).padStart(3, "0")}`, kontribusi: 1000 - i,
     }));
     const b = susunBahan(hasilUji({ baris: banyak }));
+    assert.match(b, /20 SKU PENYUMBANG TERBESAR:/);
     assert.match(b, /SKU-000/);
-    assert.match(b, /SKU-009/);
-    assert.doesNotMatch(b, /SKU-010/, "SKU ke-11 tidak boleh ikut");
+    assert.match(b, /SKU-019/);
+    assert.doesNotMatch(b, /SKU-020/, "SKU ke-21 tidak boleh ikut");
   });
 
   it("TIDAK memuat data mentah (tidak ada bahan untuk menghitung ulang)", () => {
@@ -157,6 +168,98 @@ describe("susunBahan", () => {
     // Tidak boleh ada JSON mentah / daftar transaksi. Bahan hanya angka hasil hitung.
     assert.doesNotMatch(b, /\{"/, "tidak ada JSON mentah");
     assert.doesNotMatch(b, /no_pesanan|rincian_json|hash_baris/);
+  });
+});
+
+describe("susunBahan — blok KEPUTUSAN IKLAN", () => {
+  it("muncul saat ada data iklan, memuat angka + keputusan + alasan", () => {
+    const b = susunBahan(hasilUji({ baris: [barisIklan()] }));
+    assert.match(b, /KEPUTUSAN IKLAN/);
+    assert.match(b, /dilihat 2000/);
+    assert.match(b, /klik 80/);
+    assert.match(b, /CTR 4%/);
+    assert.match(b, /CR 12\.5%/);
+    assert.match(b, /ROAS aktual 5/);
+    assert.match(b, /ROAS impas 2\.33/);
+    // ROAS 5 ≥ impas 2,33 dan CTR 4% ≥ ambang → naikkan.
+    assert.match(b, /keputusan naikkan/);
+    assert.match(b, /alasan:/);
+  });
+
+  it("TIDAK muncul saat data iklan kosong (jangan bahas iklan dari ketiadaan data)", () => {
+    const b = susunBahan(hasilUji({ baris: [barisUji[0]] }));
+    assert.doesNotMatch(b, /KEPUTUSAN IKLAN/);
+    assert.doesNotMatch(b, /keputusan naikkan|keputusan hentikan/);
+  });
+
+  it("ROAS aktual di bawah titik impas -> keputusan hentikan", () => {
+    const b = susunBahan(hasilUji({ baris: [barisIklan({ roasAktual: 1.2 })] }));
+    assert.match(b, /keputusan hentikan/);
+  });
+
+  it("tayangan di bawah ambang -> belum_cukup_data, bukan tebakan", () => {
+    const b = susunBahan(hasilUji({ baris: [barisIklan({ dilihat: 50, klik: 2, ctr: 4 })] }));
+    assert.match(b, /keputusan belum_cukup_data/);
+  });
+});
+
+describe("kedalaman mengubah INSTRUKSI, bukan pemotongan bahan", () => {
+  it("ringkas menyebut maksimum 3 temuan", () => {
+    assert.match(ATURAN_KEDALAMAN.ringkas, /maksimum 3 temuan/);
+  });
+
+  it("sedang menyebut maksimum 5 temuan", () => {
+    assert.match(ATURAN_KEDALAMAN.sedang, /maksimum 5 temuan/);
+  });
+
+  it("panjang tidak menyebut batas jumlah temuan", () => {
+    assert.match(ATURAN_KEDALAMAN.panjang, /tidak ada batas jumlah temuan/i);
+    assert.match(ATURAN_KEDALAMAN.panjang, /menjelaskan per produk/i);
+    assert.doesNotMatch(ATURAN_KEDALAMAN.panjang, /maksimum \d+ temuan/i);
+  });
+
+  it("ketiganya tetap mewajibkan angka", () => {
+    for (const k of ["ringkas", "sedang", "panjang"] as const) {
+      assert.match(ATURAN_KEDALAMAN[k], /angka/i, `kedalaman ${k} wajib menyebut angka`);
+    }
+  });
+
+  it("bahan yang sama dikirim untuk semua kedalaman (instruksi, bukan pemotongan)", () => {
+    const h = hasilUji({ baris: [barisIklan()] });
+    const bahan = susunBahan(h);
+    const ringkas = susunPesan(bahan, "ringkas");
+    const panjang = susunPesan(bahan, "panjang");
+    assert.ok(ringkas.teks.includes(bahan) && panjang.teks.includes(bahan));
+    assert.notEqual(ringkas.teks, panjang.teks, "instruksinya berbeda");
+  });
+});
+
+describe("PROMPT_SISTEM — aturan rekomendasi (riset praktik instruksi model)", () => {
+  it("mewajibkan angka pemicu untuk setiap rekomendasi", () => {
+    assert.match(PROMPT_SISTEM, /angka pemicu/i);
+    assert.match(PROMPT_SISTEM, /harus dicabut/i);
+  });
+
+  it("melarang frasa lindung saat memberi rekomendasi", () => {
+    assert.match(PROMPT_SISTEM, /frasa lindung/i);
+    for (const frasa of ["tergantung", "perlu dipertimbangkan", "bisa jadi", "salah satu opsi"]) {
+      assert.ok(PROMPT_SISTEM.includes(frasa), `frasa "${frasa}" harus dilarang`);
+    }
+    assert.match(PROMPT_SISTEM, /datanya kurang/i);
+  });
+
+  it("TIDAK lagi memaku angka 5 temuan di prompt (batas ikut kedalaman)", () => {
+    assert.doesNotMatch(PROMPT_SISTEM, /Paling banyak 5 temuan/);
+  });
+
+  it("mempertahankan aturan lama: arah temuan tidak boleh dibalik", () => {
+    assert.match(PROMPT_SISTEM, /JANGAN membalik arah temuan/);
+  });
+
+  it("struktur pesan: bahan dulu, instruksi di akhir", () => {
+    const bahan = susunBahan(hasilUji());
+    const teks = susunPesan(bahan, "sedang").teks;
+    assert.ok(teks.indexOf(bahan) < teks.indexOf(ATURAN_KEDALAMAN.sedang));
   });
 });
 

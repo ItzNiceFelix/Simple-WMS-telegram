@@ -36,15 +36,6 @@ export type AiSettings = {
   rateLimitPerMenit: number;
   geminiTimeoutMs: number;
   totalTimeoutMs: number;
-  /**
-   * Tingkat reasoning untuk ANALISA MENDALAM (model penalaran kalau angkanya harus
-   * ditafsirkan hati-hati). Kosong = pakai default model — jangan kirim parameter
-   * reasoning sama sekali, biar provider yang memutuskan.
-   * Nilai sah mengikuti daftar per model di `ai_model.reasoning_pilihan`
-   * (mis. 'minimal' | 'low' | 'medium' | 'high'). Diatur GLOBAL di halaman AI,
-   * bukan dipaku di kode fitur, supaya bisa diganti tanpa deploy.
-   */
-  reasoningAnalisa: string;
 };
 
 /** Nilai default — dipakai sebagai dasar sebelum DB menimpa. */
@@ -65,7 +56,6 @@ export function dasarPengaturan(env: EnvAi = {}): AiSettings {
     rateLimitPerMenit: 20,
     geminiTimeoutMs: Number(env.GEMINI_TIMEOUT_MS) > 0 ? Number(env.GEMINI_TIMEOUT_MS) : 120000,
     totalTimeoutMs: Number(env.GEMINI_TOTAL_TIMEOUT_MS) > 0 ? Number(env.GEMINI_TOTAL_TIMEOUT_MS) : 240000,
-    reasoningAnalisa: "",
   };
 }
 
@@ -98,6 +88,10 @@ export async function ambilPengaturanAI(db: D1Database, env: EnvAi = {}): Promis
   if (!row) return dasar;
   try {
     const data = JSON.parse(row.value) as Partial<AiSettings>;
+    // Field di JSON yang tak dikenal tipe di atas DIBUANG begitu saja (fungsi ini hanya
+    // membaca field yang dikenal, lalu menuliskannya ulang). Ini disengaja: baris DB lama
+    // yang masih menyimpan `reasoningAnalisa` (kini setting per user di ai_analisa_setting)
+    // diabaikan tanpa migrasi data.
     const tp = String(data.textProvider || dasar.textProvider).toLowerCase();
     const ip = String(data.imageProvider || dasar.imageProvider).toLowerCase();
     const angka = (v: unknown, fallback: number, min: number, maks: number): number => {
@@ -119,27 +113,10 @@ export async function ambilPengaturanAI(db: D1Database, env: EnvAi = {}): Promis
       rateLimitPerMenit: angka(data.rateLimitPerMenit, dasar.rateLimitPerMenit, 1, 300),
       geminiTimeoutMs: Number(data.geminiTimeoutMs) > 0 ? Number(data.geminiTimeoutMs) : dasar.geminiTimeoutMs,
       totalTimeoutMs: Number(data.totalTimeoutMs) > 0 ? Number(data.totalTimeoutMs) : dasar.totalTimeoutMs,
-      // Tingkat reasoning analisa: nilai bebas tapi dibatasi daftar yang dikenal provider.
-      // Kosong = jangan kirim parameter reasoning sama sekali (biar default provider).
-      reasoningAnalisa: bersihkanReasoning(data.reasoningAnalisa),
     };
   } catch {
     return dasar;
   }
-}
-
-/** Tingkat reasoning yang dikenal lintas provider (gabungan skema di lib/ai/reasoning.ts). */
-const REASONING_VALID = ["minimal", "low", "medium", "high"] as const;
-
-/**
- * Bersihkan nilai reasoning: kosong = biarkan kosong (default provider).
- * Nilai tak dikenal DIBUANG jadi kosong, bukan diteruskan — mengirim nilai asing
- * membuat provider menolak permintaan dengan 400, dan itu lebih buruk daripada
- * memakai default.
- */
-function bersihkanReasoning(v: unknown): string {
-  const t = String(v ?? "").trim().toLowerCase();
-  return (REASONING_VALID as readonly string[]).includes(t) ? t : "";
 }
 
 /** Tulis utuh: dipakai UI pengaturan (banyak field sekaligus). */
@@ -172,7 +149,6 @@ export async function simpanPengaturanAI(
     rateLimitPerMenit: Math.max(1, Math.min(300, Math.floor(Number(gabung.rateLimitPerMenit) || kini.rateLimitPerMenit))),
     geminiTimeoutMs: Number(gabung.geminiTimeoutMs) > 0 ? Number(gabung.geminiTimeoutMs) : kini.geminiTimeoutMs,
     totalTimeoutMs: Number(gabung.totalTimeoutMs) > 0 ? Number(gabung.totalTimeoutMs) : kini.totalTimeoutMs,
-    reasoningAnalisa: bersihkanReasoning(gabung.reasoningAnalisa),
   };
   await db
     .prepare("INSERT INTO settings (key, value) VALUES ('ai', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")

@@ -24,6 +24,22 @@ export const AMBANG_KONSENTRASI = 60;
 /** Bila selisih median vs rata-rata margin melebihi ini (poin persen), ada outlier ekstrem. */
 export const AMBANG_OUTLIER = 10;
 
+// ── Ambang iklan ─────────────────────────────────────────────────────────────
+// PRAKTIK UMUM pemasaran marketplace, BUKAN aturan resmi Shopee. Tidak ada dokumen
+// Shopee yang menetapkan angka-angka ini; dipakai hanya sebagai pemicu "layak ditinjau",
+// bukan vonis. Kalau toko punya angka sendiri dari pengalaman, ganti di sini.
+
+/** CTR (%) PRAKTIK UMUM, bukan aturan resmi Shopee. Di bawah ini iklan dianggap tidak menarik klik. */
+export const AMBANG_CTR_SEHAT = 1.5;
+
+/**
+ * Jumlah tayangan minimum PRAKTIK UMUM, bukan aturan resmi Shopee —
+ * di bawah ini sampelnya terlalu kecil untuk dinilai.
+ * Shopee sendiri menganjurkan menunggu ±2 minggu sebelum menilai hasil iklan,
+ * karena CTR/ROAS beberapa hari pertama belum mewakili.
+ */
+export const AMBANG_DILIHAT_MIN = 1000;
+
 /** Masukan analisa — semuanya eksplisit, tidak ada yang diambil diam-diam dari DB. */
 export type MasukanAnalisa = {
   presetId: number;
@@ -46,6 +62,11 @@ export type MasukanAnalisa = {
   stok: Map<string, number> | null;
   /** Biaya iklan periode ini. null = BELUM ADA data iklan (bukan nol). */
   biayaIklan: number | null;
+  /**
+   * Metrik iklan per SKU untuk periode ini; kosong bila belum diimpor.
+   * Kunci = SKU. Isi: dilihat/klik/biaya/omzet dari `ads_produk` (agregat rentang).
+   */
+  iklanPerSku?: Map<string, { dilihat: number; klik: number; biaya: number; omzet: number }>;
   /** Jumlah snapshot tersedia — menentukan apakah tren bisa dihitung. */
   jmlSnapshot: number;
   /** Apakah ada data performa produk (kunjungan/konversi) untuk periode ini. */
@@ -78,6 +99,12 @@ export function roasImpas(hargaJual: number, marginSatuan: number): number | nul
 export function bangunBaris(m: MasukanAnalisa): BarisSku[] {
   return m.snapshot.rincian.map((r) => {
     const hppMaster = m.hppMaster.get(r.sku) ?? null;
+    const iklan = m.iklanPerSku?.get(r.sku) ?? null;
+    // Pembagi nol → null, BUKAN Infinity/NaN. Angka tak terhingga yang lolos ke UI
+    // akan tampil sebagai "∞%" dan merusak kepercayaan pada seluruh halaman.
+    const ctr = iklan && iklan.dilihat > 0 ? bulat2((iklan.klik / iklan.dilihat) * 100) : null;
+    const cr = iklan && iklan.klik > 0 ? bulat2((r.unit / iklan.klik) * 100) : null;
+    const roasAktual = iklan && iklan.biaya > 0 ? bulat2(iklan.omzet / iklan.biaya) : null;
     return {
       sku: r.sku,
       nama: r.nama,
@@ -92,8 +119,67 @@ export function bangunBaris(m: MasukanAnalisa): BarisSku[] {
       // HPP naik SETELAH snapshot dibuat = margin sebenarnya kini lebih jelek.
       hppNaik: hppMaster !== null && hppMaster > r.hppSatuan ? hppMaster - r.hppSatuan : 0,
       stok: m.stok ? (m.stok.get(r.sku) ?? 0) : null,
+      dilihat: iklan ? iklan.dilihat : null,
+      klik: iklan ? iklan.klik : null,
+      ctr,
+      cr,
+      biayaIklan: iklan ? iklan.biaya : null,
+      roasAktual,
     };
   });
+}
+
+/** Bulatkan ke 2 desimal; satu tempat supaya UI, AI, dan uji memakai angka yang sama. */
+function bulat2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+/** Keputusan yang disarankan untuk satu SKU yang diiklankan. */
+export type KeputusanIklan = "naikkan" | "hentikan" | "tahan" | "belum_cukup_data";
+
+/**
+ * Putuskan tindakan iklan untuk satu SKU. FUNGSI MURNI — tanpa I/O, supaya bisa diuji.
+ *
+ * Dipisah dari AI dengan sengaja: keputusan "naikkan/hentikan" menyangkut uang nyata,
+ * jadi harus berasal dari aturan terbaca, bukan dari kalimat model bahasa.
+ */
+export function keputusanIklan(b: BarisSku): { keputusan: KeputusanIklan; alasan: string } {
+  // 1. Sampel terlalu kecil → jangan menilai. Menyimpulkan dari 50 tayangan sama saja menebak.
+  if (b.dilihat === null || b.dilihat < AMBANG_DILIHAT_MIN) {
+    const angka = b.dilihat === null ? "belum ada data tayangan" : `baru ${b.dilihat} tayangan`;
+    return {
+      keputusan: "belum_cukup_data",
+      alasan: `Belum bisa dinilai: ${angka}, di bawah batas ${AMBANG_DILIHAT_MIN} tayangan (praktik umum, bukan aturan resmi Shopee).`,
+    };
+  }
+
+  // 2. ROAS aktual di bawah titik impas → setiap rupiah iklan berubah jadi kerugian.
+  if (b.roasAktual !== null && b.roasImpas !== null && b.roasAktual < b.roasImpas) {
+    return {
+      keputusan: "hentikan",
+      alasan: `Hentikan: ROAS aktual ${b.roasAktual} di bawah titik impas ${b.roasImpas} — iklan menghasilkan lebih sedikit daripada yang dikeluarkan.`,
+    };
+  }
+
+  // 3. CTR sehat DAN sudah melewati titik impas → layak didorong lebih besar.
+  if (
+    b.ctr !== null && b.ctr >= AMBANG_CTR_SEHAT &&
+    b.roasAktual !== null && b.roasImpas !== null && b.roasAktual >= b.roasImpas
+  ) {
+    return {
+      keputusan: "naikkan",
+      alasan: `Naikkan: CTR ${b.ctr}% sudah di atas ambang ${AMBANG_CTR_SEHAT}% dan ROAS aktual ${b.roasAktual} sudah melewati titik impas ${b.roasImpas}.`,
+    };
+  }
+
+  // 4. Selain itu: data ada tapi belum meyakinkan ke salah satu arah.
+  const bagian: string[] = [];
+  if (b.ctr !== null) bagian.push(`CTR ${b.ctr}%`);
+  if (b.roasAktual !== null && b.roasImpas !== null) bagian.push(`ROAS aktual ${b.roasAktual} vs titik impas ${b.roasImpas}`);
+  return {
+    keputusan: "tahan",
+    alasan: `Tahan dulu: ${bagian.length > 0 ? bagian.join(", ") : "metrik iklan belum meyakinkan"} — belum cukup kuat untuk menaikkan maupun menghentikan.`,
+  };
 }
 
 /** Ringkasan angka utama. */

@@ -9,7 +9,7 @@
 // Analisa cepat langsung tampil tanpa tombol dan tanpa AI — angka benar harus selalu
 // bisa didapat tanpa menunggu model dan tanpa biaya token.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChartNoAxesCombined, Info, Megaphone, Sparkles, TriangleAlert } from "lucide-react";
+import { ChartNoAxesCombined, Info, Megaphone, SlidersHorizontal, Sparkles, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/dashboard/page-header";
@@ -32,45 +32,19 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { AnalisaSettingAi } from "@/components/dashboard/analisa-setting-ai";
 import { formatAngka, formatRupiah } from "@/lib/dashboard/format";
+import { keputusanIklan, type KeputusanIklan } from "@/lib/analisa/hitung";
+import type { BarisSku, RingkasanAnalisa, Temuan } from "@/lib/analisa/tipe";
 
 // ── Bentuk data dari server (app/api/analisa) ──
-type Temuan = {
-  kode: string;
-  keparahan: "kritis" | "peringatan" | "catatan";
-  judul: string;
-  penjelasan: string;
-  angka: { nilai: number; satuan: "rupiah" | "jumlah" | "persen" | "rasio"; jumlahTerkena: number; dariTotal?: number };
-  contohSku: { sku: string; nama: string | null; nilai: number }[];
-  dataKurang?: string[];
-};
-
-type BarisSku = {
-  sku: string;
-  nama: string | null;
-  unit: number;
-  hppSatuan: number;
-  hargaJual: number;
-  marginSatuan: number;
-  marginPersen: number;
-  kontribusi: number;
-  roasImpas: number | null;
-  hppMaster: number | null;
-  hppNaik: number;
-  stok: number | null;
-};
-
-type Ringkasan = {
-  periode: string; presetId: number; jmlSku: number; jmlOrder: number;
-  omzet: number; hpp: number; biaya: number; pajak: number; laba: number;
-  marginPersen: number; marginSatuanRata: number; marginPersenMedian: number;
-  kontribusi10Teratas: number; persen10Teratas: number;
-};
-
+// Temuan/BarisSku/Ringkasan WAJIB diimpor, bukan dideklarasikan ulang di sini: tipe lokal
+// yang mirip akan lepas sinkron saat kolom server bertambah, dan kolom baru itu hilang
+// tanpa satu pun error. Sudah pernah terjadi (dilihat/klik/ctr/cr/roasAktual).
 type Hasil = {
   ok: boolean;
   error?: string;
-  ringkasan: Ringkasan;
+  ringkasan: RingkasanAnalisa;
   temuan: Temuan[];
   baris: BarisSku[];
   kurang: string[];
@@ -107,6 +81,36 @@ function angkaTemuan(t: Temuan): string {
   return formatAngka(t.angka.nilai);
 }
 
+/**
+ * Metrik iklan null → "—", BUKAN 0.
+ * Bedanya penting: 0 = terukur nol (mis. 0 klik dari 5.000 tayangan), null = belum ada
+ * datanya sama sekali. Menampilkan 0 untuk null membuat pembaca menyimpulkan hal yang
+ * tidak pernah terukur.
+ */
+function metrik(nilai: number | null, satuan: "" | "%" | "×" = ""): string {
+  if (nilai === null) return "—";
+  return satuan === "×" ? `${nilai}×` : `${nilai}${satuan}`;
+}
+
+/** Label ringkas tiap keputusan iklan. Dipakai kolom tabel dan pengelompokan tab iklan. */
+const LABEL_KEPUTUSAN: Record<KeputusanIklan, string> = {
+  naikkan: "Naikkan",
+  hentikan: "Hentikan",
+  tahan: "Tahan",
+  belum_cukup_data: "Belum cukup data",
+};
+
+/** Warna label keputusan; selaras dengan artinya (hijau = aman, merah = rugi). */
+const KELAS_KEPUTUSAN: Record<KeputusanIklan, string> = {
+  naikkan: "text-emerald-700 dark:text-emerald-400",
+  hentikan: "text-red-700 dark:text-red-400",
+  tahan: "text-amber-700 dark:text-amber-400",
+  belum_cukup_data: "text-muted-foreground",
+};
+
+/** Urutan tampil kelompok keputusan: yang butuh tindakan lebih dulu. */
+const URUTAN_KEPUTUSAN: KeputusanIklan[] = ["hentikan", "naikkan", "tahan", "belum_cukup_data"];
+
 export default function HalamanAnalisa() {
   return (
     <ButuhAkses href="/analisa">
@@ -128,6 +132,7 @@ function Analisa() {
   const berkasIklanRef = useRef<HTMLInputElement>(null);
   const [memuat, setMemuat] = useState(true);
   const [memuatIklan, setMemuatIklan] = useState(false);
+  const [bukaSetting, setBukaSetting] = useState(false);
 
   // Muat daftar preset + tanggal snapshot yang tersedia.
   useEffect(() => {
@@ -313,8 +318,21 @@ function Analisa() {
                 {tanggalAda.length} periode tersedia — pilih tanggal lain untuk membandingkan.
               </p>
             ) : null}
+            <Button
+              variant="outline"
+              className="h-11 md:h-8"
+              onClick={() => setBukaSetting(true)}
+              data-testid="buka-setting-ai"
+            >
+              <SlidersHorizontal className="size-4" aria-hidden />
+              Pengaturan AI
+            </Button>
           </CardContent>
         </Card>
+
+        {/* Setting reasoning/kedalaman/plafon token MILIK USER INI (per akun, bukan global).
+            Endpoint-nya terbuka untuk user biasa — semua user boleh atur reasoning-nya sendiri. */}
+        <AnalisaSettingAi open={bukaSetting} onOpenChange={setBukaSetting} />
 
         {memuat ? (
           <Skeleton className="h-64 w-full rounded-xl" data-testid="memuat-analisa" />
@@ -506,6 +524,12 @@ function Analisa() {
                           <TableHead className="text-right">%</TableHead>
                           <TableHead className="text-right">Kontribusi</TableHead>
                           <TableHead className="text-right">ROAS impas</TableHead>
+                          <TableHead className="text-right">Dilihat</TableHead>
+                          <TableHead className="text-right">Klik</TableHead>
+                          <TableHead className="text-right">CTR</TableHead>
+                          <TableHead className="text-right">CR</TableHead>
+                          <TableHead className="text-right">ROAS aktual</TableHead>
+                          <TableHead>Keputusan iklan</TableHead>
                         </TableRow>
                       </TableHeader>
                       <TableBody>
@@ -533,6 +557,16 @@ function Analisa() {
                               <TableCell className="text-right tabular-nums">{formatRupiah(b.kontribusi)}</TableCell>
                               <TableCell className="text-right tabular-nums">
                                 {b.roasImpas === null ? "—" : b.roasImpas}
+                              </TableCell>
+                              <TableCell className="text-right tabular-nums">{metrik(b.dilihat)}</TableCell>
+                              <TableCell className="text-right tabular-nums">{metrik(b.klik)}</TableCell>
+                              <TableCell className="text-right tabular-nums">{metrik(b.ctr, "%")}</TableCell>
+                              <TableCell className="text-right tabular-nums">{metrik(b.cr, "%")}</TableCell>
+                              <TableCell className="text-right tabular-nums">{metrik(b.roasAktual, "×")}</TableCell>
+                              {/* Alasan lengkap (berisi angka) ada di title — tabel jadi ringkas
+                                  tapi pemeriksaan tetap mungkin tanpa pindah halaman. */}
+                              <TableCell className={`whitespace-nowrap font-medium ${KELAS_KEPUTUSAN[keputusanIklan(b).keputusan]}`}>
+                                <span title={keputusanIklan(b).alasan}>{LABEL_KEPUTUSAN[keputusanIklan(b).keputusan]}</span>
                               </TableCell>
                             </TableRow>
                           );
@@ -607,6 +641,25 @@ function Analisa() {
                       </AlertDescription>
                     </Alert>
                   ) : null}
+
+                  {/* Peringatan berbasis riset: angka iklan marketplace gampang disalahartikan. */}
+                  <Alert data-testid="peringatan-metrik-menyesatkan">
+                    <TriangleAlert aria-hidden />
+                    <AlertTitle>Cara membaca angka iklan ini</AlertTitle>
+                    <AlertDescription>
+                      <ul className="list-disc pl-4">
+                        <li>CTR tinggi tanpa pesanan = masalah di halaman produk, bukan iklannya.</li>
+                        <li>ROAS tinggi dari sedikit pesanan bisa berarti anggaran terlalu kecil.</li>
+                        <li>
+                          Angka iklan Shopee menghitung pembelian sampai 7 hari setelah klik, jadi
+                          pembelian yang sudah direncanakan pun terhitung.
+                        </li>
+                        <li>Ambang di sini PRAKTIK UMUM, bukan aturan resmi Shopee.</li>
+                      </ul>
+                    </AlertDescription>
+                  </Alert>
+
+                  <KelompokKeputusan baris={hasil.baris} />
 
                   <Card>
                     <CardHeader>
@@ -704,5 +757,86 @@ function KotakAngka({ label, nilai, catatan }: { label: string; nilai: string; c
       <p className="font-heading text-lg font-semibold tabular-nums">{nilai}</p>
       <p className="text-[11px] text-muted-foreground">{catatan}</p>
     </div>
+  );
+}
+
+/**
+ * Tabel Keputusan: kelompokkan SETIAP SKU per keputusan `keputusanIklan`.
+ *
+ * Kenapa mengelompok, bukan satu tabel panjang: pertanyaan pemilik toko bukan "SKU X
+ * apa keputusannya" melainkan "mana yang harus saya hentikan hari ini". Kelompok
+ * memaksa jawabannya terbaca sekali lihat.
+ *
+ * Sumbernya `baris` (semua SKU), BUKAN `iklan.aman`/`iklan.jangan` — dua daftar itu
+ * disaring dari margin saja dan tidak memuat keputusan iklan.
+ */
+function KelompokKeputusan({ baris }: { baris: BarisSku[] }) {
+  const kelompok = URUTAN_KEPUTUSAN.map((k) => ({
+    keputusan: k,
+    sku: baris.filter((b) => keputusanIklan(b).keputusan === k),
+  })).filter((g) => g.sku.length > 0);
+
+  if (kelompok.length === 0) {
+    return (
+      <Card data-testid="tabel-keputusan-iklan">
+        <CardContent className="pt-6 text-sm text-muted-foreground">
+          Tidak ada SKU untuk dinilai pada periode ini.
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card data-testid="tabel-keputusan-iklan">
+      <CardHeader>
+        <CardTitle className="text-base">Keputusan per SKU</CardTitle>
+        <CardDescription>
+          Setiap SKU dikelompokkan menurut aturan <code>keputusanIklan</code>. Arahkan kursor ke
+          keputusan untuk melihat alasan lengkap beserta angkanya.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        {kelompok.map((g) => (
+          <div key={g.keputusan} className="flex flex-col gap-2">
+            <div className="flex items-center gap-2">
+              <span className={`font-medium ${KELAS_KEPUTUSAN[g.keputusan]}`} data-testid={`keputusan-${g.keputusan}`}>
+                {LABEL_KEPUTUSAN[g.keputusan]}
+              </span>
+              <Badge variant="secondary">{g.sku.length} SKU</Badge>
+            </div>
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead className="w-[110px]">SKU</TableHead>
+                    <TableHead>Produk</TableHead>
+                    <TableHead className="text-right">Dilihat</TableHead>
+                    <TableHead className="text-right">Klik</TableHead>
+                    <TableHead className="text-right">CTR</TableHead>
+                    <TableHead className="text-right">ROAS aktual</TableHead>
+                    <TableHead className="text-right">ROAS impas</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {g.sku.slice(0, 25).map((b) => (
+                    <TableRow key={b.sku}>
+                      <TableCell className="font-mono text-xs">{b.sku}</TableCell>
+                      <TableCell className="max-w-[240px] truncate">{b.nama ?? "—"}</TableCell>
+                      <TableCell className="text-right tabular-nums">{metrik(b.dilihat)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{metrik(b.klik)}</TableCell>
+                      <TableCell className="text-right tabular-nums">{metrik(b.ctr, "%")}</TableCell>
+                      <TableCell className="text-right tabular-nums">{metrik(b.roasAktual, "×")}</TableCell>
+                      <TableCell className="text-right tabular-nums">
+                        {b.roasImpas === null ? "—" : b.roasImpas}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          </div>
+        ))}
+      </CardContent>
+    </Card>
   );
 }

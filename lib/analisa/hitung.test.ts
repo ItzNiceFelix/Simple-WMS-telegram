@@ -4,8 +4,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
-  analisaCepat, bangunBaris, buatRingkasan, median, roasImpas,
-  urutSaranIklan, janganDiiklankan, AMBANG_MARGIN_TIPIS,
+  analisaCepat, bangunBaris, buatRingkasan, keputusanIklan, median, roasImpas,
+  urutSaranIklan, janganDiiklankan, AMBANG_CTR_SEHAT, AMBANG_DILIHAT_MIN, AMBANG_MARGIN_TIPIS,
   type MasukanAnalisa,
 } from "./hitung";
 import type { BarisSku } from "./tipe";
@@ -212,10 +212,11 @@ describe("stok (bila tersedia)", () => {
 });
 
 describe("saran iklan", () => {
+  const iklanKosong = { dilihat: null, klik: null, ctr: null, cr: null, biayaIklan: null, roasAktual: null };
   const barisUji: BarisSku[] = [
-    { sku: "A", nama: "A", unit: 1, hppSatuan: 8000, hargaJual: 10000, marginSatuan: 2000, marginPersen: 20, kontribusi: 2000, roasImpas: 5, hppMaster: 8000, hppNaik: 0, stok: 5 },
-    { sku: "B", nama: "B", unit: 1, hppSatuan: 9000, hargaJual: 10000, marginSatuan: 1000, marginPersen: 10, kontribusi: 1000, roasImpas: 10, hppMaster: 9000, hppNaik: 0, stok: 5 },
-    { sku: "C", nama: "C", unit: 1, hppSatuan: 11000, hargaJual: 10000, marginSatuan: -1000, marginPersen: -10, kontribusi: -1000, roasImpas: null, hppMaster: 11000, hppNaik: 0, stok: 5 },
+    { sku: "A", nama: "A", unit: 1, hppSatuan: 8000, hargaJual: 10000, marginSatuan: 2000, marginPersen: 20, kontribusi: 2000, roasImpas: 5, hppMaster: 8000, hppNaik: 0, stok: 5, ...iklanKosong },
+    { sku: "B", nama: "B", unit: 1, hppSatuan: 9000, hargaJual: 10000, marginSatuan: 1000, marginPersen: 10, kontribusi: 1000, roasImpas: 10, hppMaster: 9000, hppNaik: 0, stok: 5, ...iklanKosong },
+    { sku: "C", nama: "C", unit: 1, hppSatuan: 11000, hargaJual: 10000, marginSatuan: -1000, marginPersen: -10, kontribusi: -1000, roasImpas: null, hppMaster: 11000, hppNaik: 0, stok: 5, ...iklanKosong },
   ];
 
   it("diurutkan ROAS impas terendah = paling aman diiklankan", () => {
@@ -260,3 +261,131 @@ describe("buatRingkasan", () => {
     assert.equal(h.marginPersenMedian, Math.round(median(baris.map((b) => b.marginPersen)) * 10) / 10);
   });
 });
+
+describe("metrik iklan per SKU (Dilihat → Klik → CTR → CR)", () => {
+  async function barisDenganIklan(
+    iklan: { dilihat: number; klik: number; biaya: number; omzet: number },
+    ubahUnit?: number
+  ): Promise<BarisSku> {
+    const fx = await muatFixture();
+    const r0 = fx.rincian[0];
+    const rincian = [{ ...r0, unit: ubahUnit ?? r0.unit }];
+    const m = masukan(fx, { snapshot: { ...masukan(fx).snapshot, rincian }, iklanPerSku: new Map([[r0.sku, iklan]]) });
+    return bangunBaris(m)[0];
+  }
+
+  it("tanpa data iklan: SEMUA field iklan null (bukan nol)", async () => {
+    const fx = await muatFixture();
+    const b = bangunBaris(masukan(fx))[0];
+    assert.equal(b.dilihat, null);
+    assert.equal(b.klik, null);
+    assert.equal(b.ctr, null);
+    assert.equal(b.cr, null);
+    assert.equal(b.biayaIklan, null);
+    assert.equal(b.roasAktual, null);
+  });
+
+  it("CTR = klik / dilihat * 100", async () => {
+    const b = await barisDenganIklan({ dilihat: 1000, klik: 20, biaya: 50000, omzet: 200000 });
+    assert.equal(b.ctr, 2);
+    assert.ok(Number.isFinite(b.ctr));
+  });
+
+  it("dilihat 0 -> CTR null, BUKAN Infinity", async () => {
+    const b = await barisDenganIklan({ dilihat: 0, klik: 5, biaya: 1000, omzet: 0 });
+    assert.equal(b.ctr, null, "pembagi nol tidak boleh menghasilkan Infinity");
+  });
+
+  it("klik 0 -> CR null, BUKAN Infinity", async () => {
+    const b = await barisDenganIklan({ dilihat: 5000, klik: 0, biaya: 1000, omzet: 0 }, 3);
+    assert.equal(b.cr, null, "pembagi nol tidak boleh menghasilkan Infinity");
+    assert.equal(b.ctr, 0, "klik 0 dari dilihat > 0 tetap 0%, bukan null");
+  });
+
+  it("biaya 0 -> ROAS aktual null, BUKAN Infinity", async () => {
+    const b = await barisDenganIklan({ dilihat: 5000, klik: 100, biaya: 0, omzet: 300000 });
+    assert.equal(b.roasAktual, null, "tanpa biaya tidak ada ROAS");
+  });
+
+  it("CR = unit / klik * 100, ROAS aktual = omzet / biaya", async () => {
+    const b = await barisDenganIklan({ dilihat: 1000, klik: 50, biaya: 20000, omzet: 100000 }, 5);
+    assert.equal(b.cr, 10);
+    assert.equal(b.roasAktual, 5);
+  });
+
+  it("tidak ada angka tak terhingga yang lolos ke UI", async () => {
+    const fx = await muatFixture();
+    const m = masukan(fx, {
+      iklanPerSku: new Map([
+        ["palsu-1", { dilihat: 0, klik: 0, biaya: 0, omzet: 0 }],
+        [fx.rincian[0].sku, { dilihat: 0, klik: 0, biaya: 0, omzet: 0 }],
+      ]),
+    });
+    for (const b of bangunBaris(m)) {
+      for (const v of [b.ctr, b.cr, b.roasAktual, b.dilihat, b.klik, b.biayaIklan]) {
+        assert.ok(v === null || Number.isFinite(v), `${b.sku}: nilai ${String(v)} harus null atau terhingga`);
+      }
+    }
+  });
+});
+
+describe("keputusanIklan", () => {
+  const dasar: BarisSku = {
+    sku: "X", nama: "X", unit: 20, hppSatuan: 8000, hargaJual: 10000, marginSatuan: 2000,
+    marginPersen: 20, kontribusi: 40000, roasImpas: 5, hppMaster: 8000, hppNaik: 0, stok: 10,
+    dilihat: 5000, klik: 100, ctr: 2, cr: 20, biayaIklan: 20000, roasAktual: 10,
+  };
+
+  it("belum_cukup_data: dilihat null", () => {
+    const h = keputusanIklan({ ...dasar, dilihat: null, ctr: null });
+    assert.equal(h.keputusan, "belum_cukup_data");
+    assert.match(h.alasan, /tayangan/i);
+  });
+
+  it("belum_cukup_data: dilihat di bawah ambang, alasan MENYEBUT angkanya", () => {
+    const h = keputusanIklan({ ...dasar, dilihat: AMBANG_DILIHAT_MIN - 1, ctr: 9, roasAktual: 99 });
+    assert.equal(h.keputusan, "belum_cukup_data");
+    assert.match(h.alasan, new RegExp(String(AMBANG_DILIHAT_MIN - 1)));
+    assert.match(h.alasan, /bukan aturan resmi Shopee/);
+  });
+
+  it("hentikan: ROAS aktual di bawah titik impas, alasan menyebut kedua angka", () => {
+    const h = keputusanIklan({ ...dasar, roasAktual: 3, roasImpas: 5, ctr: 5 });
+    assert.equal(h.keputusan, "hentikan");
+    assert.match(h.alasan, /3/);
+    assert.match(h.alasan, /5/);
+  });
+
+  it("naikkan: CTR sehat DAN ROAS aktual >= impas, alasan menyebut CTR", () => {
+    const h = keputusanIklan({ ...dasar, ctr: AMBANG_CTR_SEHAT + 0.5, roasAktual: 8, roasImpas: 5 });
+    assert.equal(h.keputusan, "naikkan");
+    assert.match(h.alasan, new RegExp(String(AMBANG_CTR_SEHAT + 0.5)));
+  });
+
+  it("tahan: CTR sehat tapi ROAS di bawah impas TIDAK dihentikan (menunggu data)", () => {
+    // ctr >= ambang tapi roasAktual < roasImpas → tetap "hentikan" (aturan menang).
+    // "tahan" hanya untuk yang tidak memenuhi syarat naikkan maupun hentikan.
+    const h = keputusanIklan({ ...dasar, ctr: 0.4, roasAktual: 20, roasImpas: 5 });
+    assert.equal(h.keputusan, "tahan");
+    assert.match(h.alasan, /Tahan/i);
+  });
+
+  it("tahan: CTR rendah dan ROAS impas terpenuhi, tapi belum layak dinaikkan", () => {
+    const h = keputusanIklan({ ...dasar, ctr: 0.5, roasAktual: 6, roasImpas: 5 });
+    assert.equal(h.keputusan, "tahan");
+    assert.match(h.alasan, /0\.5/);
+    assert.match(h.alasan, /6/);
+  });
+
+  it("tanpa roasImpas (SKU merugi): hentikan TIDAK bisa dipicu lewat ROAS, jatuh ke tahan", () => {
+    const h = keputusanIklan({ ...dasar, roasImpas: null, roasAktual: 1, ctr: 3 });
+    assert.equal(h.keputusan, "tahan");
+  });
+
+  it("murni: tidak mengubah baris masukan", () => {
+    const b = { ...dasar };
+    keputusanIklan(b);
+    assert.deepEqual(b, dasar);
+  });
+});
+

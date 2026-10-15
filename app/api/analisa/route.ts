@@ -10,13 +10,13 @@
 import { getDb, getEnvAi, getKunciEnkripsi } from "@/lib/d1/db";
 import {
   adaPerforma, ambilSnapshot, daftarPresetAnalisa, daftarTanggalSnapshot,
-  petaHppMaster, petaStok, totalIklanPeriode,
+  metrikIklanPerSku, petaHppMaster, petaStok, totalIklanPeriode,
 } from "@/lib/d1/analisa";
-import { ambilPengaturanAI } from "@/lib/d1/pengaturan";
+import { ambilSettingAnalisa } from "@/lib/d1/aiAnalisaSetting";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
 import { imporIklan, parseIklan } from "@/lib/d1/adsProduk";
 import { petaSkuDariKodeProduk } from "@/lib/d1/shopeePeta";
-import { analisaMendalam } from "@/lib/analisa/ai";
+import { analisaMendalam, type Kedalaman } from "@/lib/analisa/ai";
 import {
   analisaCepat, janganDiiklankan, urutSaranIklan,
   AMBANG_MARGIN_TIPIS, type MasukanAnalisa,
@@ -30,6 +30,12 @@ function rentangMundur(tanggal: string, hari: number): { dari: string; sampai: s
   const d = new Date(`${tanggal}T00:00:00Z`);
   const dari = new Date(d.getTime() - hari * 86400000).toISOString().slice(0, 10);
   return { dari, sampai: tanggal };
+}
+
+/** Kedalaman narasi AI dari permintaan; tak dikenal/kosong = "sedang" (perilaku lama). */
+function bacaKedalaman(v: unknown): Kedalaman {
+  const t = String(v ?? "").trim().toLowerCase();
+  return t === "ringkas" || t === "panjang" ? t : "sedang";
 }
 
 export async function GET(request: Request) {
@@ -77,11 +83,12 @@ export async function GET(request: Request) {
 
   const semuaTanggal = await daftarTanggalSnapshot(db, presetId);
   const { dari, sampai } = rentangMundur(tanggal, 6);
-  const [hppMaster, stok, biayaIklan, performaAda] = await Promise.all([
+  const [hppMaster, stok, biayaIklan, performaAda, iklanPerSku] = await Promise.all([
     petaHppMaster(db, snap.rincian.map((r) => r.sku)),
     petaStok(db),
     totalIklanPeriode(db, presetId, dari, sampai),
     adaPerforma(db, presetId),
+    metrikIklanPerSku(db, presetId, dari, sampai),
   ]);
 
   const masukan: MasukanAnalisa = {
@@ -94,6 +101,7 @@ export async function GET(request: Request) {
     hppMaster,
     stok,
     biayaIklan,
+    iklanPerSku,
     jmlSnapshot: semuaTanggal.length,
     adaPerforma: performaAda,
   };
@@ -183,11 +191,12 @@ export async function POST(request: Request) {
 
   const semuaTanggal = await daftarTanggalSnapshot(db, presetId);
   const { dari, sampai } = rentangMundur(tanggal, 6);
-  const [hppMaster, stok, biayaIklan, performaAda] = await Promise.all([
+  const [hppMaster, stok, biayaIklan, performaAda, iklanPerSku] = await Promise.all([
     petaHppMaster(db, snap.rincian.map((r) => r.sku)),
     petaStok(db),
     totalIklanPeriode(db, presetId, dari, sampai),
     adaPerforma(db, presetId),
+    metrikIklanPerSku(db, presetId, dari, sampai),
   ]);
 
   const hasil = analisaCepat({
@@ -200,22 +209,29 @@ export async function POST(request: Request) {
     hppMaster,
     stok,
     biayaIklan,
+    iklanPerSku,
     jmlSnapshot: semuaTanggal.length,
     adaPerforma: performaAda,
   });
 
-  // Reasoning dari pengaturan GLOBAL (diminta user) — bukan dipaku di kode fitur.
-  const pengaturan = await ambilPengaturanAI(db, getEnvAi());
+  // Reasoning + plafon token + kedalaman dari pengaturan PER USER; kosong = default model.
+  const setting = await ambilSettingAnalisa(db, oleh);
+  const kedalaman = bacaKedalaman(setting.kedalaman);
   const hasilAi = await analisaMendalam(
     { db, kunci: getKunciEnkripsi(), env: getEnvAi() },
     hasil,
-    pengaturan.reasoningAnalisa
+    {
+      reasoning: setting.reasoning,
+      maksToken: setting.maks_token,
+      kedalaman,
+    }
   );
   if (!hasilAi.ok) return json({ ok: false, error: hasilAi.error }, hasilAi.status);
 
   return json({
     ok: true,
     ...hasilAi.data,
-    reasoning: pengaturan.reasoningAnalisa || "(default model)",
+    reasoning: setting.reasoning || "(default model)",
+    kedalaman,
   });
 }
