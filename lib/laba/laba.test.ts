@@ -166,6 +166,23 @@ describe("E2/E-R3 hitungLabaPreset", () => {
     assert.equal(tanpaPajak.biaya, 11200);
     assert.equal(tanpaPajak.pajak, 0);
   });
+  it("rincian membawa omzet apa adanya, bukan hargaJual × unit", async () => {
+    // Harga per unit berbeda antar order: `hargaJual` menyimpan harga TERAKHIR saja,
+    // jadi hargaJual × unit = 4500 × 5 = 22500, sedangkan omzet sebenarnya 9999 + 9000.
+    const rows = [
+      baris({ "No. Pesanan": "X1", Jumlah: "3", "Harga Awal": "10000", "Harga Setelah Diskon": "3333", "Subtotal Pesanan": "9999", "Diskon Dari Penjual": "0" }),
+      baris({ "No. Pesanan": "X2", Jumlah: "2", "Harga Awal": "10000", "Harga Setelah Diskon": "4500", "Subtotal Pesanan": "9000", "Diskon Dari Penjual": "0" }),
+    ];
+    const a = await hitungLabaPreset(rows, opsi([]));
+    const r = a.rincian.filter((x) => x.sku === "A");
+    assert.equal(r.length, 1);
+    assert.equal(r[0].unit, 5);
+    assert.equal(r[0].hargaJual, 4500);
+    assert.equal(r[0].omzet, 18999);
+    assert.notEqual(r[0].omzet, r[0].hargaJual * r[0].unit);
+    // Σ omzet baris rincian = agregat omzet (tak ada pembulatan yang hilang di sini).
+    assert.equal(a.rincian.reduce((s, x) => s + x.omzet, 0), a.omzet);
+  });
   it("proses per_order sekali per order multi-item; retur parsial", async () => {
     const rows = [
       baris({ "No. Pesanan": "M", "Nomor Referensi SKU": "A", Jumlah: "1", "Harga Awal": "23547", "Harga Setelah Diskon": "23547", "Subtotal Pesanan": "23547", "Diskon Dari Penjual": "0" }),

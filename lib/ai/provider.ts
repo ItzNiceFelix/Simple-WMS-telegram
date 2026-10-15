@@ -10,7 +10,7 @@ import { daftarModel } from "@/lib/d1/aiModel";
 import { ambilPengaturanAI, type EnvAi } from "@/lib/d1/pengaturan";
 import { gagal, type Hasil } from "@/lib/d1/hasil";
 import { BASE_OPENAI, baseKenari, chatOpenai, gambarOpenai, type OpsiAdapter } from "./adapterOpenai";
-import { chatGemini, gambarGemini } from "./adapterGemini";
+import { chatGemini, gambarGemini, streamGemini } from "./adapterGemini";
 import type { BagianChat, JawabanChat, PermintaanChat } from "./http";
 import { streamJson, type PotonganStream } from "./stream";
 
@@ -58,27 +58,43 @@ export const TIMEOUT_VISION_MS = 60000;
  * di belakangnya selalu "dilewati: anggaran total habis" — praktisnya tidak pernah
  * dicoba, padahal kredensialnya sehat. Batas per-provider membuat tiap provider dapat
  * giliran nyata.
- * Perhitungan: satu provider boleh memakai sampai timeout percobaan terpanjangnya —
- * 70000ms (TIMEOUT_TEKS_REASONING_MS), jadi anggarannya 70000 juga. Model cadangan di
- * provider yang sama praktis hanya kebagian bila model pertama gagal cepat.
+ *
+ * Perhitungan: satu provider WAJIB sanggup membiayai satu percobaan penuh model
+ * pilihannya (70000ms = TIMEOUT_TEKS_REASONING_MS) DITAMBAH jatah nyata untuk
+ * kandidat cadangannya. 80000 = 70000 (kandidat pertama) + 10000 sisa untuk kandidat
+ * ke-2 (lihat `batasPercobaanTeks`), jadi kandidat cadangan bukan lagi hiasan.
  */
-export const ANGGARAN_PROVIDER_MS = 70000;
+export const ANGGARAN_PROVIDER_MS = 80000;
 
 /**
  * Anggaran TOTAL rantai teks (semua provider dijumlahkan) — pagar terakhir.
  *
- * Perhitungan SEKARANG: 2 provider × ANGGARAN_PROVIDER_MS = 140000.
- * Turun dari 210000 (= 3 provider) SETELAH jalur streaming ada: pada streaming,
- * provider yang sama sudah dipakai lebih dari satu kali gagal sebelum ada potongan,
- * jadi provider pertama yang berhasil membalas TIDAK diganti — jumlah provider yang
- * benar-benar perlu dicoba berkurang. 140000 tetap memberi tiap provider jatah penuh
- * satu percobaan reasoning (70000) plus satu cadangan yang gagal cepat.
+ * Perhitungan SEKARANG: jumlah provider rantai default (3) × ANGGARAN_PROVIDER_MS
+ * (80000) = 240000. Jadi tiap provider di rantai — berapa pun yang punya kredensial —
+ * selalu kebagian satu jatah provider UTUH sebelum pagar total menyala; itulah inti
+ * perbaikan "provider cadangan tidak pernah dicoba".
+ *
+ * CATATAN PLAFON CLOUDFLARE WORKERS: 240000 adalah batas ATAS (worst case: semua
+ * provider menggantung sampai timeout), bukan waktu tunggu yang normal — angka ini
+ * hanya tercapai bila SEMUA percobaan timeout. 240000 dipilih (bukan 315000 = 3 ×
+ * 105000) supaya tidak melewati plafon request Worker/Cloudflare: 4 menit adalah
+ * plafon terlama yang masih tercakup kebijakan request Cloudflare untuk Worker
+ * berlangganan biasa, dan nilainya sama dengan `totalTimeoutMs` lama yang sudah
+ * dipakai aplikasi ini. Bila ragu, angka lebih kecil lebih baik.
  *
  * CATATAN: ini anggaran jalur NON-stream (`panggilTeks`), yang pemakainya masih ada
- * (chat, vision, saran iklan). Angkanya TIDAK memperlambat jawaban biasa:
- * batas satu percobaan tetap TIMEOUT_TEKS_MS (35000).
+ * (chat, vision, saran iklan). Angkanya TIDAK memperlambat jawaban biasa: batas satu
+ * percobaan tetap TIMEOUT_TEKS_MS (35000), dan pagar ini baru relevan saat ada
+ * percobaan yang benar-benar timeout.
  */
-export const ANGGARAN_TEKS_MS = 140000;
+export const ANGGARAN_TEKS_MS = 240000;
+
+/**
+ * Sisa anggaran minimum agar satu percobaan masih masuk akal. Di bawah ini percobaan
+ * DILEWATI (dengan catatan yang menyebut alasannya): sisa 2 detik tidak cukup untuk
+ * handshake apa pun, jadi meneruskannya hanya menyia-nyiakan sisa waktu provider.
+ */
+const MIN_SISA_MS = 3000;
 
 /**
  * Jumlah model yang dicoba per provider: 1 model yang diminta user + 4 cadangan.
@@ -93,15 +109,34 @@ export const ANGGARAN_TEKS_MS = 140000;
  * sesudah model pilihan user terlalu sedikit — satu model mati + satu kuota habis
  * sudah mengakhiri provider yang sebenarnya sehat.
  *
- * ANGGARAN: 5 model × TIMEOUT_TEKS_REASONING_MS (70000) = 350000ms jauh melebihi
- * ANGGARAN_PROVIDER_MS (70000ms). Itu memang disengaja dan bukan bug: anggaran
- * provider adalah pagar waktu, bukan kuota model — model pertama selalu dapat
- * jatah penuh (70000ms = TIMEOUT_TEKS_REASONING_MS saat reasoning aktif, atau
- * 35000ms = TIMEOUT_TEKS_MS saat tidak), jadi tidak mungkin provider ini
- * kehabisan anggaran sebelum model pilihannya selesai dicoba. Model ke-2..5
- * hanya kebagian sisa anggaran bila model sebelumnya gagal cepat (bukan timeout).
+ * ANGGARAN: anggaran provider adalah pagar WAKTU, bukan kuota model. Kandidat pertama
+ * selalu dapat jatah penuh (70000ms = TIMEOUT_TEKS_REASONING_MS saat reasoning aktif,
+ * atau 35000ms = TIMEOUT_TEKS_MS saat tidak), jadi provider ini tidak mungkin
+ * kehabisan anggaran sebelum model pilihannya selesai dicoba. Kandidat ke-2..5 hanya
+ * kebagian SISA anggaran provider, masing-masing dibatasi TIMEOUT_TEKS_MS
+ * (lihat `batasPercobaanTeks`) — jadi satu kandidat cadangan tidak bisa menelan
+ * seluruh sisa, dan anggaran itu tetap menjadi pagar waktu yang nyata.
  */
 export const MAKS_MODEL_PER_PROVIDER = 5;
+
+/**
+ * Batas waktu SATU percobaan kandidat teks. Dipakai `panggilTeks` DAN
+ * `panggilTeksStream` supaya pembagian waktunya identik.
+ *
+ * Pembagian anggaran provider (inti perbaikan "satu model menelan seluruh rantai"):
+ * - Kandidat PERTAMA provider (model pilihan user / peta model) mendapat jatah penuh
+ *   `TIMEOUT_TEKS_REASONING_MS` saat reasoning aktif (atau `TIMEOUT_TEKS_MS` bila tidak)
+ *   — ia yang paling mungkin benar, jadi tidak boleh dipotong.
+ * - Kandidat ke-2 dan seterusnya berbagi SISA anggaran provider, masing-masing
+ *   dibatasi `TIMEOUT_TEKS_MS` supaya tidak ada satu pun yang bisa menelan seluruh sisa.
+ * - Semuanya TIDAK BOLEH melewati sisa anggaran provider maupun sisa anggaran total:
+ *   satu percobaan tidak pernah "meminjam" waktu milik provider berikutnya.
+ */
+export function batasPercobaanTeks(pakaiReasoning: boolean, pertamaProvider: boolean, sisaProvider: number, sisaTotal: number): number {
+  const dasar = pakaiReasoning ? TIMEOUT_TEKS_REASONING_MS : TIMEOUT_TEKS_MS;
+  const jatah = pertamaProvider ? dasar : Math.min(dasar, TIMEOUT_TEKS_MS);
+  return Math.min(jatah, sisaProvider, sisaTotal);
+}
 
 /**
  * Base URL efektif untuk provider: alamat dari kredensial menang atas bawaan.
@@ -200,9 +235,17 @@ async function kandidatTeks(
     const pilih = (provider === rantaiTeks[0] ? modelDiminta : undefined) ?? peta[provider];
     if (pilih) id.push(pilih);
     for (const m of aktif) if (!id.includes(m.model_id)) id.push(m.model_id);
+    // Model berakhiran `:free` DITARUH DI BELAKANG model berbayar. Alasan: varian gratis
+    // mengantre di sisi penyedia (kuota gratis diperebutkan), jadi hampir pasti melewati
+    // batas waktu — dan kandidat PERTAMA memakai jatah waktu penuh provider, artinya satu
+    // model `:free` bisa membakar jatah itu tanpa hasil. Model yang DIPILIH user (atau
+    // ditetapkan peta model) tetap nomor satu apa pun namanya. Pengurutan stabil, jadi
+    // urutan `id` tetap terjaga di dalam masing-masing kelompok (berbayar / `:free`).
+    const urut = id.slice(pilih ? 1 : 0).sort((a, b) => Number(a.endsWith(":free")) - Number(b.endsWith(":free")));
+    const urutan = pilih ? [pilih, ...urut] : urut;
     // Sisanya memang sengaja TIDAK dicoba — dicatat supaya tidak ada yang menyangka
     // katalog provider ini sudah dicoba habis lalu menyimpulkan modelnya memang mati.
-    const sisa = Math.max(0, id.length - MAKS_MODEL_PER_PROVIDER);
+    const sisa = Math.max(0, urutan.length - MAKS_MODEL_PER_PROVIDER);
     if (sisa > 0) {
       catatan.push({
         provider,
@@ -210,7 +253,7 @@ async function kandidatTeks(
         error: `dilewati: hanya ${MAKS_MODEL_PER_PROVIDER} model pertama provider ini yang dicoba, ${sisa} model lain tidak dicoba`,
       });
     }
-    for (const model of id.slice(0, MAKS_MODEL_PER_PROVIDER)) {
+    for (const model of urutan.slice(0, MAKS_MODEL_PER_PROVIDER)) {
       hasil.push({ provider, model, apiKey: kred.plaintext, baseUrl: kred.base_url ?? "" });
     }
   }
@@ -223,13 +266,11 @@ async function cobaTeks(
   pesan: BagianChat[],
   tool: unknown[] | undefined,
   ctx: Konteks,
-  jenis: "teks" | "vision",
+  timeoutMs: number,
   opsiReasoning?: { reasoning?: string; reasoningHilir?: boolean; maksToken?: number }
 ): Promise<Hasil<{ jawaban: JawabanChat; latencyMs: number }>> {
-  const pakaiReasoning = jenis === "teks" && !!String(opsiReasoning?.reasoning ?? "").trim();
-  // Reasoning aktif → model benar-benar berpikir, butuh jatah waktu jauh lebih panjang.
-  // Tanpa reasoning angkanya TIDAK berubah (TIMEOUT_TEKS_MS).
-  const timeoutMs = jenis === "vision" ? TIMEOUT_VISION_MS : pakaiReasoning ? TIMEOUT_TEKS_REASONING_MS : TIMEOUT_TEKS_MS;
+  // Batas waktu dihitung PEMANGGIL (`batasPercobaanTeks`): satu percobaan tidak boleh
+  // melewati sisa anggaran provider/total, jadi angkanya tidak boleh ditentukan di sini.
   const permintaan: PermintaanChat = {
     model: kandidat.model,
     pesan,
@@ -279,12 +320,22 @@ export async function panggilTeks(
   // Jam per-provider: direset tiap kali provider berganti, bukan digabung seluruh rantai.
   let providerKini = kandidat[0]!.provider;
   let mulaiProvider = mulai;
+  // Kandidat ke-berapa di provider ini (0 = model pilihan user/peta model). Hanya kandidat
+  // PERTAMA yang boleh memakai jatah waktu penuh; cadangan berbagi sisa — lihat
+  // `batasPercobaanTeks`.
+  let indeksProvider = 0;
+  const pakaiReasoning = !!String(minta.reasoning ?? "").trim();
   for (const k of kandidat) {
     if (k.provider !== providerKini) {
       providerKini = k.provider;
       mulaiProvider = Date.now();
+      indeksProvider = 0;
     }
-    if (jenis === "teks" && Date.now() - mulai >= ANGGARAN_TEKS_MS) {
+    const pertamaProvider = indeksProvider === 0;
+    indeksProvider += 1;
+    const sisaTotal = ANGGARAN_TEKS_MS - (Date.now() - mulai);
+    const sisaProvider = ANGGARAN_PROVIDER_MS - (Date.now() - mulaiProvider);
+    if (jenis === "teks" && sisaTotal <= 0) {
       catatan.push({
         provider: k.provider,
         model: k.model,
@@ -294,7 +345,7 @@ export async function panggilTeks(
     }
     // Provider ini sudah kebanyakan makan waktu: sisa model provider ITU dilewati,
     // tapi rantai LANJUT ke provider berikutnya — ini inti perbaikannya.
-    if (jenis === "teks" && Date.now() - mulaiProvider >= ANGGARAN_PROVIDER_MS) {
+    if (jenis === "teks" && sisaProvider <= 0) {
       catatan.push({
         provider: k.provider,
         model: k.model,
@@ -302,7 +353,20 @@ export async function panggilTeks(
       });
       continue;
     }
-    const h = await cobaTeks(k, minta.pesan, minta.tool, ctx, jenis, {
+    // Sisa terlalu kecil untuk apa pun: percobaan diteruskan hanya akan menyia-nyiakan
+    // sisa waktu provider (tanpa harapan berhasil), jadi dilewati dengan catatan jelas.
+    if (jenis === "teks" && Math.min(sisaProvider, sisaTotal) < MIN_SISA_MS) {
+      catatan.push({
+        provider: k.provider,
+        model: k.model,
+        error: `dilewati: sisa anggaran terlalu kecil (provider ${sisaProvider}ms, total ${sisaTotal}ms; minimum ${MIN_SISA_MS}ms)`,
+      });
+      continue;
+    }
+    // Satu percobaan TIDAK BOLEH melewati sisa anggaran provider maupun total, dan
+    // kandidat cadangan dibatasi TIMEOUT_TEKS_MS: satu model tak mungkin menelan rantai.
+    const timeoutMs = jenis === "vision" ? TIMEOUT_VISION_MS : batasPercobaanTeks(pakaiReasoning, pertamaProvider, sisaProvider, sisaTotal);
+    const h = await cobaTeks(k, minta.pesan, minta.tool, ctx, timeoutMs, {
       reasoning: minta.reasoning,
       reasoningHilir: minta.reasoningHilir,
       maksToken: minta.maksToken,
@@ -338,7 +402,9 @@ export async function panggilTeks(
  * pertama dilaporkan apa adanya, bukan difallback. Provider yang gagal SEBELUM ada
  * potongan (kredensial kosong, 4xx/5xx, timeout handshake) dilewati seperti rantai biasa.
  *
- * `jenis` hanya "teks": Gemini belum punya jalur streaming di repo ini.
+ * Pembaca SSE berbeda per keluarga provider: OpenAI-compatible lewat `streamJson`
+ * (lib/ai/stream.ts), Gemini lewat `streamGemini` (lib/ai/adapterGemini.ts) — Gemini
+ * memakai bentuk event sendiri, bukan `choices[0].delta.content`.
  */
 export async function panggilTeksStream(
   ctx: Konteks,
@@ -366,18 +432,27 @@ export async function panggilTeksStream(
   const mulai = Date.now();
   let providerKini = kandidat[0]!.provider;
   let mulaiProvider = mulai;
+  // Sama seperti `panggilTeks`: kandidat pertama provider ini dapat jatah penuh, cadangan
+  // berbagi sisa, dan tidak ada percobaan yang melewati sisa anggaran provider/total.
+  let indeksProvider = 0;
+  const pakaiReasoning = !!String(minta.reasoning ?? "").trim();
   for (const k of kandidat) {
     if (k.provider !== providerKini) {
       providerKini = k.provider;
       mulaiProvider = Date.now();
+      indeksProvider = 0;
     }
+    const pertamaProvider = indeksProvider === 0;
+    indeksProvider += 1;
+    const sisaTotal = ANGGARAN_TEKS_MS - (Date.now() - mulai);
+    const sisaProvider = ANGGARAN_PROVIDER_MS - (Date.now() - mulaiProvider);
     // Pagar anggaran sama seperti panggilTeks: provider yang kebablasan tidak menghentikan
     // rantai — kandidat provider berikutnya tetap dicoba.
-    if (Date.now() - mulai >= ANGGARAN_TEKS_MS) {
+    if (sisaTotal <= 0) {
       catatan.push({ provider: k.provider, model: k.model, error: `dilewati: anggaran total ${ANGGARAN_TEKS_MS}ms habis` });
       continue;
     }
-    if (Date.now() - mulaiProvider >= ANGGARAN_PROVIDER_MS) {
+    if (sisaProvider <= 0) {
       catatan.push({
         provider: k.provider,
         model: k.model,
@@ -385,33 +460,57 @@ export async function panggilTeksStream(
       });
       continue;
     }
-    const pakaiReasoning = !!String(minta.reasoning ?? "").trim();
+    if (Math.min(sisaProvider, sisaTotal) < MIN_SISA_MS) {
+      catatan.push({
+        provider: k.provider,
+        model: k.model,
+        error: `dilewati: sisa anggaran terlalu kecil (provider ${sisaProvider}ms, total ${sisaTotal}ms; minimum ${MIN_SISA_MS}ms)`,
+      });
+      continue;
+    }
     // Batas waktu TANPA potongan: model yang benar-benar berpikir tidak mengirim apa pun
     // sementara ia bekerja, jadi reasoning dapat jatah panjang (sama seperti non-stream).
     // Tanpa reasoning angkanya TIDAK berubah (TIMEOUT_TEKS_MS).
-    const timeoutMs = pakaiReasoning ? TIMEOUT_TEKS_REASONING_MS : TIMEOUT_TEKS_MS;
-    if (k.provider === "gemini") {
-      catatan.push({ provider: k.provider, model: k.model, error: "dilewati: jalur streaming belum tersedia untuk gemini" });
-      continue;
-    }
-    const opsi = opsiUntuk(k.provider, k.apiKey, ctx, timeoutMs, k.baseUrl);
-    if (!opsi) {
-      catatan.push({ provider: k.provider, model: k.model, error: `Provider ${k.provider} tidak mendukung chat teks.` });
-      continue;
-    }
-    const s = await streamJson({
-      baseUrl: opsi.baseUrl,
-      apiKey: opsi.apiKey,
-      provider: k.provider,
-      model: k.model,
-      pesan: minta.pesan,
-      tool: minta.tool,
-      maksToken: minta.maksToken,
-      reasoning: minta.reasoning,
-      reasoningHilir: minta.reasoningHilir,
-      timeoutMs,
-      totalMs: Math.max(1000, ANGGARAN_TEKS_MS - (Date.now() - mulai)),
-    });
+    const timeoutMs = batasPercobaanTeks(pakaiReasoning, pertamaProvider, sisaProvider, sisaTotal);
+    // Pagar TOTAL percobaan ini juga tidak boleh melewati sisa anggaran provider: stream
+    // tidak boleh berjalan lebih lama daripada jatah provider yang sedang dipakainya.
+    const totalMs = Math.max(1000, Math.min(sisaTotal, sisaProvider));
+    // Gemini TIDAK dilewati lagi: bentuk SSE-nya sendiri (candidates[0].content.parts[].text,
+    // bukan choices[0].delta.content), jadi ditangani `streamGemini` — bukan `streamJson`
+    // milik provider OpenAI-compatible. Sebelumnya provider ini di-skip sehingga rantai
+    // ["kenari","groq","gemini"] berakhir "tidak ada provider" walau kredensial gemini sehat.
+    const s =
+      k.provider === "gemini"
+        ? await streamGemini({
+            apiKey: k.apiKey,
+            baseUrl: k.baseUrl,
+            provider: k.provider,
+            model: k.model,
+            pesan: minta.pesan,
+            tool: minta.tool,
+            maksToken: minta.maksToken,
+            reasoning: minta.reasoning,
+            reasoningHilir: minta.reasoningHilir,
+            timeoutMs,
+            totalMs,
+          })
+        : await (async () => {
+            const opsi = opsiUntuk(k.provider, k.apiKey, ctx, timeoutMs, k.baseUrl);
+            if (!opsi) return { ok: false as const, status: 400, error: `Provider ${k.provider} tidak mendukung chat teks.` };
+            return streamJson({
+              baseUrl: opsi.baseUrl,
+              apiKey: opsi.apiKey,
+              provider: k.provider,
+              model: k.model,
+              pesan: minta.pesan,
+              tool: minta.tool,
+              maksToken: minta.maksToken,
+              reasoning: minta.reasoning,
+              reasoningHilir: minta.reasoningHilir,
+              timeoutMs,
+              totalMs,
+            });
+          })();
     if (!s.ok) {
       // Gagal SEBELUM potongan apa pun: aman pindah kandidat berikutnya.
       catatan.push({ provider: k.provider, model: k.model, error: s.error });

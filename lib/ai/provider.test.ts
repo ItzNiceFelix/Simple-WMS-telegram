@@ -14,7 +14,16 @@
 // puluhan detik nyata untuk membuktikan urutan percobaan.
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { ANGGARAN_PROVIDER_MS, MAKS_MODEL_PER_PROVIDER, panggilTeks, panggilTeksStream } from "./provider";
+import {
+  ANGGARAN_PROVIDER_MS,
+  ANGGARAN_TEKS_MS,
+  MAKS_MODEL_PER_PROVIDER,
+  TIMEOUT_TEKS_MS,
+  TIMEOUT_TEKS_REASONING_MS,
+  batasPercobaanTeks,
+  panggilTeks,
+  panggilTeksStream,
+} from "./provider";
 import { enkripsi } from "./kripto";
 
 const KUNCI = "Y2JjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY=";
@@ -475,5 +484,242 @@ describe("panggilTeksStream — aturan tidak pindah provider setelah potongan pe
     }, /koneksi putus/);
     assert.equal(teks, "awal", "potongan yang sudah terkirim tidak boleh hilang");
     assert.equal(dipanggil.some((u) => u.includes("groq")), false, "provider TIDAK boleh diganti setelah ada potongan terkirim");
+  });
+});
+
+/**
+ * SSE palsu bentuk GEMINI (`candidates[0].content.parts[].text`) — beda dari `badanSSE`
+ * di atas yang meniru OpenAI (`choices[0].delta.content`).
+ */
+function badanSSEGemini(teks: string[]): ReadableStream<Uint8Array> {
+  const enc = new TextEncoder();
+  return new ReadableStream<Uint8Array>({
+    start(c) {
+      for (const t of teks) {
+        c.enqueue(enc.encode(`data: ${JSON.stringify({ candidates: [{ content: { parts: [{ text: t }] } }] })}\n\n`));
+      }
+      c.close();
+    },
+  });
+}
+
+describe("panggilTeksStream — gemini ikut dicoba", () => {
+  it("gemini TIDAK lagi dilewati: SSE-nya dibaca lewat endpoint streamGenerateContent", async () => {
+    const settings = {
+      textProvider: "kenari",
+      chainTeks: ["kenari", "gemini"],
+      modelTeks: { kenari: "kenari-cepat", gemini: "gemini-2.5-flash" },
+      modelVision: {},
+      modelGambar: {},
+    };
+    const db = buatDb({
+      kredensial: [await kred("kenari", "key-kenari", 1), await kred("gemini", "key-gemini", 2)],
+      model: [...model("kenari", 1, 1), ...model("gemini", 1, 9)],
+      settings,
+    });
+    const dipanggil: string[] = [];
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      const u = String(url);
+      dipanggil.push(u);
+      if (u.includes("kenari")) return { ok: false, status: 400, text: async () => "kredensial ditolak" } as unknown as Response;
+      return { ok: true, status: 200, body: badanSSEGemini(["dari ", "gemini"]) } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const hasil = await panggilTeksStream({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }], reasoning: "high" });
+    assert.equal(hasil.ok, true, `gemini harus dipakai, bukan dilewati: ${hasil.ok ? "" : hasil.error}`);
+    if (!hasil.ok) return;
+    assert.equal(hasil.provider, "gemini");
+    assert.equal(hasil.model, "gemini-2.5-flash");
+    let teks = "";
+    for await (const p of hasil.potongan) teks += p.delta;
+    assert.equal(teks, "dari gemini", "parts[].text SSE Gemini harus terbaca sebagai delta");
+    assert.ok(dipanggil.some((u) => u.includes(":streamGenerateContent")), "endpoint streaming Gemini harus dipakai");
+  });
+});
+
+/**
+ * fetch yang SELALU menggantung sampai adapter membatalkannya lewat AbortController —
+ * meniru model yang tidak menjawab (timeout provider nyata). `maju` mensimulasikan jam
+ * yang berjalan selama percobaan itu.
+ */
+function fetchHitung(log: Panggilan[], maju: (ms: number) => void, ms: number) {
+  return async (url: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    const u = String(url);
+    log.push({ provider: Object.entries(NAMA_PER_FRAGMEN).find(([frag]) => u.includes(frag))?.[1] ?? "lain", model: namaModelDariBody(init?.body) });
+    maju(ms);
+    return new Promise<Response>((_resolve, reject) => {
+      const bunuh = () => {
+        const e = new Error("This operation was aborted");
+        e.name = "AbortError";
+        reject(e);
+      };
+      const ac = init?.signal;
+      if (ac?.aborted) return bunuh();
+      ac?.addEventListener("abort", bunuh);
+    });
+  };
+}
+
+describe("anggaran percobaan: timeout tidak diulang, provider berikutnya selalu dicoba", () => {
+  it("timeout TIDAK diulang: satu kandidat = SATU panggilan jaringan (bukan tiga)", async () => {
+    const db = buatDb({
+      kredensial: [await kred("kenari", "key-kenari", 1)],
+      // Satu kandidat saja, supaya jumlah panggilan murni milik kandidat pertama.
+      model: [{ id: 1, provider: "kenari", model_id: "kenari-lambat", jenis: "teks", aktif: 1 }],
+      settings: { textProvider: "kenari", chainTeks: ["kenari"], modelTeks: { kenari: "kenari-lambat" }, modelVision: {}, modelGambar: {} },
+    });
+
+    const log: Panggilan[] = [];
+    await denganJamPalsu(async (maju) => {
+      globalThis.fetch = fetchHitung(log, maju, TIMEOUT_TEKS_MS) as unknown as typeof fetch;
+
+      const hasil = await panggilTeks({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }] });
+
+      assert.equal(hasil.ok, false);
+      assert.equal(log.length, 1, `timeout tidak boleh diulang: ${log.length} panggilan untuk satu kandidat`);
+      assert.equal(log[0]?.model, "kenari-lambat");
+      const upaya = hasil.ok ? [] : hasil.upaya ?? [];
+      assert.equal(upaya[0]?.error, `Timeout provider setelah ${TIMEOUT_TEKS_MS}ms.`, "pesan timeout harus tetap sama (UI tidak berubah)");
+    });
+  });
+
+  it("429/5xx TETAP diulang: 500 lalu 200 -> sukses dengan dua panggilan", async () => {
+    const db = buatDb({
+      kredensial: [await kred("kenari", "key-kenari", 1)],
+      model: [{ id: 1, provider: "kenari", model_id: "kenari-model-1", jenis: "teks", aktif: 1 }],
+      settings: { textProvider: "kenari", chainTeks: ["kenari"], modelTeks: {}, modelVision: {}, modelGambar: {} },
+    });
+
+    let panggilan = 0;
+    await denganJamPalsu(async () => {
+      globalThis.fetch = (async () => {
+        panggilan += 1;
+        if (panggilan === 1) return { ok: false, status: 500, text: async () => "gangguan sementara" } as unknown as Response;
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ choices: [{ message: { content: "halo juga" } }], usage: { prompt_tokens: 3, completion_tokens: 2 } }),
+        } as unknown as Response;
+      }) as unknown as typeof fetch;
+
+      const hasil = await panggilTeks({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }] });
+
+      assert.equal(hasil.ok, true, `5xx harus tetap diulang: ${hasil.ok ? "" : hasil.error}`);
+      assert.equal(panggilan, 2, "500 diulang sekali, lalu 200 dipakai");
+      if (hasil.ok) assert.equal(hasil.teks, "halo juga");
+    });
+  });
+
+  it("provider kedua BENAR-BENAR dicoba setelah provider pertama timeout (bukan 'anggaran total habis')", async () => {
+    const db = buatDb({
+      kredensial: [await kred("kenari", "key-kenari", 1), await kred("gemini", "key-gemini", 2)],
+      model: [...model("kenari", 1, 1), ...model("gemini", 1, 50)],
+      settings: {
+        textProvider: "kenari",
+        chainTeks: ["kenari", "gemini"],
+        modelTeks: { kenari: "kenari-lambat", gemini: "gemini-lambat" },
+        modelVision: {},
+        modelGambar: {},
+      },
+    });
+
+    const log: Panggilan[] = [];
+    await denganJamPalsu(async (maju) => {
+      // Kedua provider menggantung; tiap percobaan memakai jatah penuh kandidat pertama
+      // (TIMEOUT_TEKS_REASONING_MS) sehingga anggaran TOTAL tetap menyisakan jatah provider
+      // penuh untuk gemini.
+      globalThis.fetch = fetchPalsu({ lambat: ["kenari", "gemini"], sukses: [], log, majuSekaliPerModel: maju, majuMs: TIMEOUT_TEKS_REASONING_MS }) as unknown as typeof fetch;
+
+      const hasil = await panggilTeks({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }], reasoning: "high" });
+
+      assert.equal(hasil.ok, false);
+      assert.ok(log.some((p) => p.provider === "gemini"), "gemini HARUS benar-benar dipanggil, bukan dilewati");
+      const upaya = hasil.ok ? [] : hasil.upaya ?? [];
+      const gemini = upaya.find((u) => u.provider === "gemini");
+      assert.ok(gemini, `catatan harus memuat percobaan gemini: ${JSON.stringify(upaya)}`);
+      assert.match(gemini.error, new RegExp(`Timeout provider setelah ${TIMEOUT_TEKS_REASONING_MS}ms`), "gemini memakai jatah penuh providernya sendiri");
+      assert.doesNotMatch(gemini.error, /anggaran total .*habis/, `gemini tidak boleh dilewati karena anggaran total habis: ${gemini.error}`);
+    });
+  });
+
+  it("satu percobaan tidak melewati sisa anggaran provider (kandidat cadangan dibatasi sisa)", async () => {
+    const db = buatDb({
+      kredensial: [await kred("kenari", "key-kenari", 1)],
+      model: model("kenari", 2, 1),
+      settings: { textProvider: "kenari", chainTeks: ["kenari"], modelTeks: { kenari: "kenari-lambat" }, modelVision: {}, modelGambar: {} },
+    });
+
+    const log: Panggilan[] = [];
+    await denganJamPalsu(async (maju) => {
+      // Tiap percobaan menggantung dan menghabiskan TIMEOUT_TEKS_REASONING_MS jam palsu.
+      globalThis.fetch = fetchHitung(log, maju, TIMEOUT_TEKS_REASONING_MS) as unknown as typeof fetch;
+
+      const hasil = await panggilTeks({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }], reasoning: "high" });
+
+      assert.equal(hasil.ok, false);
+      const upaya = hasil.ok ? [] : hasil.upaya ?? [];
+      assert.equal(upaya[0]?.error, `Timeout provider setelah ${TIMEOUT_TEKS_REASONING_MS}ms.`, "kandidat pertama (pilihan user) dapat jatah penuh");
+      // Sisa anggaran provider = ANGGARAN_PROVIDER_MS - TIMEOUT_TEKS_REASONING_MS, dan
+      // kandidat cadangan TIDAK BOLEH memakai lebih dari sisa itu.
+      const sisa = ANGGARAN_PROVIDER_MS - TIMEOUT_TEKS_REASONING_MS;
+      assert.equal(upaya[1]?.error, `Timeout provider setelah ${sisa}ms.`, "kandidat cadangan dibatasi sisa anggaran provider");
+      assert.match(upaya[2]?.error ?? "", /anggaran provider kenari habis/, `kandidat ketiga harus dilewati: ${upaya[2]?.error}`);
+      assert.equal(log.length, 2, "kandidat yang dilewati tidak boleh memanggil jaringan");
+    });
+  });
+
+  it("batasPercobaanTeks: jatah penuh hanya untuk kandidat pertama, sisanya dibatasi sisa", () => {
+    assert.equal(batasPercobaanTeks(true, true, ANGGARAN_PROVIDER_MS, ANGGARAN_TEKS_MS), TIMEOUT_TEKS_REASONING_MS);
+    assert.equal(batasPercobaanTeks(false, true, ANGGARAN_PROVIDER_MS, ANGGARAN_TEKS_MS), TIMEOUT_TEKS_MS);
+    // Kandidat cadangan: dibatasi TIMEOUT_TEKS_MS walau reasoning aktif.
+    assert.equal(batasPercobaanTeks(true, false, ANGGARAN_PROVIDER_MS, ANGGARAN_TEKS_MS), TIMEOUT_TEKS_MS);
+    // Sisa anggaran provider/total yang lebih kecil selalu menang.
+    assert.equal(batasPercobaanTeks(true, false, 10000, ANGGARAN_TEKS_MS), 10000);
+    assert.equal(batasPercobaanTeks(true, true, ANGGARAN_PROVIDER_MS, 5000), 5000);
+  });
+
+  it("anggaran total = jumlah provider rantai default x anggaran provider", () => {
+    assert.equal(ANGGARAN_TEKS_MS, 3 * ANGGARAN_PROVIDER_MS, "tiap provider di rantai (3) harus kebagian jatah utuh");
+    assert.ok(ANGGARAN_PROVIDER_MS > TIMEOUT_TEKS_REASONING_MS, "anggaran provider harus lebih besar dari satu percobaan reasoning supaya cadangan kebagian");
+  });
+});
+
+describe("urutan kandidat: model :free di belakang model berbayar", () => {
+  const katalog: BarisModel[] = [
+    { id: 1, provider: "kenari", model_id: "model-a:free", jenis: "teks", aktif: 1 },
+    { id: 2, provider: "kenari", model_id: "model-b", jenis: "teks", aktif: 1 },
+    { id: 3, provider: "kenari", model_id: "model-c:free", jenis: "teks", aktif: 1 },
+    { id: 4, provider: "kenari", model_id: "model-d", jenis: "teks", aktif: 1 },
+  ];
+
+  /** Urutan MODEL unik yang benar-benar dicoba (jaringan mati: semua kandidat dijejer). */
+  async function urutanKandidat(modelTeks: Record<string, string>): Promise<string[]> {
+    const db = buatDb({
+      kredensial: [await kred("kenari", "key-kenari", 1)],
+      model: katalog,
+      settings: { textProvider: "kenari", chainTeks: ["kenari"], modelTeks, modelVision: {}, modelGambar: {} },
+    });
+    const log: Panggilan[] = [];
+    await denganJamPalsu(async () => {
+      globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+        const u = String(url);
+        log.push({ provider: Object.entries(NAMA_PER_FRAGMEN).find(([frag]) => u.includes(frag))?.[1] ?? "lain", model: namaModelDariBody(init?.body) });
+        throw new Error("jaringan mati");
+      }) as unknown as typeof fetch;
+      await panggilTeks({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }] });
+    });
+    return [...new Set(log.map((p) => p.model))];
+  }
+
+  it("model :free mengantre di sisi penyedia -> ditaruh SETELAH model berbayar", async () => {
+    assert.deepEqual(
+      await urutanKandidat({}),
+      ["model-b", "model-d", "model-a:free", "model-c:free"],
+      "berbayar dulu (urut id), lalu :free (urut id) — model :free bukan kandidat pertama"
+    );
+  });
+
+  it("model :free yang DIPILIH user tetap nomor satu", async () => {
+    assert.deepEqual(await urutanKandidat({ kenari: "model-c:free" }), ["model-c:free", "model-b", "model-d", "model-a:free"]);
   });
 });

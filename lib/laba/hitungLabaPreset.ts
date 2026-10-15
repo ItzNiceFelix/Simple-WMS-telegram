@@ -12,6 +12,13 @@ export type BarisPreset = Record<string, unknown>;
 export type TolakPreset = { no_pesanan: string; alasan: string };
 export type RincianSkuPreset = {
   sku: string; nama: string | null; unit: number; hppSatuan: number; hargaJual: number;
+  /**
+   * Omzet baris ini APA ADANYA (Σ dasar), bukan `hargaJual × unit`.
+   * `hargaJual` dibulatkan per unit, jadi perkalian itu tidak sama dengan omzet yang
+   * benar-benar dihitung sistem (selisih ~0,8% pada data nyata). Menyimpan omzet asli
+   * membuat angka analisa bisa diaudit dan tidak bergeser.
+   */
+  omzet: number;
   marginSatuan: number; marginPersen: number; kontribusi: number;
 };
 export type OrderPreset = {
@@ -304,6 +311,7 @@ export async function hitungLabaPreset(
       const marginSatuan = s.unit > 0 ? Math.round(s.kontribusi / s.unit) : 0;
       return {
         sku: s.sku, nama: s.nama, unit: s.unit, hppSatuan: s.hppSatuan, hargaJual: s.harga,
+        omzet: s.omzetSku,
         marginSatuan,
         marginPersen: s.omzetSku > 0 ? Math.round(((s.kontribusi / s.omzetSku) * 100) * 10) / 10 : 0,
         kontribusi: s.kontribusi,

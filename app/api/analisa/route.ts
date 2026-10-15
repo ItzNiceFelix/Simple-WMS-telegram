@@ -6,6 +6,7 @@
 // GET  ?aksi=estimasi-iklan&presetId=&items=sku:modal:target,… → estimasi per SKU (angka murni)
 // POST { aksi:'mendalam', ... }          → narasi AI (T8; dibalas jelas bila belum siap)
 // POST { aksi:'mendalam-stream', ... }   → narasi AI sebagai text/event-stream (potongan bertahap)
+// POST { aksi:'saran-iklan-stream', ... } → paket skenario iklan + narasi bertahap (text/event-stream)
 //
 // PRINSIP: angka SELALU dari lib/analisa/hitung.ts. AI tidak pernah menghitung.
 // Karena itu endpoint `cepat` tidak menyentuh AI sama sekali.
@@ -20,8 +21,10 @@ import { ambilSettingAnalisa } from "@/lib/d1/aiAnalisaSetting";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
 import { imporIklan, parseIklan } from "@/lib/d1/adsProduk";
 import { petaSkuDariKodeProduk } from "@/lib/d1/shopeePeta";
-import { analisaMendalam, susunBahan, susunPesanMendalam, type Kedalaman } from "@/lib/analisa/ai";
+import { analisaMendalam, susunBahan, susunPesanMendalam, susunPesanSkenario, type Kedalaman } from "@/lib/analisa/ai";
+import { bangunPaketSkenario } from "@/lib/analisa/skenarioIklan";
 import { panggilTeksStream } from "@/lib/ai/provider";
+import type { HasilAnalisa } from "@/lib/analisa/tipe";
 import {
   analisaCepat, janganDiiklankan, urutSaranIklan,
   AMBANG_MARGIN_TIPIS, type MasukanAnalisa,
@@ -221,7 +224,7 @@ export async function POST(request: Request) {
     return json(h, h.ok ? 200 : h.status);
   }
 
-  if (aksi !== "mendalam" && aksi !== "mendalam-stream") {
+  if (aksi !== "mendalam" && aksi !== "mendalam-stream" && aksi !== "saran-iklan-stream") {
     return json({ ok: false, error: `Aksi tidak dikenal: ${aksi || "(kosong)"}` }, 400);
   }
 
@@ -229,6 +232,12 @@ export async function POST(request: Request) {
     // Dijalankan lewat alirMendalam: seluruh validasi yang gagal SEBELUM stream dimulai
     // pun tetap dibalas sebagai event error (lihat komentar di fungsinya).
     return alirMendalam(db, oleh, body);
+  }
+
+  if (aksi === "saran-iklan-stream") {
+    // Jalur TERPISAH, bukan pengalihan ke alirMendalam. Lihat komentar alirSaranIklan:
+    // pertanyaan "langkah iklan bertahap" butuh prompt skenario, bukan prompt analisa umum.
+    return alirSaranIklan(db, oleh, body);
   }
 
   // Rakit ulang masukan yang SAMA dengan endpoint cepat, supaya AI menerima angka
@@ -303,6 +312,72 @@ export async function POST(request: Request) {
 }
 
 /**
+ * Header balasan SSE untuk SEMUA jalur streaming di berkas ini. Dipakai bersama supaya
+ * kontraknya satu, termasuk `X-Accel-Buffering: no` — tanpa itu Cloudflare/proxy menahan
+ * potongan dan user baru melihat teks setelah model selesai (keluhan awal streaming).
+ *
+ * Kesalahan yang terjadi SETELAH header ini terkirim TIDAK bisa lagi mengubah status HTTP,
+ * jadi kedua jalur di bawah mengirimnya sebagai event `{"error": "..."}` dengan status
+ * tetap 200; kalau dibalas status non-200, klien hanya melihat "gagal membaca respons"
+ * dan sebab sebenarnya hilang.
+ */
+const HEADER_SSE = {
+  "Content-Type": "text/event-stream; charset=utf-8",
+  "Cache-Control": "no-cache",
+  Connection: "keep-alive",
+  "X-Accel-Buffering": "no",
+};
+
+/**
+ * Siapkan angka satu preset/tanggal untuk jalur streaming. Dipakai BERSAMA oleh
+ * `mendalam-stream` dan `saran-iklan-stream`: kalau tiap jalur memuat dan menghitung
+ * sendiri-sendiri, dua endpoint bisa memakai angka yang berbeda untuk periode yang sama —
+ * dan narasi yang angkanya tidak sama dengan tabel di halaman tidak bisa dipercaya.
+ * Kesalahan DIKEMBALIKAN sebagai pesan, bukan dilempar: pemanggil harus bisa membalasnya
+ * sebagai event `{error}` karena status HTTP sudah terkirim saat stream dimulai.
+ */
+async function siapkanAnalisa(
+  db: D1Database,
+  presetId: number,
+  tanggal: string
+): Promise<{ ok: true; hasil: HasilAnalisa } | { ok: false; error: string }> {
+  if (!Number.isInteger(presetId) || presetId <= 0) return { ok: false, error: "presetId wajib diisi." };
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(tanggal)) return { ok: false, error: "Tanggal harus YYYY-MM-DD." };
+  const snap = await ambilSnapshot(db, presetId, tanggal);
+  if (!snap) return { ok: false, error: `Belum ada data laba untuk ${tanggal}.` };
+
+  const semuaTanggal = await daftarTanggalSnapshot(db, presetId);
+  const { dari, sampai } = rentangMundur(tanggal, 6);
+  const [hppMaster, stok, biayaIklan, performaAda, iklanPerSku, performa] = await Promise.all([
+    petaHppMaster(db, snap.rincian.map((r) => r.sku)),
+    petaStok(db),
+    totalIklanPeriode(db, presetId, dari, sampai),
+    adaPerforma(db, presetId),
+    metrikIklanPerSku(db, presetId, dari, sampai),
+    performaPerSku(db, presetId, tanggal),
+  ]);
+  // Angka SAMA dengan aksi `cepat`/`mendalam` — satu sumber hitung, bukan hitung ulang.
+  return {
+    ok: true,
+    hasil: analisaCepat({
+      presetId,
+      periode: tanggal,
+      snapshot: {
+        jml_order: snap.jml_order, omzet: snap.omzet, hpp: snap.hpp,
+        biaya: snap.biaya, pajak: snap.pajak, laba: snap.laba, rincian: snap.rincian,
+      },
+      hppMaster,
+      stok,
+      biayaIklan,
+      iklanPerSku,
+      performaPerSku: performa,
+      jmlSnapshot: semuaTanggal.length,
+      adaPerforma: performaAda,
+    }),
+  };
+}
+
+/**
  * Narasi AI sebagai text/event-stream (`aksi=mendalam-stream`).
  * Alasan endpoint terpisah, bukan mengubah `mendalam`: pemakai lama (halaman/klien
  * yang menunggu JSON utuh) tidak boleh berubah perilakunya hanya karena ada jalur baru.
@@ -316,11 +391,6 @@ async function alirMendalam(
   const presetId = Number(body.presetId);
   const tanggal = String(body.tanggal ?? "").trim();
   const encoder = new TextEncoder();
-  // Error sebelum potongan pertama TIDAK dikembalikan sebagai status bukan-200: header
-  // sudah terkirim saat stream dimulai, jadi status tak bisa diubah lagi dan klien
-  // hanya akan melihat "gagal membaca respons". Karena itu kesalahan dikirim sebagai
-  // event `{"error": "..."}` dengan status tetap 200, dan komentar di bawah menjelaskan
-  // kontraknya ke pemanggil.
   const alir = new ReadableStream<Uint8Array>({
     async start(controller) {
       const kirim = (v: unknown): void => controller.enqueue(encoder.encode(`data: ${JSON.stringify(v)}\n\n`));
@@ -329,44 +399,15 @@ async function alirMendalam(
         kirim({ error: pesan });
         tutup();
       };
-      if (!Number.isInteger(presetId) || presetId <= 0) return galat("presetId wajib diisi.");
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(tanggal)) return galat("Tanggal harus YYYY-MM-DD.");
-      const snap = await ambilSnapshot(db, presetId, tanggal);
-      if (!snap) return galat(`Belum ada data laba untuk ${tanggal}.`);
-
-      const semuaTanggal = await daftarTanggalSnapshot(db, presetId);
-      const { dari, sampai } = rentangMundur(tanggal, 6);
-      const [hppMaster, stok, biayaIklan, performaAda, iklanPerSku, performa] = await Promise.all([
-        petaHppMaster(db, snap.rincian.map((r) => r.sku)),
-        petaStok(db),
-        totalIklanPeriode(db, presetId, dari, sampai),
-        adaPerforma(db, presetId),
-        metrikIklanPerSku(db, presetId, dari, sampai),
-        performaPerSku(db, presetId, tanggal),
-      ]);
-      // Angka SAMA dengan aksi `cepat`/`mendalam` — satu sumber hitung, bukan hitung ulang.
-      const hasil = analisaCepat({
-        presetId,
-        periode: tanggal,
-        snapshot: {
-          jml_order: snap.jml_order, omzet: snap.omzet, hpp: snap.hpp,
-          biaya: snap.biaya, pajak: snap.pajak, laba: snap.laba, rincian: snap.rincian,
-        },
-        hppMaster,
-        stok,
-        biayaIklan,
-        iklanPerSku,
-        performaPerSku: performa,
-        jmlSnapshot: semuaTanggal.length,
-        adaPerforma: performaAda,
-      });
+      const siap = await siapkanAnalisa(db, presetId, tanggal);
+      if (!siap.ok) return galat(siap.error);
 
       const setting = await ambilSettingAnalisa(db, oleh);
       const kedalaman = bacaKedalaman(setting.kedalaman);
       const aliran = await panggilTeksStream(
         { db, kunci: getKunciEnkripsi(), env: getEnvAi() },
         {
-          pesan: susunPesanMendalam(susunBahan(hasil), kedalaman),
+          pesan: susunPesanMendalam(susunBahan(siap.hasil), kedalaman),
           reasoning: setting.reasoning,
           ...(setting.maks_token !== undefined ? { maksToken: setting.maks_token } : {}),
         }
@@ -386,14 +427,79 @@ async function alirMendalam(
       tutup();
     },
   });
-  return new Response(alir, {
-    status: 200,
-    headers: {
-      "Content-Type": "text/event-stream; charset=utf-8",
-      "Cache-Control": "no-cache",
-      Connection: "keep-alive",
-      // Cloudflare/proxy tidak boleh menahan buffer; tanpa ini potongan baru sampai setelah selesai.
-      "X-Accel-Buffering": "no",
+  return new Response(alir, { status: 200, headers: HEADER_SSE });
+}
+
+/**
+ * Saran langkah iklan sebagai text/event-stream (`aksi=saran-iklan-stream`).
+ *
+ * KENAPA AKSI INI TERPISAH dari `mendalam-stream` — inilah keluhan pemilik repo:
+ * kedua jalur menjawab pertanyaan yang BERBEDA. `mendalam-stream` memakai `PROMPT_SISTEM`
+ * (analisa penjualan umum: temuan, konsentrasi laba, prioritas tindakan), sedangkan tombol
+ * "Saran Langkah Iklan" menanyakan rencana BERTAHAP per keadaan iklan. Saat tombol itu
+ * memakai prompt analisa umum, jawabannya tidak menyambung dengan yang ditanyakan user
+ * (di pemakaian nyata: model malah membahas diagram Venn). Karena itu jalur ini memakai
+ * `PROMPT_SISTEM_SKENARIO` + `susunPesanSkenario` atas paket dari `bangunPaketSkenario`.
+ *
+ * Urutan event sengaja begini: `{paket}` dikirim DULU supaya user melihat angka yang
+ * dipakai AI (fakta + tiga skenario, sudah dihitung sistem) SEBELUM narasinya datang.
+ * Angka tetap milik sistem; AI hanya menarasikan paket itu dan dilarang mengarang angka.
+ */
+async function alirSaranIklan(
+  db: D1Database,
+  oleh: string,
+  body: Record<string, unknown>
+): Promise<Response> {
+  const presetId = Number(body.presetId);
+  const tanggal = String(body.tanggal ?? "").trim();
+  const hariKeDiminta = Number(body.hariKe);
+  const modalDiminta = Number(body.modalIklan);
+  const targetDiminta = Number(body.targetRoas);
+  const encoder = new TextEncoder();
+  const alir = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      const kirim = (v: unknown): void => controller.enqueue(encoder.encode(`data: ${JSON.stringify(v)}\n\n`));
+      const tutup = (): void => controller.close();
+      const galat = (pesan: string): void => {
+        kirim({ error: pesan });
+        tutup();
+      };
+      const siap = await siapkanAnalisa(db, presetId, tanggal);
+      if (!siap.ok) return galat(siap.error);
+
+      // Angka dari form UI; kosong/negatif = 0 (paket tetap dibangun dan MENYATAKAN
+      // bahwa nilainya nol, bukan menebak modal yang tidak diisi user).
+      const hariKe = Number.isFinite(hariKeDiminta) && hariKeDiminta > 0 ? Math.floor(hariKeDiminta) : 0;
+      const paket = bangunPaketSkenario({
+        hariKe,
+        baris: siap.hasil.baris,
+        modalIklan: Number.isFinite(modalDiminta) && modalDiminta > 0 ? modalDiminta : 0,
+        targetRoas: Number.isFinite(targetDiminta) && targetDiminta > 0 ? targetDiminta : 0,
+      });
+      // Paket lebih dulu: UI menampilkan fakta + tiga skenario sebelum narasi mengalir.
+      kirim({ paket });
+
+      const setting = await ambilSettingAnalisa(db, oleh);
+      const aliran = await panggilTeksStream(
+        { db, kunci: getKunciEnkripsi(), env: getEnvAi() },
+        {
+          pesan: susunPesanSkenario(paket, hariKe),
+          reasoning: setting.reasoning,
+          ...(setting.maks_token !== undefined ? { maksToken: setting.maks_token } : {}),
+        }
+      );
+      if (!aliran.ok) return galat(aliran.error);
+
+      try {
+        for await (const p of aliran.potongan) {
+          if (p.delta) kirim({ delta: p.delta });
+        }
+      } catch (e) {
+        return galat(e instanceof Error ? e.message : String(e));
+      }
+      kirim({ selesai: true, provider: aliran.provider, model: aliran.model });
+      tutup();
     },
   });
+  return new Response(alir, { status: 200, headers: HEADER_SSE });
 }

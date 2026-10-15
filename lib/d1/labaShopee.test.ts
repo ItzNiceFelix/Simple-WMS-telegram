@@ -59,6 +59,9 @@ describe("hitungLabaShopee (Order.all)", () => {
     assert.equal(a.rincian[1].sku, "A");
     assert.equal(a.rincian[1].marginSatuan, 6000);
     assert.equal(a.rincian[1].hargaJual, 10000);
+    // omzet baris = Σ subtotal apa adanya (analisa memakainya, bukan hargaJual × unit).
+    assert.equal(a.rincian[1].omzet, 20000);
+    assert.equal(a.rincian.reduce((s, r) => s + r.omzet, 0), a.omzet);
   });
 
   it("SKU kosong tolak seorder; tak cocok master tolak", async () => {

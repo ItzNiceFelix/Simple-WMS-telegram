@@ -14,6 +14,11 @@ import { sekarang } from "./hasil";
 export type RincianSnapshot = {
   sku: string; nama: string | null; unit: number; hppSatuan: number;
   hargaJual: number; marginSatuan: number; marginPersen: number; kontribusi: number;
+  /**
+   * Omzet apa adanya dari penghitungan snapshot. OPSIONAL: snapshot lama (pra-perubahan)
+   * tidak menyimpannya, jadi pembaca wajib fallback `hargaJual × unit`.
+   */
+  omzet?: number;
 };
 
 export type SnapshotAnalisa = {
@@ -219,9 +224,13 @@ export type BarisHistoriSku = {
 /**
  * Histori penjualan per SKU dari SEMUA snapshot preset ini, urut tanggal MENAIK.
  *
- * Sumber angkanya `rincian_json` per tanggal; omzet = `hargaJual × unit`, bukan kolom
- * terpisah — `rincian_json` tidak menyimpan omzet dan menebaknya dari kolom lain akan
- * membuat angka iklan tidak bisa diaudit.
+ * Sumber angkanya `rincian_json` per tanggal. `omzet` dipakai APA ADANYA bila ada —
+ * itulah omzet yang benar-benar dihitung saat snapshot dibuat.
+ *
+ * Fallback `hargaJual × unit` HANYA untuk baris lama pra-perubahan (rincian_json belum
+ * punya `omzet`) dan boleh dihapus setelah semua snapshot dihitung ulang; tanpa fallback
+ * ini estimasi untuk data lama langsung rusak. Perlu dicatat fallback itu tidak persis:
+ * `hargaJual` dibulatkan per unit (pada data nyata selisihnya ~0,8%).
  *
  * Rusak → DILEWATI, bukan melempar: satu tanggal dengan JSON cacat tidak boleh
  * menghapus histori tanggal lain (gaya sama dengan `performaPerSku`/`ambilSnapshot`).
@@ -254,8 +263,13 @@ export async function historiPerSku(
       // SKU tidak dijual di tanggal ini = tidak ada baris. Jangan tambahkan hari bernilai
       // nol; itu akan dihitung sebagai "hari terburuk" dan membuat estimasi terlalu pesimis.
       if (unit <= 0) continue;
+      // Omzet tersimpan diutamakan; 0/bukan angka (termasuk `undefined` di baris lama)
+      // jatuh ke rekonstruksi `hargaJual × unit` — nol di sini berarti "tidak diketahui",
+      // bukan "omzet nol", dan menghasilkan 0/NaN akan merusak estimasi iklan.
+      const omzetTersimpan = Number(r?.omzet);
+      const omzet = Number.isFinite(omzetTersimpan) && omzetTersimpan > 0 ? omzetTersimpan : hargaJual * unit;
       const daftar = peta.get(sku) ?? [];
-      daftar.push({ tanggal, omzet: hargaJual * unit, unit, marginSatuan, hargaJual });
+      daftar.push({ tanggal, omzet, unit, marginSatuan, hargaJual });
       peta.set(sku, daftar);
     }
   }

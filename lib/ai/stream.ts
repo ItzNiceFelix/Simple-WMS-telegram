@@ -124,11 +124,26 @@ export async function streamJson(
         const baca = reader.read();
         // Timer ganda: `idle` untuk jeda antar-potongan (model berpikir), `total` sebagai
         // pagar terakhir supaya koneksi menggantung tidak menahan request selamanya.
-        const hasil = await Promise.race([
-          baca.then((r) => ({ jenis: "baca" as const, r })),
-          new Promise<{ jenis: "idle" }>((r) => setTimeout(() => r({ jenis: "idle" }), idleMs)),
-          new Promise<{ jenis: "total" }>((r) => setTimeout(() => r({ jenis: "total" }), totalMs)),
-        ]);
+        // Keduanya WAJIB dibersihkan setelah balapan selesai: tanpa `clearTimeout`, tiap
+        // potongan meninggalkan dua timer yang tetap hidup sampai waktunya habis, sehingga
+        // proses (mis. uji) ikut tertahan menunggu event loop kosong.
+        let tIdle: ReturnType<typeof setTimeout> | undefined;
+        let tTotal: ReturnType<typeof setTimeout> | undefined;
+        let hasil: { jenis: "baca"; r: ReadableStreamReadResult<Uint8Array> } | { jenis: "idle" } | { jenis: "total" };
+        try {
+          hasil = await Promise.race([
+            baca.then((r) => ({ jenis: "baca" as const, r })),
+            new Promise<{ jenis: "idle" }>((r) => {
+              tIdle = setTimeout(() => r({ jenis: "idle" }), idleMs);
+            }),
+            new Promise<{ jenis: "total" }>((r) => {
+              tTotal = setTimeout(() => r({ jenis: "total" }), totalMs);
+            }),
+          ]);
+        } finally {
+          clearTimeout(tIdle);
+          clearTimeout(tTotal);
+        }
         if (hasil.jenis !== "baca") {
           batalkan();
           throw new Error(hasil.jenis === "idle" ? `Timeout provider setelah ${idleMs}ms tanpa potongan.` : `Timeout total ${totalMs}ms.`);

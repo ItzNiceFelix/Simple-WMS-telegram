@@ -27,6 +27,7 @@ import {
 import { tampilkanGagalTulis } from "@/components/dashboard/umpan-tulis";
 import { formatAngka, formatRupiah } from "@/lib/dashboard/format";
 import type { HasilEstimasi, RingkasEstimasi, StatusEstimasi } from "@/lib/analisa/iklanEstimasi";
+import type { PaketSkenario } from "@/lib/analisa/skenarioIklan";
 
 /** Baris produk dari /api/baca?scope=produk. */
 type ProdukMaster = { sku: string; nama_accurate: string | null };
@@ -84,6 +85,8 @@ export function AnalisaEstimasiIklan({
   const [ringkas, setRingkas] = useState<RingkasEstimasi | null>(null);
   const [memuat, setMemuat] = useState(false);
   const [saran, setSaran] = useState("");
+  /** Paket angka dari server (fakta + tiga skenario) — tiba SEBELUM narasi mengalir. */
+  const [paket, setPaket] = useState<PaketSkenario | null>(null);
   const [memuatSaran, setMemuatSaran] = useState(false);
 
   // Daftar produk untuk pemilih. Endpoint ini yang dipakai repo (tidak ada /api/produk).
@@ -109,6 +112,7 @@ export function AnalisaEstimasiIklan({
     setHasil(null);
     setRingkas(null);
     setSaran("");
+    setPaket(null);
   }, [presetId]);
 
   const opsi = useMemo(
@@ -176,29 +180,52 @@ export function AnalisaEstimasiIklan({
   /**
    * Saran langkah iklan (narasi AI). Angka tetap dari tabel di atas; AI hanya menarasikan.
    *
-   * Memakai `mendalam-stream`, BUKAN `mendalam`. Alasannya persis keluhan pemilik repo:
-   * model penalaran bisa berpikir lebih lama daripada batas tunggu mana pun, sehingga
-   * permintaan JSON utuh selalu berakhir "timeout". Dengan aliran, potongan pertama tiba
-   * dalam hitungan detik — user melihat model benar-benar sedang menjawab, dan request
-   * tidak dianggap gagal hanya karena totalnya lama.
+   * Memakai `saran-iklan-stream`, BUKAN `mendalam-stream`. Alasannya dua, dan keduanya
+   * nyata di pemakaian:
+   *   1. `mendalam-stream` menjawab pertanyaan analisa penjualan umum (prompt `PROMPT_SISTEM`),
+   *      sedangkan tombol ini menanyakan rencana bertahap per keadaan iklan (prompt
+   *      `PROMPT_SISTEM_SKENARIO`). Memakai yang pertama membuat jawabannya tidak menyambung
+   *      dengan yang ditanyakan user.
+   *   2. Jalur skenario mengirim paket angka lebih dulu (event `{paket}`), jadi user melihat
+   *      angka yang dipakai AI sebelum narasinya tiba.
    *
-   * Server membalas `text/event-stream` berisi `{delta}` berulang, lalu `{selesai}` atau
-   * `{error}`. Kita baca manual (bukan EventSource) karena endpoint ini POST + butuh sesi.
+   * Streaming (bukan JSON utuh) tetap dipakai karena model penalaran bisa berpikir lebih
+   * lama daripada batas tunggu mana pun: dengan aliran, potongan pertama tiba dalam hitungan
+   * detik dan request tidak dianggap gagal hanya karena totalnya lama.
+   *
+   * Server membalas `text/event-stream` berisi `{paket}` sekali, lalu `{delta}` berulang,
+   * lalu `{selesai}` atau `{error}`. Kita baca manual (bukan EventSource) karena endpoint
+   * ini POST + butuh sesi.
    */
   async function mintaSaran() {
     setMemuatSaran(true);
     setSaran("");
+    setPaket(null);
+    // modalIklan = jumlah modal semua SKU terpilih; targetRoas = rata-rata target yang
+    // diisi (0 bila tidak ada). Server memakai keduanya sebagai angka paket skenario.
+    const modalIklan = terpilih.reduce((t, sku) => {
+      const n = Number(setelan[sku]?.modal ?? "");
+      return t + (Number.isFinite(n) && n > 0 ? n : 0);
+    }, 0);
+    const targetTerisi = terpilih
+      .map((sku) => Number(setelan[sku]?.target ?? ""))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    const targetRoas =
+      targetTerisi.length > 0
+        ? Math.round((targetTerisi.reduce((a, b) => a + b, 0) / targetTerisi.length) * 100) / 100
+        : 0;
     try {
       const res = await fetch("/api/analisa", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({
-          aksi: "mendalam-stream",
+          aksi: "saran-iklan-stream",
           presetId,
           tanggal,
           hariKe: hariKe === "" ? 0 : Number(hariKe),
-          estimasi: hasil ?? [],
+          modalIklan,
+          targetRoas,
         }),
       });
       // Gagal sebelum stream dimulai masih balas JSON/status non-200 biasa.
@@ -221,13 +248,18 @@ export function AnalisaEstimasiIklan({
         for (const b of bagian) {
           const baris = b.split("\n").find((l) => l.startsWith("data: "));
           if (!baris) continue;
-          let ev: { delta?: string; error?: string; selesai?: boolean };
+          let ev: { delta?: string; error?: string; selesai?: boolean; paket?: PaketSkenario };
           try {
             ev = JSON.parse(baris.slice(6)) as typeof ev;
           } catch {
             continue; // event cacat dilewati, bukan menggagalkan seluruh aliran
           }
           if (ev.error) throw new Error(ev.error);
+          // Paket datang lebih dulu: tampilkan supaya user memeriksa angkanya sendiri.
+          if (ev.paket) {
+            setPaket(ev.paket);
+            continue;
+          }
           if (ev.delta) {
             teks += ev.delta;
             // Tampilkan bertahap supaya user melihat model sedang bekerja.
@@ -494,7 +526,7 @@ export function AnalisaEstimasiIklan({
         ) : null}
 
         {/* ── Kartu saran AI ── */}
-        {memuatSaran || saran !== "" ? (
+        {memuatSaran || saran !== "" || paket !== null ? (
           <Card data-testid="kartu-saran-langkah">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-base">
@@ -502,10 +534,46 @@ export function AnalisaEstimasiIklan({
                 Saran Langkah Iklan
               </CardTitle>
               <CardDescription>
-                Narasi dari model. Angka tetap dari tabel di atas — AI tidak menghitung.
+                Dua bagian, dua sumber: <b>angka paket di bawah dihitung sistem</b> dari data
+                periode ini (model tidak menghitung), sedangkan <b>narasi</b> adalah tulisan model
+                yang hanya menarasikan angka tersebut.
               </CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className="flex flex-col gap-4">
+              {/* Paket angka tiba lebih dulu (event `{paket}`) supaya bisa diperiksa sendiri
+                  sebelum narasinya masuk — sama seperti bahan prompt di jalur analisa. */}
+              {paket ? (
+                <div className="flex flex-col gap-3" data-testid="paket-skenario">
+                  <ul className="list-disc pl-5 text-sm" data-testid="paket-fakta">
+                    {paket.fakta.map((f, i) => (
+                      <li key={i}>{f}</li>
+                    ))}
+                  </ul>
+                  <div className="flex flex-col gap-3">
+                    {paket.skenario.map((s) => (
+                      <div
+                        key={s.id}
+                        data-testid={`skenario-${s.id}`}
+                        className="rounded-xl border border-border p-3"
+                      >
+                        <p className="text-sm font-medium">{s.judul}</p>
+                        <p className="mt-1 text-xs text-muted-foreground">{s.kapan}</p>
+                        <ul className="mt-2 list-disc pl-5 text-xs text-muted-foreground">
+                          {s.angka.map((a, i) => (
+                            <li key={i}>{a}</li>
+                          ))}
+                        </ul>
+                        <ol className="mt-2 list-decimal pl-5 text-sm">
+                          {s.langkah.map((l, i) => (
+                            <li key={i}>{l}</li>
+                          ))}
+                        </ol>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+
               {memuatSaran ? (
                 <p className="flex items-center gap-2 text-sm text-muted-foreground">
                   <Spinner aria-hidden /> Menyusun saran…

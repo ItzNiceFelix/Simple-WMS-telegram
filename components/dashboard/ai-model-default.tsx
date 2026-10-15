@@ -204,6 +204,28 @@ export function AiModelDefault({ bolehUbah, onBerubah }: Props) {
                             {mengirim === kunci ? <Spinner data-icon="inline-start" /> : <Save data-icon="inline-start" />}
                             Simpan
                           </Button>
+                          {/* Peringatan pilihan yang mudah membuat panggilan AI lambat/gagal.
+                              Dua sebab nyata yang sudah terjadi di repo ini: model `:free`
+                              mengantre di sisi penyedia sehingga hampir pasti timeout, dan
+                              model yang terdaftar sebagai `vision` dipakai untuk `teks`
+                              (katalog kenari menaruh muse-spark di vision). Peringatan ini
+                              TIDAK melarang memilih — hanya menjelaskan risikonya. */}
+                          {nilai ? (() => {
+                            const dipilih = opsi.find((x) => x.model_id === nilai)
+                            const bebas = nilai.endsWith(":free")
+                            const bedaJenis = dipilih !== undefined && dipilih.jenis !== jenis
+                            if (!bebas && !bedaJenis) return null
+                            return (
+                              <p
+                                className="w-full text-xs text-amber-600 dark:text-amber-500 sm:basis-full"
+                                data-testid={`peringatan-default-${jenis}-${prov}`}
+                              >
+                                {bebas ? "Model :free mengantre di sisi penyedia, jadi sering melewati batas waktu — pakai versi berbayar bila tersedia." : null}
+                                {bebas && bedaJenis ? " " : null}
+                                {bedaJenis && dipilih ? `Di katalog model ini terdaftar sebagai ${dipilih.jenis}, bukan ${jenis}.` : null}
+                              </p>
+                            )
+                          })() : null}
                         </li>
                       )
                     })}

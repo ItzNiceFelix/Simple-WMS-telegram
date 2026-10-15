@@ -8,6 +8,9 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { bangunPaketSkenario, rupiah, type MasukanSkenario } from "./skenarioIklan";
+import {
+  PROMPT_SISTEM, PROMPT_SISTEM_SKENARIO, susunBahanSkenario, susunPesanSkenario,
+} from "./ai";
 import { AMBANG_CTR_SEHAT, AMBANG_DILIHAT_MIN } from "./hitung";
 import type { BarisSku } from "./tipe";
 
@@ -140,5 +143,62 @@ describe("bangunPaketSkenario", () => {
         `${s.id} punya langkah berangka: ${s.langkah.join(" | ")}`
       );
     }
+  });
+
+  it("tiga id skenario unik dan tiap langkah terisi", () => {
+    const p = bangunPaketSkenario(
+      masukan({ baris: [baris(), baris({ sku: "0002", roasImpas: 4.1 }), barisRugi] })
+    );
+    const id = p.skenario.map((s) => s.id);
+    assert.equal(new Set(id).size, 3, `id skenario unik: ${id.join(", ")}`);
+    for (const s of p.skenario) {
+      assert.ok(s.langkah.length > 0, `${s.id} punya langkah`);
+      for (const l of s.langkah) {
+        assert.ok(l.trim().length > 0, `${s.id} tidak memuat langkah kosong`);
+      }
+    }
+  });
+});
+
+/**
+ * Bahan yang dikirim ke model untuk saran iklan. Uji ini MENGUNCI jalurnya, bukan gayanya:
+ * kalau prompt skenario diam-diam kembali memakai bahan analisa umum (`susunBahan`), jawaban
+ * model lagi-lagi tidak nyambung dengan pertanyaan user — persis bug yang membuat tombol
+ * "Saran Langkah Iklan" membahas diagram Venn.
+ */
+describe("susunBahanSkenario — bahan prompt skenario iklan", () => {
+  const paket = bangunPaketSkenario(masukan());
+
+  it("menyebut KETIGA skenario beserta id, judul, dan langkahnya", () => {
+    const teks = susunBahanSkenario(paket, 3);
+    for (const id of ["roas_anjlok", "roas_bagus", "roas_stagnan"]) {
+      assert.ok(teks.includes(`[${id}]`), `bahan memuat skenario ${id}:\n${teks}`);
+    }
+    for (const s of paket.skenario) {
+      assert.ok(teks.includes(s.judul), `judul ${s.id} ikut terkirim`);
+      assert.ok(teks.includes(s.langkah[0]), `langkah pertama ${s.id} ikut terkirim`);
+    }
+  });
+
+  it("membawa angka nyata: titik impas, modal, dan hari yang dinilai", () => {
+    const teks = susunBahanSkenario(paket, 3);
+    assert.ok(teks.includes("2.33"), `titik impas nyata ikut terkirim:\n${teks}`);
+    assert.ok(teks.includes("Rp 1.234.567"), "modal iklan ikut terkirim");
+    assert.ok(teks.includes("HARI KE-3"), "hari yang dinilai disebut");
+  });
+
+  it("bukan bahan analisa umum: tanpa blok RINGKASAN/TEMUAN/KEPUTUSAN IKLAN", () => {
+    const teks = susunBahanSkenario(paket, 7);
+    for (const penanda of ["RINGKASAN:", "TEMUAN", "KONSENTRASI:", "KEPUTUSAN IKLAN"]) {
+      assert.ok(!teks.includes(penanda), `bahan skenario tidak memuat penanda analisa umum "${penanda}"`);
+    }
+  });
+
+  it("pasangan pesannya memakai prompt skenario, bukan prompt analisa umum", () => {
+    const pesan = susunPesanSkenario(paket, 3);
+    assert.equal(pesan[0].role, "system");
+    assert.equal(pesan[0].teks, PROMPT_SISTEM_SKENARIO);
+    assert.notEqual(pesan[0].teks, PROMPT_SISTEM);
+    assert.ok(pesan[1].teks.includes("2.33"), "pesan user memuat bahan paket");
   });
 });

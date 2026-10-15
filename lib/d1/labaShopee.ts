@@ -15,6 +15,12 @@ export type RincianSku = {
   unit: number;
   hppSatuan: number;
   hargaJual: number;
+  /**
+   * Omzet baris ini APA ADANYA (Σ subtotal), bukan `hargaJual × unit` — `hargaJual`
+   * dibulatkan per unit sehingga perkalian itu tidak sama dengan omzet yang benar-benar
+   * dihitung sistem. Sama seperti `RincianSkuPreset` supaya dua jalur konsisten.
+   */
+  omzet: number;
   marginSatuan: number;
   marginPersen: number;
   kontribusi: number;
@@ -201,6 +207,7 @@ export async function hitungLabaShopee(
         unit: s.unit,
         hppSatuan: s.hppSatuan,
         hargaJual: s.harga,
+        omzet: s.omzetSku,
         marginSatuan,
         marginPersen: s.omzetSku > 0 ? Math.round(((s.kontribusi / s.omzetSku) * 100) * 10) / 10 : 0,
         kontribusi: s.kontribusi,

@@ -347,17 +347,7 @@ export async function saranLangkahIklan(
   const hasil = await panggilTeks(
     ctx,
     {
-      pesan: [
-        { role: "system" as const, teks: PROMPT_SISTEM_SKENARIO },
-        {
-          role: "user" as const,
-          teks:
-            `Hari yang diminta pengguna: hari ke-${opsi.hariKe}.\n` +
-            `Susun rencana bertahap untuk hari ke-${opsi.hariKe} berdasarkan paket berikut. ` +
-            `Pakai angka paket apa adanya; jangan mengarang angka di luar paket.\n\n` +
-            `${bahan}`,
-        },
-      ],
+      pesan: susunPesanSkenario(paket, opsi.hariKe),
       reasoning: opsi.reasoning,
       ...(opsi.maksToken !== undefined ? { maksToken: opsi.maksToken } : {}),
     },
@@ -383,4 +373,26 @@ export function susunBahanSkenario(paket: PaketSkenario, hariKe: number): string
     baris.push(`  langkah sistem: ${s.langkah.join(" | ")}`);
   }
   return baris.join("\n");
+}
+
+/**
+ * Susun pasangan pesan (sistem + instruksi) untuk saran langkah iklan — DIPAKAI BERSAMA
+ * jalur non-stream (`saranLangkahIklan`) dan jalur streaming (`aksi=saran-iklan-stream`
+ * di app/api/analisa/route.ts). Alasannya sama dengan `susunPesanMendalam`: prompt
+ * skenario iklan dan prompt analisa penjualan umum menjawab pertanyaan BERBEDA, jadi
+ * penggantinya tidak boleh disusun ulang di route — kalau disusun ulang, cepat atau lambat
+ * satu jalur memakai prompt yang salah dan jawabannya tidak nyambung dengan pertanyaan user.
+ */
+export function susunPesanSkenario(paket: PaketSkenario, hariKe: number): { role: "system" | "user"; teks: string }[] {
+  return [
+    { role: "system" as const, teks: PROMPT_SISTEM_SKENARIO },
+    {
+      role: "user" as const,
+      teks:
+        `Hari yang diminta pengguna: hari ke-${hariKe}.\n` +
+        `Susun rencana bertahap untuk hari ke-${hariKe} berdasarkan paket berikut. ` +
+        `Pakai angka paket apa adanya; jangan mengarang angka di luar paket.\n\n` +
+        `${susunBahanSkenario(paket, hariKe)}`,
+    },
+  ];
 }

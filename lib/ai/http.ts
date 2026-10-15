@@ -81,6 +81,14 @@ const jeda = (ms: number): Promise<void> => {
  * Panggil endpoint JSON dengan timeout + retry maksimal 2 kali.
  * Retry hanya untuk 429/5xx/error jaringan; 4xx lain langsung dikembalikan
  * supaya pemanggil (orkestrator) bisa pindah model/provider tanpa menunggu.
+ *
+ * TIMEOUT TIDAK DIULANG: percobaan yang diputus oleh AbortController kita sendiri
+ * langsung dikembalikan gagal. Mengulangnya sia-sia — model yang tidak menjawab dalam
+ * `timeoutMs` tidak akan menjawab pada percobaan berikutnya — sementara waktunya
+ * berlipat (`maksUlang + 1` kali timeout). Di rantai provider itu fatal: satu model
+ * bisa membakar seluruh anggaran dan provider cadangan yang kredensialnya sehat
+ * (mis. gemini) tidak pernah dicoba. 429/5xx dan gangguan jaringan (TypeError) TETAP
+ * diulang karena keduanya sementara.
  */
 export async function panggilJson<T>(url: string, init: RequestInit, opts: OpsiHttp = {}): Promise<HasilHttp<T>> {
   const timeoutMs = opts.timeoutMs && opts.timeoutMs > 0 ? opts.timeoutMs : 30000;
@@ -116,7 +124,12 @@ export async function panggilJson<T>(url: string, init: RequestInit, opts: OpsiH
     } catch (e) {
       // AbortError/TypeError jaringan — layak diulang, pesannya tetap asli.
       const sebab = e instanceof Error ? e.message : String(e);
-      terakhir = ac.signal.aborted ? `Timeout provider setelah ${timeoutMs}ms.` : `Gagal menghubungi provider: ${sebab}`;
+      if (ac.signal.aborted) {
+        // Timeout (bukan gangguan jaringan): berhenti di sini. Pesan sengaja sama
+        // dengan sebelumnya supaya UI tidak berubah.
+        return { ok: false, status: 0, error: `Timeout provider setelah ${timeoutMs}ms.`, latencyMs: Date.now() - mulai };
+      }
+      terakhir = `Gagal menghubungi provider: ${sebab}`;
     } finally {
       clearTimeout(timer);
     }
