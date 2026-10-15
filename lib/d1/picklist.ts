@@ -2,9 +2,29 @@
 import { gagal, type Hasil } from "./hasil";
 
 export type PickTarget = { mp: string; no: string };
-export type PickRow = { sku: string; nama: string; qty: number; variasi?: string };
+/**
+ * `perlu_sku` = baris ini SKU-nya belum/tidak ada di master. Dipakai picklist untuk
+ * membedakannya dari barang normal, dan untuk memisahkannya ke tabel bawah.
+ * `sku_asal` = SKU yang tertulis di file marketplace (kosong bila file memang tidak menulis).
+ */
+export type PickRow = {
+  sku: string;
+  nama: string;
+  qty: number;
+  variasi?: string;
+  perlu_sku?: boolean;
+  sku_asal?: string;
+};
 export type Picklist = { orders: number; units: number; rows: PickRow[] };
-export type PaketPicklist = { no_resi: string; no_pesanan: string[]; jasa_kirim: string; rows: PickRow[]; units: number };
+export type PaketPicklist = {
+  no_resi: string;
+  no_pesanan: string[];
+  jasa_kirim: string;
+  rows: PickRow[];
+  units: number;
+  /** Jumlah baris bermasalah di paket ini; dipakai untuk memperingatkan saat mencetak. */
+  perlu_sku?: number;
+};
 
 /**
  * Picklist PER PAKET (F18/D4): satu lembar per no_resi, daftar semua order di grup.
@@ -62,15 +82,32 @@ export async function buatPicklistPaket(db: D1Database, targets: PickTarget[]): 
       paketMap.set(kunci, paket);
     }
     const items = await db
-      .prepare("SELECT i.sku, p.nama_accurate AS nama, i.qty, i.variasi FROM order_items i JOIN products p ON p.sku = i.sku WHERE i.marketplace = 'shopee' AND i.no_pesanan = ?")
+      .prepare(`SELECT i.sku, p.nama_accurate AS nama, i.qty, i.variasi, i.nama_shopee, i.perlu_sku, i.sku_asal
+        FROM order_items i LEFT JOIN products p ON p.sku = i.sku
+        WHERE i.marketplace = 'shopee' AND i.no_pesanan = ?`)
       .bind(no)
-      .all<PickRow & { variasi: string }>();
+      .all<{
+        sku: string; nama: string | null; qty: number; variasi: string | null;
+        nama_shopee: string | null; perlu_sku: number | null; sku_asal: string | null;
+      }>();
     for (const item of items.results) {
-      if (!item.nama) return gagal(409, `SKU ${item.sku} (order ${no}) tidak ada di master stok.`);
+      // LEFT JOIN, bukan JOIN: dengan INNER JOIN baris yang SKU-nya tidak ada di master
+      // HILANG tanpa jejak, sehingga picklist tercetak tidak lengkap dan tidak ada yang tahu.
+      // Sekarang barisnya tetap tampil dengan penanda supaya checker bisa memutuskan.
+      const bermasalah = item.perlu_sku === 1 || !item.nama;
+      const nama = item.nama ?? item.nama_shopee ?? "";
       // Variasi ditempel PER BARIS: SKU sama bisa punya varian beda antar order dalam satu
       // paket (mis. 001699 HIJAU di O-A, BIRU di O-B). Map per-SKU akan menimpa salah satunya.
-      paket.rows.push({ sku: item.sku, nama: item.nama, qty: Number(item.qty), variasi: item.variasi || "" });
+      paket.rows.push({
+        sku: item.sku,
+        nama,
+        qty: Number(item.qty),
+        variasi: item.variasi || "",
+        perlu_sku: bermasalah,
+        sku_asal: item.sku_asal || "",
+      });
       paket.units += Number(item.qty);
+      if (bermasalah) paket.perlu_sku = (paket.perlu_sku ?? 0) + 1;
     }
   }
   return { ok: true, paket: [...paketMap.values()] };
@@ -89,12 +126,23 @@ export async function buatPicklist(db: D1Database, targets: PickTarget[]): Promi
     if (!order) return gagal(404, `Pesanan ${target.no} tidak ditemukan.`);
     if (order.status_fulfill !== "pending") return gagal(409, `Pesanan ${target.no} bukan pending.`);
     const items = await db
-      .prepare("SELECT i.sku, p.nama_accurate AS nama, i.qty FROM order_items i JOIN products p ON p.sku = i.sku WHERE i.marketplace = ? AND i.no_pesanan = ?")
+      .prepare(`SELECT i.sku, p.nama_accurate AS nama, i.qty, i.nama_shopee, i.perlu_sku, i.sku_asal
+        FROM order_items i LEFT JOIN products p ON p.sku = i.sku
+        WHERE i.marketplace = ? AND i.no_pesanan = ?`)
       .bind(target.mp, target.no)
-      .all<PickRow>();
+      .all<{
+        sku: string; nama: string | null; qty: number;
+        nama_shopee: string | null; perlu_sku: number | null; sku_asal: string | null;
+      }>();
     for (const item of items.results) {
-      if (!item.nama) return gagal(409, `SKU ${item.sku} (order ${target.no}) tidak ada di master stok.`);
-      rows.push({ sku: item.sku, nama: item.nama, qty: Number(item.qty) });
+      const bermasalah = item.perlu_sku === 1 || !item.nama;
+      rows.push({
+        sku: item.sku,
+        nama: item.nama ?? item.nama_shopee ?? "",
+        qty: Number(item.qty),
+        perlu_sku: bermasalah,
+        sku_asal: item.sku_asal || "",
+      });
     }
   }
   const bySku = new Map<string, PickRow>();

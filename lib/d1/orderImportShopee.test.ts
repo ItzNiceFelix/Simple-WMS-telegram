@@ -203,10 +203,16 @@ describe("normalisasiSheetShopee", () => {
     assert.equal(r.belumSku[0].qty_total, 2, "tapi qty tetap dijumlah");
   });
 
-  it("SKU tak dikenal master → gagal", () => {
+  it("SKU tak dikenal master → order TETAP dibuat, masuk Perlu SKU (dulu order dibuang)", () => {
+    // Perilaku lama membuang seluruh order di sini. Itu tidak konsisten: baris tanpa SKU
+    // justru lolos, sementara baris yang cuma belum masuk master dihukum lebih berat.
+    // Sekarang keduanya diperlakukan sama supaya user bisa memperbaikinya.
     const r = normalisasiSheetShopee([{ ...HDR, "No. Pesanan": "O-12", "Nomor Referensi SKU": "ZZ", Jumlah: 1 }], [], (sku) => sku !== "ZZ");
-    assert.equal(r.orders.length, 0);
-    assert.match(r.gagal[0].pesan, /tidak ditemukan/);
+    assert.equal(r.orders.length, 1, "order tidak boleh hilang");
+    assert.equal(r.orders[0].items[0].sku, "ZZ", "SKU asli dibawa supaya bisa ditampilkan");
+    assert.equal(r.belumSku.length, 1);
+    assert.equal(r.belumSku[0].sku_asal, "ZZ");
+    assert.equal(r.gagal.length, 0, "bukan kegagalan — ini antrian perbaikan");
   });
 
   it("Jumlah kosong/0 → gagal (bukan diam-diam jadi 1)", () => {
@@ -238,5 +244,58 @@ describe("normalisasiSheetShopee", () => {
     const r = normalisasiSheetShopee([{ ...HDR, "No. Pesanan": "O-16", "Nomor Referensi SKU": "A", Jumlah: 1, "Opsi Pengiriman": "Reguler (Cashless)-JNE Reguler" }], []);
     assert.equal(r.orders[0].jasaKirim, "JNE Reguler");
     assert.equal(r.orders[0].tipeLayanan, "Reguler (Cashless)");
+  });
+});
+
+describe("konsistensi: TIDAK ada baris yang dibuang karena masalah SKU", () => {
+  it("SKU tidak ada di master: order TETAP dibuat, baris masuk belumSku (dulu order dibuang)", () => {
+    // Master hanya kenal "ADA". File menulis "TIDAK-ADA".
+    const r = normalisasiSheetShopee(
+      [{ ...HDR, "No. Pesanan": "O-90", Jumlah: "3", "SKU Induk": "TIDAK-ADA", "Nama Produk": "Centong Pelangi", "Nama Variasi": "MERAH" }],
+      [],
+      (sku) => sku === "ADA"
+    );
+    assert.equal(r.orders.length, 1, "order tidak boleh hilang");
+    assert.equal(r.orders[0].items[0].sku, "TIDAK-ADA", "SKU asli tetap dibawa untuk ditampilkan");
+    assert.equal(r.belumSku.length, 1);
+    assert.equal(r.belumSku[0].sku_asal, "TIDAK-ADA", "SKU bermasalah ditandai sebagai sku_asal");
+    assert.equal(r.belumSku[0].sumber, "order");
+    assert.equal(r.belumSku[0].qty_total, 3);
+    assert.equal(r.gagal.length, 0, "tidak dicatat sebagai gagal — ini bisa diperbaiki, bukan error");
+  });
+
+  it("advance tanpa SKU: masuk belumSku, bukan hilang (dulu dibuang diam-diam)", () => {
+    const r = normalisasiSheetShopee(
+      [],
+      [{ ...HDR, "Booking SN": "BK-9", Jumlah: "1", "Nama Produk": "Saringan Kelapa", "Nama Variasi": "" }]
+    );
+    assert.equal(r.advance.length, 0, "tanpa SKU sah tidak boleh masuk booking");
+    assert.equal(r.belumSku.length, 1, "harus muncul di daftar Perlu SKU");
+    assert.equal(r.belumSku[0].sumber, "advance", "ditandai datang dari jalur advance");
+    assert.equal(r.belumSku[0].order_ref, "BK-9");
+    assert.equal(r.gagal.length, 0);
+  });
+
+  it("advance dengan SKU tak dikenal: juga masuk belumSku, bukan dibuang", () => {
+    const r = normalisasiSheetShopee(
+      [],
+      [{ ...HDR, "Booking SN": "BK-10", Jumlah: "1", "SKU Induk": "SALAH-99", "Nama Produk": "Kemoceng", "Nama Variasi": "" }],
+      () => false
+    );
+    assert.equal(r.advance.length, 0);
+    assert.equal(r.belumSku.length, 1);
+    assert.equal(r.belumSku[0].sku_asal, "SALAH-99");
+    assert.equal(r.belumSku[0].sumber, "advance");
+    assert.equal(r.gagal.length, 0);
+  });
+
+  it("order DAN advance bermasalah masuk daftar yang sama, dibedakan oleh sumber", () => {
+    const r = normalisasiSheetShopee(
+      [{ ...HDR, "No. Pesanan": "O-91", Jumlah: "1", "SKU Induk": "X", "Nama Produk": "Barang A", "Nama Variasi": "" }],
+      [{ ...HDR, "Booking SN": "BK-11", Jumlah: "1", "SKU Induk": "Y", "Nama Produk": "Barang B", "Nama Variasi": "" }],
+      () => false
+    );
+    const sumber = r.belumSku.map((b) => b.sumber).sort();
+    assert.deepEqual(sumber, ["advance", "order"], "keduanya ada di satu daftar");
   });
 });

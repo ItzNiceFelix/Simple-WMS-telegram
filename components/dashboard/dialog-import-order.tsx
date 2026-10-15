@@ -43,6 +43,13 @@ type BarisBelumSku = {
   nama_shopee: string
   variasi: string
   qty_total: number
+  /**
+   * SKU yang tertulis di file tapi tidak ada di master. Kosong = baris memang tanpa SKU.
+   * Dipakai untuk memberi tahu user APA yang salah, bukan sekadar "perlu SKU".
+   */
+  sku_asal: string
+  /** Jalur asal baris: pesanan biasa atau advance fulfilment. */
+  sumber: "order" | "advance"
   tebakan: { sku: string; perlu_pilih_manual: boolean; kandidat: Kandidat[] }
 }
 type Mundur = { no_pesanan: string; no_resi: string; wms: string; file: string }
@@ -266,6 +273,11 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
               order_ref: ref,
               nama_shopee: b.nama_shopee,
               variasi: b.variasi,
+              // Dibawa supaya daftar tunggu bisa menampilkan APA yang salah dan dari jalur mana,
+              // bukan cuma nama produk. Tanpa ini tabelnya tidak berguna saat dibuka lagi.
+              sumber: b.sumber,
+              sku_asal: b.sku_asal,
+              qty_total: b.qty_total,
             }))
           )
         try {
@@ -494,6 +506,18 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
                             <span className="text-[11px] text-muted-foreground md:hidden">
                               {b.variasi ? `Variasi: ${b.variasi} · ` : ""}Qty {b.qty_total}
                             </span>
+                            {/* SKU bermasalah: file menulis SKU tapi master tidak punya. Ditampilkan
+                                supaya user tahu apa yang tertulis di berkasnya, bukan menebak. */}
+                            {b.sku_asal && (
+                              <span className="block text-[11px] text-amber-700 dark:text-amber-500" data-testid={`sku-bermasalah-${b.order_ref}`}>
+                                SKU di file: <b>{b.sku_asal}</b> (tidak ada di master)
+                              </span>
+                            )}
+                            {b.sumber === "advance" && (
+                              <span className="block text-[11px] text-muted-foreground" data-testid={`sumber-advance-${b.order_ref}`}>
+                                dari Advance Fulfilment
+                              </span>
+                            )}
                           </div>
                           <div className="hidden truncate text-sm md:block">{b.variasi || "-"}</div>
                           <div className="hidden text-right text-sm tabular-nums md:block">{b.qty_total}</div>

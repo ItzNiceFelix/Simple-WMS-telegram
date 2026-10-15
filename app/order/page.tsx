@@ -224,9 +224,22 @@ function DaftarOrder() {
 
   function unduhPicklist(): void {
     if (!orders || terpilih.size === 0) return;
-    const targets = orders
-      .filter((o) => terpilih.has(kunciOrder(o)))
-      .map((o) => ({ marketplace: o.marketplace, no_pesanan: o.no_pesanan }));
+    const dipilih = orders.filter((o) => terpilih.has(kunciOrder(o)));
+    const targets = dipilih.map((o) => ({ marketplace: o.marketplace, no_pesanan: o.no_pesanan }));
+    // Ingatkan SEBELUM mencetak bila ada order yang itemnya belum lengkap. Picklist yang
+    // tercetak tanpa barang bermasalah membuat checker memverifikasi lembar yang tidak
+    // lengkap tanpa tahu — lebih baik dicegah di sini daripada diketahui setelah kirim.
+    const bermasalah = dipilih.filter((o) => o.items.some((it) => it.perlu_sku === true));
+    const kosong = dipilih.filter((o) => o.items.length === 0);
+    if (bermasalah.length > 0 || kosong.length > 0) {
+      const bagian: string[] = [];
+      if (bermasalah.length > 0) bagian.push(`${bermasalah.length} order punya baris belum ber-SKU`);
+      if (kosong.length > 0) bagian.push(`${kosong.length} order belum punya item sama sekali`);
+      const lanjut = window.confirm(
+        `${bagian.join(" dan ")}.\n\nBaris tersebut tetap tercetak di bagian "PERLU SKU", tapi pastikan checker memeriksanya.\n\nLanjut cetak?`
+      );
+      if (!lanjut) return;
+    }
     const q = new URLSearchParams({ aksi: "picklist-pdf", targets: JSON.stringify(targets), mode: modePicklist });
     // Mode gabung-order juga menyisir rak untuk booking advance aktif.
     if (modePicklist === "gabung-order") q.set("status", "menunggu");

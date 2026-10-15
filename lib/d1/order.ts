@@ -3,7 +3,14 @@ import { gagal, sekarang, type Hasil } from "./hasil";
 import { ambilProduk } from "./produk";
 import { bacaQty, GUDANG_ONLINE } from "./stok";
 
-export type OrderItem = { sku: string; qty: number; harga_satuan: number; hpp_snapshot: number; variasi?: string; nama_shopee?: string };
+export type OrderItem = {
+  sku: string; qty: number; harga_satuan: number; hpp_snapshot: number;
+  variasi?: string; nama_shopee?: string;
+  /** SKU belum ada di master: baris ini menunggu dipetakan, bukan barang siap kirim. */
+  perlu_sku?: boolean;
+  /** SKU asal yang tertulis di file, untuk ditampilkan saat baris bermasalah. */
+  sku_asal?: string;
+};
 export type OrderFee = { jenis: string; basis: "flat" | "persen"; nilai: number };
 export type BarisPesanan = {
   marketplace: string; no_pesanan: string; tanggal: number; buyer: string;
@@ -79,7 +86,28 @@ export type OrderDetail = {
 export async function ambilOrder(db: D1Database, mp: string, no: string): Promise<OrderDetail | null> {
   const h = await db.prepare("SELECT marketplace, no_pesanan, tanggal, buyer, no_resi, status_fulfill, pajak_pph, pajak_ppn_persen FROM orders WHERE marketplace = ? AND no_pesanan = ?").bind(mp, no).first<{ marketplace: string; no_pesanan: string; tanggal: number; buyer: string; no_resi: string; status_fulfill: string; pajak_pph: number; pajak_ppn_persen: number }>();
   if (!h) return null;
-  const { results: items } = await db.prepare("SELECT sku, variasi, nama_shopee, qty, harga_satuan, hpp_snapshot, subtotal FROM order_items WHERE marketplace = ? AND no_pesanan = ? ORDER BY sku, variasi").bind(mp, no).all<OrderItem & { subtotal: number }>();
+  // `perlu_sku`/`sku_asal` ikut dibaca supaya halaman order bisa memperingatkan sebelum
+  // mencetak picklist yang isinya belum lengkap. Tipe hasil query ditulis sendiri (bukan
+  // irisan dengan OrderItem) karena `perlu_sku` di DB berupa 0/1, bukan boolean.
+  const { results: barisItem } = await db
+    .prepare("SELECT sku, variasi, nama_shopee, qty, harga_satuan, hpp_snapshot, subtotal, perlu_sku, sku_asal FROM order_items WHERE marketplace = ? AND no_pesanan = ? ORDER BY sku, variasi")
+    .bind(mp, no)
+    .all<{
+      sku: string; variasi: string | null; nama_shopee: string | null; qty: number;
+      harga_satuan: number; hpp_snapshot: number; subtotal: number;
+      perlu_sku: number | null; sku_asal: string | null;
+    }>();
+  const items: (OrderItem & { subtotal: number })[] = barisItem.map((it) => ({
+    sku: it.sku,
+    qty: it.qty,
+    harga_satuan: it.harga_satuan,
+    hpp_snapshot: it.hpp_snapshot,
+    variasi: it.variasi ?? "",
+    nama_shopee: it.nama_shopee ?? "",
+    subtotal: it.subtotal,
+    perlu_sku: it.perlu_sku === 1,
+    sku_asal: it.sku_asal ?? "",
+  }));
   const { results: fees } = await db.prepare("SELECT jenis, basis, nilai, amount FROM order_fees WHERE marketplace = ? AND no_pesanan = ?").bind(mp, no).all<OrderFee & { amount: number }>();
   return { marketplace: h.marketplace, no_pesanan: h.no_pesanan, tanggal: h.tanggal, buyer: h.buyer, no_resi: h.no_resi ?? "", status_fulfill: h.status_fulfill, pajak_pph: h.pajak_pph === 1, pajak_ppn_persen: h.pajak_ppn_persen, items, fees };
 }

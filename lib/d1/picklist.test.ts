@@ -23,8 +23,16 @@ function buatDbPicklist(orders: Row[], items: Row[], products: Row[]) {
             results: items
               .filter((it) => it["marketplace"] === st._args[0] && it["no_pesanan"] === st._args[1])
               .map((it) => {
+                // Meniru LEFT JOIN ke products: SKU yatim menghasilkan nama null, BUKAN baris hilang.
                 const p = products.find((x) => x["sku"] === it["sku"]);
-                return { sku: it["sku"], nama: p ? p["nama_accurate"] : null, qty: it["qty"] };
+                return {
+                  sku: it["sku"],
+                  nama: p ? p["nama_accurate"] : null,
+                  qty: it["qty"],
+                  nama_shopee: it["nama_shopee"] ?? "",
+                  perlu_sku: it["perlu_sku"] ?? 0,
+                  sku_asal: it["sku_asal"] ?? "",
+                };
               }),
           };
         },
@@ -64,15 +72,21 @@ describe("buatPicklist", () => {
     if (!r.ok) assert.equal(r.status, 404);
   });
 
-  it("SKU hilang dari master ditolak", async () => {
+  it("SKU hilang dari master TETAP muncul di picklist, ditandai perlu_sku (dulu hilang diam-diam)", async () => {
+    // Dulu JOIN ke products membuat baris ini lenyap dari hasil tanpa error apa pun,
+    // sehingga picklist tercetak tidak lengkap. Sekarang barisnya tampil dengan penanda.
     const db = buatDbPicklist(
       [{ marketplace: "shopee", no_pesanan: "O4", status_fulfill: "pending" }],
-      [{ marketplace: "shopee", no_pesanan: "O4", sku: "ZZ", qty: 1 }],
+      [{ marketplace: "shopee", no_pesanan: "O4", sku: "ZZ", qty: 1, nama_shopee: "Barang ZZ", perlu_sku: 1, sku_asal: "ZZ" }],
       [],
     );
     const r = await buatPicklist(db, [{ mp: "shopee", no: "O4" }]);
-    assert.equal(r.ok, false);
-    if (!r.ok) assert.match(r.error, /ZZ/);
+    assert.equal(r.ok, true, "tidak boleh gagal — barisnya bisa diperbaiki");
+    if (r.ok) {
+      assert.equal(r.rows.length, 1, "baris bermasalah tetap ikut tercetak");
+      assert.equal(r.rows[0].perlu_sku, true, "ditandai supaya PDF memisahkannya");
+      assert.equal(r.rows[0].sku_asal, "ZZ", "SKU asal dari file dibawa");
+    }
   });
 });
 

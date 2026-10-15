@@ -159,26 +159,33 @@ export async function tebakSku(db: D1Database, namaShopee: string, variasi: stri
 
 // ---------- D2: sku_belum_mp ----------
 
-export type BelumMpRow = { nama_shopee: string; variasi: string; order_ref: string; sejak: string; at: number; by: string | null };
+export type BelumMpRow = {
+  nama_shopee: string; variasi: string; order_ref: string; sejak: string; at: number;
+  by: string | null; sumber: string; sku_asal: string; qty_total: number;
+};
 
 /** UPSERT tag "belum ada SKU di MP" (PK nama_shopee+variasi). */
-export async function tandaiBelumMp(db: D1Database, data: { namaShopee: string; variasi: string; orderRef: string; oleh: string | null }): Promise<void> {
+export async function tandaiBelumMp(
+  db: D1Database,
+  data: { namaShopee: string; variasi: string; orderRef: string; oleh: string | null; sumber?: string; skuAsal?: string; qtyTotal?: number }
+): Promise<void> {
   const nama = data.namaShopee.trim();
   const variasi = data.variasi.trim();
   const sejak = new Date().toISOString();
   await db
     .prepare(
-      "INSERT INTO sku_belum_mp (nama_shopee, variasi, order_ref, sejak, at, by) VALUES (?, ?, ?, ?, ?, ?) " +
-        "ON CONFLICT(nama_shopee, variasi) DO UPDATE SET order_ref = excluded.order_ref, sejak = excluded.sejak, at = excluded.at, by = excluded.by",
+      "INSERT INTO sku_belum_mp (nama_shopee, variasi, order_ref, sejak, at, by, sumber, sku_asal, qty_total) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+        "ON CONFLICT(nama_shopee, variasi) DO UPDATE SET order_ref = excluded.order_ref, sejak = excluded.sejak, at = excluded.at, by = excluded.by, " +
+        "sumber = excluded.sumber, sku_asal = excluded.sku_asal, qty_total = excluded.qty_total",
     )
-    .bind(nama, variasi, data.orderRef, sejak, sekarang(), data.oleh)
+    .bind(nama, variasi, data.orderRef, sejak, sekarang(), data.oleh, data.sumber ?? "order", data.skuAsal ?? "", data.qtyTotal ?? 0)
     .run();
 }
 
 /** Semua tag belum-MP, terbaru dulu. */
 export async function listBelumMp(db: D1Database): Promise<BelumMpRow[]> {
   const { results } = await db
-    .prepare("SELECT nama_shopee, variasi, order_ref, sejak, at, by FROM sku_belum_mp ORDER BY at DESC LIMIT 500")
+    .prepare("SELECT nama_shopee, variasi, order_ref, sejak, at, by, sumber, sku_asal, qty_total FROM sku_belum_mp ORDER BY at DESC LIMIT 500")
     .all<BelumMpRow>();
   return results;
 }

@@ -66,6 +66,13 @@ export type BarisBelumSku = {
   nama_shopee: string;
   variasi: string;
   qty_total: number;
+  /**
+   * SKU yang tertulis di file tapi tidak ada di master. Diisi = kasus "SKU bermasalah",
+   * kosong = baris memang tanpa SKU. Pembeda ini dipakai UI dan picklist.
+   */
+  sku_asal: string;
+  /** Dari jalur mana baris ini datang: pesanan biasa atau advance fulfilment. */
+  sumber: "order" | "advance";
 };
 
 export type HasilImportShopee = {
@@ -145,7 +152,10 @@ export function normalisasiSheetShopee(
 ): HasilImportShopee {
   const gagal: GagalShopee[] = [];
   // Kumpulan mentah baris tanpa SKU; dikelompokkan di akhir per (nama, variasi).
-  const belumSkuMentah: { order_ref: string; nama_shopee: string; variasi: string; qty: number }[] = [];
+  const belumSkuMentah: {
+    order_ref: string; nama_shopee: string; variasi: string; qty: number;
+    sku_asal?: string; sumber?: "order" | "advance";
+  }[] = [];
 
   if (!namaProdukTerisi(ordersRows)) {
     return { orders: [], advance: [], belumSku: [], gagal: [{ no_pesanan: "", pesan: "File export tidak lengkap (kolom Nama Produk kosong >90%)." }] };
@@ -178,7 +188,7 @@ export function normalisasiSheetShopee(
       // Baris tanpa SKU: order TETAP dibuat (jangan hilang), item disimpan dengan sku ""
       // agar bisa dipetakan manual saat konfirmasi. Tanpa ini, order yang seluruh barisnya
       // tanpa SKU hilang total padahal barangnya ada di file.
-      belumSkuMentah.push({ order_ref: no, nama_shopee: namaShopee, variasi, qty });
+      belumSkuMentah.push({ order_ref: no, nama_shopee: namaShopee, variasi, qty, sumber: "order" });
       const kunciKosong = `\u0000${namaShopee}\u0000${variasi}`;
       const lamaKosong = g.items.get(kunciKosong);
       g.items.set(kunciKosong, {
@@ -213,9 +223,15 @@ export function normalisasiSheetShopee(
     }
     // Item dianggap "hilang" bila SKU-nya tidak ada di master. Item TANPA SKU (sku "")
     // bukan hilang — order tetap dibuat, SKU diisi saat konfirmasi manual.
+    //
+    // Baris ber-SKU-tak-dikenal TIDAK lagi membuang ordernya. Dulu `continue` di sini
+    // melempar seluruh order padahal masalahnya cuma SKU belum masuk master — lebih mudah
+    // diperbaiki daripada baris kosong, tapi justru dihukum lebih berat. Sekarang barisnya
+    // diperlakukan sama dengan baris tanpa SKU: masuk daftar "Perlu SKU" untuk dipetakan.
     const hilang = [...g.items.values()].filter((it) => it.sku && !hasSku(it.sku));
-    for (const it of hilang) gagal.push({ no_pesanan: g.no, sku: it.sku, pesan: `SKU ${it.sku} tidak ditemukan di master stok.` });
-    if (hilang.length) continue;
+    for (const it of hilang) {
+      belumSkuMentah.push({ order_ref: g.no, nama_shopee: it.nama_shopee, variasi: it.variasi, qty: it.qty, sku_asal: it.sku, sumber: "order" });
+    }
     const r = g.row;
     const opsi = bacaOpsiPengiriman(r["Opsi Pengiriman"]);
     const statusAwal: "pending" | "kirim" = statusFile === "perlu_dikirim" ? "pending" : "kirim";
@@ -244,12 +260,18 @@ export function normalisasiSheetShopee(
     const sn = text(row["Booking SN"]);
     if (!sn) continue;
     const sku = skuOf(row);
-    if (!sku) {
-      gagal.push({ no_pesanan: sn, pesan: "SKU kosong pada Advance Fulfilment." });
-      continue;
-    }
-    if (!hasSku(sku)) {
-      gagal.push({ no_pesanan: sn, sku, pesan: `SKU ${sku} tidak ditemukan di master stok.` });
+    // Advance juga TIDAK lagi membuang baris. Dulu barisnya hilang di sini dan pesan
+    // gagalnya tidak dirender di dialog mana pun — jadi barangnya raib tanpa jejak.
+    // Sekarang masuk daftar "Perlu SKU" yang sama dengan jalur order.
+    if (!sku || !hasSku(sku)) {
+      belumSkuMentah.push({
+        order_ref: sn,
+        nama_shopee: text(row["Nama Produk"]),
+        variasi: text(row["Nama Variasi"]),
+        qty: 1,
+        sku_asal: sku,
+        sumber: "advance",
+      });
       continue;
     }
     const opsi = bacaOpsiPengiriman(row["Opsi Pengiriman"]);
@@ -276,15 +298,22 @@ export function normalisasiSheetShopee(
  * cukup sekali, lalu diterapkan ke semua order anggotanya.
  * Urut dari yang paling banyak order (paling menghemat) lalu nama.
  */
-function kelompokkanBelumSku(mentah: { order_ref: string; nama_shopee: string; variasi: string; qty: number }[]): BarisBelumSku[] {
-  const peta = new Map<string, { nama: string; variasi: string; refs: string[]; qty: number }>();
+function kelompokkanBelumSku(mentah: {
+  order_ref: string; nama_shopee: string; variasi: string; qty: number;
+  sku_asal?: string; sumber?: "order" | "advance";
+}[]): BarisBelumSku[] {
+  const peta = new Map<string, { nama: string; variasi: string; refs: string[]; qty: number; sku: string; sumber: "order" | "advance" }>();
   for (const b of mentah) {
     const k = `${b.nama_shopee}\u0000${b.variasi}`;
     let e = peta.get(k);
     if (!e) {
-      e = { nama: b.nama_shopee, variasi: b.variasi, refs: [], qty: 0 };
+      e = { nama: b.nama_shopee, variasi: b.variasi, refs: [], qty: 0, sku: b.sku_asal ?? "", sumber: b.sumber ?? "order" };
       peta.set(k, e);
     }
+    // SKU bermasalah menang atas "kosong": kalau satu produk muncul sebagai baris kosong
+    // dan baris ber-SKU-salah, yang ditampilkan adalah SKU salahnya supaya user bisa
+    // melihat apa yang tertulis di file.
+    if (!e.sku && b.sku_asal) e.sku = b.sku_asal;
     if (!e.refs.includes(b.order_ref)) e.refs.push(b.order_ref);
     e.qty += b.qty;
   }
@@ -293,6 +322,8 @@ function kelompokkanBelumSku(mentah: { order_ref: string; nama_shopee: string; v
       order_ref: e.refs[0] ?? "",
       order_refs: e.refs,
       jumlah_order: e.refs.length,
+      sku_asal: e.sku,
+      sumber: e.sumber,
       nama_shopee: e.nama,
       variasi: e.variasi,
       qty_total: e.qty,

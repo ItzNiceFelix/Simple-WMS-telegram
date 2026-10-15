@@ -31,7 +31,7 @@ const HEADER_PESANAN = ["NoPesanan*", "Marketplace*", "Tanggal*", "SKU*", "Qty*"
 const KE_VALID = ["pack", "kirim", "selesai", "batal"];
 // B5-A: cap 500 baris (konsisten excel produk); konfirmasi batch 50 tetap.
 const MAKS_BARIS = 500;
-const MODE_PICKLIST = ["per_paket", "pisah", "gabung"] as const;
+const MODE_PICKLIST = ["per_paket", "pisah", "gabung", "gabung-order"] as const;
 type ModePicklist = (typeof MODE_PICKLIST)[number];
 
 /** Ada resi gabungan (jumlah_order > 1) di antara targets → default picklist per paket (D3). */
@@ -72,6 +72,78 @@ async function ringkasReview(db: D1Database, targets: { mp: string; no: string }
 type BarisGagal = { baris: number; pesan: string };
 function teks(v: unknown): string {
   return typeof v === "string" ? v.trim() : v == null ? "" : String(v).trim();
+}
+
+/**
+ * SKU penanda untuk baris yang belum punya SKU sah.
+ *
+ * Awalan "+" dipilih karena FK `order_items.sku → products(sku)` menuntut nilai yang tidak
+ * melanggar, tapi SKU asli tidak pernah diawali "+" (sudah diperiksa di produksi: nol
+ * produk). Jadi penanda ini aman sekaligus jelas-jelas bukan produk asli saat dibaca
+ * manusia di PDF.
+ *
+ * Sengaja deterministik dari (order, nama, variasi) supaya impor ulang file yang sama
+ * menghasilkan penanda identik — bukan baris baru yang menumpuk.
+ */
+function skuPenandaPerluSku(noPesanan: string, nama: string, variasi: string): string {
+  const bahan = `${noPesanan}|${nama}|${variasi}`;
+  let h = 0;
+  for (let i = 0; i < bahan.length; i++) h = (Math.imul(31, h) + bahan.charCodeAt(i)) | 0;
+  return `+PERLU-SKU-${(h >>> 0).toString(36).toUpperCase()}`;
+}
+
+/** Nama master + gudang tempat stok SKU benar-benar berada. */
+type InfoSku = { nama: string; lokasi: string; lokasiLain: string };
+
+/**
+ * Ambil nama resmi dan LOKASI GUDANG untuk sekumpulan SKU.
+ *
+ * Lokasi diambil dari gudang yang benar-benar menyimpan stok, bukan dari gudang asal order
+ * (tabel `orders` tidak menyimpannya) dan bukan dari gudang ONLINE (virtual, dan nyatanya
+ * kosong — menulisnya membuat kolom Lokasi Gudang menyesatkan picker).
+ *
+ * Bila satu SKU ada di beberapa gudang, yang ditampilkan gudang dengan stok TERBANYAK
+ * (tempat picker paling mungkin menemukannya), dan sisanya disebut sebagai penanda supaya
+ * picker tahu harus memeriksa rak lain juga. Stok negatif diabaikan saat memilih gudang —
+ * angka minus berarti catatan yang salah, bukan barang yang ada.
+ */
+async function infoNamaDanLokasi(db: D1Database, daftar: string[]): Promise<Map<string, InfoSku>> {
+  const hasil = new Map<string, InfoSku>();
+  const unik = [...new Set(daftar)].filter((s) => s.length > 0 && !s.startsWith("+"));
+  if (unik.length === 0) return hasil;
+  for (let i = 0; i < unik.length; i += 90) {
+    const potong = unik.slice(i, i + 90);
+    const tanda = potong.map(() => "?").join(",");
+    // Kode gudang (D12/D19) dipakai, bukan nama lengkap ("Gudang D12"), karena kolom Lokasi
+    // Gudang cuma 105pt dan nama panjang + penanda gudang lain tidak muat sehingga terpotong.
+    const { results } = await db
+      .prepare(
+        `SELECT p.sku AS sku, p.nama_accurate AS nama, b.warehouse_id AS gudang, b.qty AS qty
+         FROM products p
+         LEFT JOIN stock_by_bin b ON b.sku = p.sku
+         WHERE p.sku IN (${tanda})`
+      )
+      .bind(...potong)
+      .all<{ sku: string; nama: string; gudang: string | null; qty: number | null }>();
+    const perSku = new Map<string, { nama: string; gudang: { nama: string; qty: number }[] }>();
+    for (const r of results) {
+      let e = perSku.get(r.sku);
+      if (!e) { e = { nama: r.nama, gudang: [] }; perSku.set(r.sku, e); }
+      if (r.gudang && r.qty != null) e.gudang.push({ nama: r.gudang, qty: r.qty });
+    }
+    for (const [sku, e] of perSku) {
+      const positif = e.gudang.filter((g) => g.qty > 0).sort((a, b) => b.qty - a.qty);
+      const utama = positif[0];
+      hasil.set(sku, {
+        nama: e.nama,
+        // Tidak ada stok positif di gudang mana pun: jujur tulis kosong daripada menebak.
+        // Picklist akan menampilkan "-", yang artinya "cek dulu" — bukan instruksi salah.
+        lokasi: utama?.nama ?? "",
+        lokasiLain: positif.length > 1 ? `+${positif.slice(1).map((g) => g.nama).join(", ")}` : "",
+      });
+    }
+  }
+  return hasil;
 }
 
 function intBaris(v: unknown): number | null {
@@ -177,27 +249,60 @@ export async function GET(request: Request) {
       const booking = await listBooking(db, { status: st, limit: 500 });
       const pick = await buatPicklistPaket(db, targets);
       if (!pick.ok) return json({ ok: false, error: pick.error }, pick.status);
+
+      // Satu query nama + gudang untuk SEMUA SKU yang terlibat, dipakai bersama oleh jalur
+      // order dan advance.
+      //
+      // Kenapa nama diambil dari master, bukan dari `advance_bookings.nama_produk`: kolom itu
+      // berisi nama SHOPEE ("Lunch Box TRI J 4in1 7+ Sendok dan Garpu") sementara jalur order
+      // memakai nama master ("Lunch Box Garuda Tri J Ungu"). Dua nama untuk barang yang sama
+      // dalam satu tabel membuat picker mengira barangnya beda.
+      //
+      // Kenapa gudang dibaca, bukan hardcode "ONLINE": gudang ONLINE adalah gudang virtual dan
+      // nyatanya kosong (0 baris stok). Menulis ONLINE di kolom "Lokasi Gudang" membuat kolom
+      // itu tidak berguna — picker disuruh mencari barang di tempat yang tidak menyimpannya.
+      const skuTerlibat = [
+        ...new Set([
+          ...pick.paket.flatMap((p) => p.rows.map((r) => r.sku)),
+          ...booking.map((b2) => b2.sku),
+        ]),
+      ];
+      const infoSku = await infoNamaDanLokasi(db, skuTerlibat);
+
       const barisGabung: BarisPickGabung[] = [
         ...pick.paket.flatMap((p) =>
-          p.rows.map((r) => ({
-            jenis: "order" as const,
-            sku: r.sku,
-            nama: r.nama,
-            lokasi: "Gudang ONLINE",
-            qty: r.qty,
-            kunci: p.no_resi || p.no_pesanan.join("+"),
-            kirimKe: p.no_pesanan.join("+"),
-          }))
+          p.rows.map((r) => {
+            const info = infoSku.get(r.sku);
+            return {
+              jenis: "order" as const,
+              sku: r.sku,
+              nama: info?.nama || r.nama,
+              lokasi: info?.lokasi ?? "",
+              lokasiLain: info?.lokasiLain ?? "",
+              qty: r.qty,
+              kunci: p.no_resi || p.no_pesanan.join("+"),
+              kirimKe: p.no_pesanan.join("+"),
+              perluSku: r.perlu_sku === true,
+              skuAsal: r.sku_asal ?? "",
+            };
+          })
         ),
-        ...booking.map((b2) => ({
-          jenis: "advance" as const,
-          sku: b2.sku,
-          nama: b2.nama_produk,
-          lokasi: "Gudang ONLINE",
-          qty: b2.qty,
-          kunci: b2.booking_sn,
-          kirimKe: b2.antar_ke,
-        })),
+        ...booking.map((b2) => {
+          const info = infoSku.get(b2.sku);
+          return {
+            jenis: "advance" as const,
+            sku: b2.sku,
+            // Nama master; `nama_produk` cuma cadangan bila SKU belum ada di master.
+            nama: info?.nama || b2.nama_produk,
+            lokasi: info?.lokasi ?? "",
+            lokasiLain: info?.lokasiLain ?? "",
+            qty: b2.qty,
+            kunci: b2.booking_sn,
+            kirimKe: b2.antar_ke,
+            perluSku: !info?.nama,
+            skuAsal: b2.sku,
+          };
+        }),
       ];
       if (barisGabung.length === 0) return json({ ok: false, error: "Tak ada item untuk dicetak." }, 400);
       const bytes = await bangunPdfPicklistGabung(barisGabung, { gudangDefault: "Gudang ONLINE" });
@@ -454,7 +559,12 @@ export async function POST(request: Request) {
         const variasi = teks(t.variasi);
         const orderRef = teks(t.order_ref);
         kunciBelumMp.add(`${orderRef}\u0000${namaShopee}\u0000${variasi}`);
-        await tandaiBelumMp(db, { namaShopee, variasi, orderRef, oleh: String(user.tg_id) });
+        await tandaiBelumMp(db, {
+          namaShopee, variasi, orderRef, oleh: String(user.tg_id),
+          sumber: teks(t.sumber) || "order",
+          skuAsal: teks(t.sku_asal),
+          qtyTotal: Number(t.qty_total) || 0,
+        });
       }
     }
     for (const o of orders) {
@@ -484,18 +594,44 @@ export async function POST(request: Request) {
         // Belum ada SKU sama sekali (tidak dipilih manual, tidak ditandai belum-MP):
         // hentikan supaya tidak menulis item tanpa rujukan produk.
         if (!skuFinal) {
-          if (kunciBelumMp.has(kunci)) continue;
+          if (kunciBelumMp.has(kunci)) {
+            // Baris TETAP disimpan sebagai item bertanda "perlu SKU" supaya ikut tercetak di
+            // picklist dengan kolom pembeda. Dulu barisnya di-`continue` (tidak masuk
+            // order_items) sehingga picklist memakai INNER JOIN dan barangnya raib tanpa
+            // pesan — checker menerima lembar tidak lengkap tanpa tahu.
+            stmts.push(
+              db
+                .prepare(
+                  "INSERT INTO order_items (marketplace, no_pesanan, sku, variasi, nama_shopee, qty, harga_satuan, hpp_snapshot, subtotal, sku_asal, perlu_sku) VALUES ('shopee', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+                )
+                .bind(o.no_pesanan, skuPenandaPerluSku(o.no_pesanan, item.nama_shopee, item.variasi), item.variasi, item.nama_shopee, item.qty, item.harga_satuan, 0, item.subtotal, ""),
+            );
+            nItem++;
+            continue;
+          }
           return json(
             { ok: false, error: `Baris "${item.nama_shopee}" (order ${o.no_pesanan}) belum dipilih SKU — pilih SKU atau centang "Belum di MP".` },
             400,
           );
         }
         const hpp = await ambilProduk(db, skuFinal);
-        if (!hpp) return json({ ok: false, error: `SKU ${skuFinal} belum ada di master stok (order ${o.no_pesanan}).` }, 400);
+        if (!hpp) {
+          // SKU tertulis di file tapi tidak ada di master: JANGAN buang ordernya. Simpan
+          // sebagai baris bertanda supaya bisa dicetak di picklist dan diperbaiki nanti.
+          stmts.push(
+            db
+              .prepare(
+                "INSERT INTO order_items (marketplace, no_pesanan, sku, variasi, nama_shopee, qty, harga_satuan, hpp_snapshot, subtotal, sku_asal, perlu_sku) VALUES ('shopee', ?, ?, ?, ?, ?, ?, 0, ?, ?, 1)",
+              )
+              .bind(o.no_pesanan, skuPenandaPerluSku(o.no_pesanan, item.nama_shopee, item.variasi), item.variasi, item.nama_shopee, item.qty, item.harga_satuan, item.subtotal, skuFinal),
+          );
+          nItem++;
+          continue;
+        }
         stmts.push(
           db
             .prepare(
-              "INSERT INTO order_items (marketplace, no_pesanan, sku, variasi, nama_shopee, qty, harga_satuan, hpp_snapshot, subtotal) VALUES ('shopee', ?, ?, ?, ?, ?, ?, ?, ?)",
+              "INSERT INTO order_items (marketplace, no_pesanan, sku, variasi, nama_shopee, qty, harga_satuan, hpp_snapshot, subtotal, sku_asal, perlu_sku) VALUES ('shopee', ?, ?, ?, ?, ?, ?, ?, ?, '', 0)",
             )
             .bind(o.no_pesanan, skuFinal, item.variasi, item.nama_shopee, item.qty, item.harga_satuan, hpp.hpp ?? 0, item.subtotal),
         );
