@@ -30,6 +30,7 @@ const barisUji: BarisSku[] = [
     marginSatuan: 2788, marginPersen: 42.9, kontribusi: 27880, roasImpas: 2.33,
     hppMaster: 3712, hppNaik: 0, stok: 50,
     dilihat: null, klik: null, ctr: null, cr: null, biayaIklan: null, roasAktual: null,
+    organikDilihat: null, organikKunjungan: null, organikKeranjang: null, organikPesanan: null, organikOmzet: null,
   },
 ];
 
@@ -282,5 +283,31 @@ describe("integrasi dengan analisaCepat", () => {
     assert.match(b, /merugi/);
     assert.match(b, /DATA YANG BELUM TERSEDIA/);
     assert.match(b, /iklan/i);
+  });
+
+  it("metrik organik IKUT dikirim ke AI saat ada, dan diberi label organik", async () => {
+    const fx = JSON.parse(JSON.stringify(barisUji[0])) as BarisSku;
+    const m: MasukanAnalisa = {
+      presetId: 1, periode: "2026-10-13",
+      snapshot: {
+        jml_order: 10, omzet: 65000, hpp: 37120, biaya: 0, pajak: 0, laba: 27880,
+        rincian: [{
+          sku: fx.sku, nama: fx.nama, unit: fx.unit, hppSatuan: fx.hppSatuan,
+          hargaJual: fx.hargaJual, marginSatuan: fx.marginSatuan,
+          marginPersen: fx.marginPersen, kontribusi: fx.kontribusi,
+        }],
+      },
+      hppMaster: new Map(), stok: null, biayaIklan: null, jmlSnapshot: 3, adaPerforma: true,
+      performaPerSku: new Map([[fx.sku, { dilihat: 400, klik: 20, kunjungan: 120, keranjang: 8, pesanan: 3, omzet: 300000, tanpaBeli: 100 }]]),
+    };
+    const b = susunBahan(analisaCepat(m));
+    assert.match(b, /ORGANIK \(tanpa iklan\)/);
+    assert.match(b, /kunjungan 120/);
+    assert.match(b, /CR organik 2\.5%/);
+  });
+
+  it("tanpa data organik -> tidak ada kalimat ORGANIK di bahan (null bukan nol)", async () => {
+    const b = susunBahan(hasilUji());
+    assert.ok(!/ORGANIK/.test(b), "SKU tanpa baris performa tidak boleh menambah kalimat kosong");
   });
 });

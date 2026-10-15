@@ -163,6 +163,15 @@ export function AnalisaSettingAi({ open, onOpenChange }: Props) {
                   ? "Seberapa lama model berpikir sebelum menjawab. Reasoning tinggi = lebih teliti, lebih mahal."
                   : "Model teks yang dipakai sekarang tidak punya pilihan reasoning — hanya Default model yang berlaku."}
               </FieldDescription>
+              {/* Peringatan nyata dari keluhan "high effort, lama banget": model `:free`
+                  mengantre di sisi penyedia, dan reasoning tinggi memperpanjang antrean itu.
+                  Pilihan TIDAK dicabut — hanya konsekuensinya yang dinyatakan di depan. */}
+              <p className="text-xs text-muted-foreground">
+                Peringatan: pada model gratis (nama berakhiran <code>:free</code>), pilihan{" "}
+                <b>high</b>, <b>xhigh</b>, atau <b>max</b> membuat analisa menunggu lama karena
+                model antre di sisi penyedia. Bila terlalu lama, permintaan bisa gagal sebelum
+                dijawab. Untuk pemakaian sehari-hari, <b>sedang</b> atau <b>low</b> jauh lebih cepat.
+              </p>
             </Field>
 
             <Field>
@@ -202,6 +211,13 @@ export function AnalisaSettingAi({ open, onOpenChange }: Props) {
                 angkanya hanya membatasi seberapa panjang jawaban boleh jadi sebelum dipotong.
                 ({MAKS_TOKEN_MIN}–{MAKS_TOKEN_MAKS})
               </FieldDescription>
+              {/* Plafon besar = jawaban lebih panjang = waktu tunggu lebih lama. Sama seperti
+                  reasoning tinggi: pilihan dibiarkan, konsekuensinya dinyatakan. */}
+              <p className="text-xs text-muted-foreground">
+                Peringatan: plafon besar membuat model menulis lebih panjang, sehingga analisa
+                menunggu lebih lama dan berisiko kena batas waktu. Pakai plafon rendah dulu bila
+                analisa terasa lambat.
+              </p>
             </Field>
 
             {galat ? (

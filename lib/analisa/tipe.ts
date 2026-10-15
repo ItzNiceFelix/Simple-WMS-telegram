@@ -92,6 +92,24 @@ export type BarisSku = {
   biayaIklan: number | null;
   /** ROAS aktual = omzet iklan ÷ biaya iklan. null bila biaya 0/tidak ada — BUKAN Infinity. */
   roasAktual: number | null;
+
+  // ── Metrik ORGANIK (dari Performa Produk: kunjungan halaman, TANPA iklan) ──
+  // PERINGATAN: JANGAN TERTUKAR dengan `dilihat`/`klik`/`biayaIklan` di atas.
+  // `dilihat` & `klik` = TAYANGAN/KLIK IKLAN (uang keluar, dari `ads_produk`).
+  // `organik*` = perilaku pengunjung halaman produk yang datang tanpa iklan
+  // (`performa_produk`). Menukar keduanya membuat kesimpulan iklan salah total:
+  // produk yang halamannya buruk akan dituduh iklannya buruk.
+  // Semua null = tidak ada datanya (SKU tidak ada di impor Performa Produk), BUKAN nol.
+  /** Jumlah dilihat organik (halaman produk dilihat tanpa iklan). */
+  organikDilihat: number | null;
+  /** Kunjungan organik ke halaman produk. */
+  organikKunjungan: number | null;
+  /** Masuk keranjang dari kunjungan organik. */
+  organikKeranjang: number | null;
+  /** Pesanan jadi dari kunjungan organik. */
+  organikPesanan: number | null;
+  /** Omzet dari pesanan organik. */
+  organikOmzet: number | null;
 };
 
 /** Hasil lengkap analisa cepat. */

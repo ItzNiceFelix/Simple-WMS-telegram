@@ -34,7 +34,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AnalisaSettingAi } from "@/components/dashboard/analisa-setting-ai";
 import { formatAngka, formatRupiah } from "@/lib/dashboard/format";
-import { keputusanIklan, type KeputusanIklan } from "@/lib/analisa/hitung";
+import { keputusanIklan, organikCr, type KeputusanIklan } from "@/lib/analisa/hitung";
 import type { BarisSku, RingkasanAnalisa, Temuan } from "@/lib/analisa/tipe";
 
 // ── Bentuk data dari server (app/api/analisa) ──
@@ -230,8 +230,14 @@ function Analisa() {
       });
       const d = (await res.json().catch(() => null)) as {
         ok?: boolean; narasi?: string; model?: string; reasoning?: string; error?: string;
+        upaya?: { provider: string; model: string; error: string }[];
       } | null;
-      if (!res.ok || !d?.ok || !d.narasi) throw new Error(d?.error ?? `Gagal (${res.status}).`);
+      if (!res.ok || !d?.ok || !d.narasi) {
+        // Rincian percobaan ikut ditampilkan: user perlu tahu model mana yang gagal dan
+        // kenapa (timeout/status), supaya bisa membedakan antrean penyedia dari kredensial salah.
+        const rincian = (d?.upaya ?? []).map((u) => `${u.provider}/${u.model}: ${u.error}`).join("\n");
+        throw new Error(`${d?.error ?? `Gagal (${res.status}).`}${rincian ? `\n\nPercobaan:\n${rincian}` : ""}`);
+      }
       setMendalam({ narasi: d.narasi, model: d.model ?? "—", reasoning: d.reasoning ?? "—" });
     } catch (e) {
       tampilkanGagalTulis(e instanceof Error ? e.message : "Analisa mendalam gagal.");
@@ -529,6 +535,12 @@ function Analisa() {
                           <TableHead className="text-right">CTR</TableHead>
                           <TableHead className="text-right">CR</TableHead>
                           <TableHead className="text-right">ROAS aktual</TableHead>
+                          {/* Kolom ORGANIK (tanpa iklan) — dari Performa Produk. Sengaja
+                              dipisah dari Dilihat/Klik iklan di kiri: dua angka ini menjawab
+                              pertanyaan berbeda dan mencampurnya menyesatkan pembaca. */}
+                          <TableHead className="text-right">Kunjungan<br />organik</TableHead>
+                          <TableHead className="text-right">Pesanan<br />organik</TableHead>
+                          <TableHead className="text-right">CR<br />organik</TableHead>
                           <TableHead>Keputusan iklan</TableHead>
                         </TableRow>
                       </TableHeader>
@@ -563,6 +575,11 @@ function Analisa() {
                               <TableCell className="text-right tabular-nums">{metrik(b.ctr, "%")}</TableCell>
                               <TableCell className="text-right tabular-nums">{metrik(b.cr, "%")}</TableCell>
                               <TableCell className="text-right tabular-nums">{metrik(b.roasAktual, "×")}</TableCell>
+                              <TableCell className="text-right tabular-nums">{metrik(b.organikKunjungan)}</TableCell>
+                              <TableCell className="text-right tabular-nums">{metrik(b.organikPesanan)}</TableCell>
+                              <TableCell className="text-right tabular-nums">
+                                {organikCr(b) === null ? "—" : `${organikCr(b)}%`}
+                              </TableCell>
                               {/* Alasan lengkap (berisi angka) ada di title — tabel jadi ringkas
                                   tapi pemeriksaan tetap mungkin tanpa pindah halaman. */}
                               <TableCell className={`whitespace-nowrap font-medium ${KELAS_KEPUTUSAN[keputusanIklan(b).keputusan]}`}>

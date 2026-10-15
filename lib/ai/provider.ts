@@ -26,6 +26,27 @@ export type Konteks = {
 const PROVIDER_OPENAI: ProviderNama[] = ["groq", "kenari", "openai", "openrouter"];
 
 /**
+ * Batas waktu SATU percobaan model teks.
+ * Model penalaran (reasoning `high`/`xhigh`/`max`, apalagi varian `:free` yang mengantre
+ * di sisi penyedia) memang lambat: 30 detik terlalu pendek dan membuat request yang
+ * sebenarnya akan berhasil di-DROP lebih dulu, sehingga user hanya melihat kegagalan.
+ */
+export const TIMEOUT_TEKS_MS = 60000;
+
+/**
+ * Batas waktu SATU percobaan vision (model gambar biasa yang membaca gambar). Tidak dinaikkan.
+ */
+export const TIMEOUT_VISION_MS = 60000;
+
+/**
+ * Anggaran TOTAL rantai teks (semua kandidat dijumlahkan).
+ * Per-kandidat 60 detik × 3 provider = 180 detik: terlalu lama untuk user web yang
+ * menunggu di depan layar. Rantai dihentikan begitu anggaran ini terlampaui, dan
+ * sisa kandidat TIDAK dicoba lagi — user lebih baik tahu sekarang daripada menunggu.
+ */
+export const ANGGARAN_TEKS_MS = 100000;
+
+/**
  * Base URL efektif untuk provider: alamat dari kredensial menang atas bawaan.
  * Alasan: user bisa membetulkan host sendiri dari UI (mis. host Kenari berubah)
  * tanpa perlu deploy ulang.
@@ -112,7 +133,7 @@ async function cobaTeks(
   jenis: "teks" | "vision",
   opsiReasoning?: { reasoning?: string; reasoningHilir?: boolean; maksToken?: number }
 ): Promise<Hasil<{ jawaban: JawabanChat; latencyMs: number }>> {
-  const timeoutMs = jenis === "vision" ? 60000 : 30000;
+  const timeoutMs = jenis === "vision" ? TIMEOUT_VISION_MS : TIMEOUT_TEKS_MS;
   const permintaan: PermintaanChat = {
     model: kandidat.model,
     pesan,
@@ -155,9 +176,19 @@ export async function panggilTeks(
   const catatan: Catatan[] = [];
   if (!ctx.kunci && !ctx.env?.AI_KEY_ENCRYPTION_KEY) return gagal(500, "AI_KEY_ENCRYPTION_KEY belum diset.");
   const kandidat = await kandidatTeks(ctx, jenis, catatan, minta.modelDiminta);
-  if (kandidat.length === 0) return gagal(502, ringkasGagal(catatan));
+  if (kandidat.length === 0) return gagal(502, ringkasGagal(catatan), catatan);
 
+  // Anggaran hanya berlaku untuk "teks" — vision sudah dibatasi satu panggilan pendek.
+  const mulai = Date.now();
   for (const k of kandidat) {
+    if (jenis === "teks" && Date.now() - mulai >= ANGGARAN_TEKS_MS) {
+      catatan.push({
+        provider: k.provider,
+        model: k.model,
+        error: `dilewati: anggaran total ${ANGGARAN_TEKS_MS}ms habis`,
+      });
+      continue;
+    }
     const h = await cobaTeks(k, minta.pesan, minta.tool, ctx, jenis, {
       reasoning: minta.reasoning,
       reasoningHilir: minta.reasoningHilir,
@@ -178,7 +209,7 @@ export async function panggilTeks(
     });
     return { ok: true, teks: h.jawaban.teks, provider: k.provider, model: k.model, tokenMasuk: masuk, tokenKeluar: keluar, toolCall: h.jawaban.toolCall };
   }
-  return gagal(502, ringkasGagal(catatan));
+  return gagal(502, ringkasGagal(catatan), catatan);
 }
 
 /** Panggil image gen: coba provider tepat satu model (pilihan user/peta modelGambar, lalu katalog gambar). */

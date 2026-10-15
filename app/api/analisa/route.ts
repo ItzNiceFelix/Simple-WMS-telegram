@@ -10,7 +10,7 @@
 import { getDb, getEnvAi, getKunciEnkripsi } from "@/lib/d1/db";
 import {
   adaPerforma, ambilSnapshot, daftarPresetAnalisa, daftarTanggalSnapshot,
-  metrikIklanPerSku, petaHppMaster, petaStok, totalIklanPeriode,
+  metrikIklanPerSku, performaPerSku, petaHppMaster, petaStok, totalIklanPeriode,
 } from "@/lib/d1/analisa";
 import { ambilSettingAnalisa } from "@/lib/d1/aiAnalisaSetting";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
@@ -83,12 +83,13 @@ export async function GET(request: Request) {
 
   const semuaTanggal = await daftarTanggalSnapshot(db, presetId);
   const { dari, sampai } = rentangMundur(tanggal, 6);
-  const [hppMaster, stok, biayaIklan, performaAda, iklanPerSku] = await Promise.all([
+  const [hppMaster, stok, biayaIklan, performaAda, iklanPerSku, performa] = await Promise.all([
     petaHppMaster(db, snap.rincian.map((r) => r.sku)),
     petaStok(db),
     totalIklanPeriode(db, presetId, dari, sampai),
     adaPerforma(db, presetId),
     metrikIklanPerSku(db, presetId, dari, sampai),
+    performaPerSku(db, presetId, tanggal),
   ]);
 
   const masukan: MasukanAnalisa = {
@@ -102,6 +103,7 @@ export async function GET(request: Request) {
     stok,
     biayaIklan,
     iklanPerSku,
+    performaPerSku: performa,
     jmlSnapshot: semuaTanggal.length,
     adaPerforma: performaAda,
   };
@@ -191,12 +193,13 @@ export async function POST(request: Request) {
 
   const semuaTanggal = await daftarTanggalSnapshot(db, presetId);
   const { dari, sampai } = rentangMundur(tanggal, 6);
-  const [hppMaster, stok, biayaIklan, performaAda, iklanPerSku] = await Promise.all([
+  const [hppMaster, stok, biayaIklan, performaAda, iklanPerSku, performa] = await Promise.all([
     petaHppMaster(db, snap.rincian.map((r) => r.sku)),
     petaStok(db),
     totalIklanPeriode(db, presetId, dari, sampai),
     adaPerforma(db, presetId),
     metrikIklanPerSku(db, presetId, dari, sampai),
+    performaPerSku(db, presetId, tanggal),
   ]);
 
   const hasil = analisaCepat({
@@ -210,6 +213,7 @@ export async function POST(request: Request) {
     stok,
     biayaIklan,
     iklanPerSku,
+    performaPerSku: performa,
     jmlSnapshot: semuaTanggal.length,
     adaPerforma: performaAda,
   });
@@ -226,7 +230,15 @@ export async function POST(request: Request) {
       kedalaman,
     }
   );
-  if (!hasilAi.ok) return json({ ok: false, error: hasilAi.error }, hasilAi.status);
+  if (!hasilAi.ok) {
+    // `upaya` = daftar provider/model yang dicoba + alasan tiap kegagalan (timeout berapa
+    // milidetik, status berapa). Tanpa ini user hanya tahu "gagal" dan tidak bisa membedakan
+    // model yang mengantre di sisi penyedia dari kredensial yang salah. Tidak memuat kredensial.
+    return json(
+      { ok: false, error: hasilAi.error, upaya: hasilAi.upaya ?? [], reasoning: setting.reasoning || "(default model)", kedalaman },
+      hasilAi.status
+    );
+  }
 
   return json({
     ok: true,

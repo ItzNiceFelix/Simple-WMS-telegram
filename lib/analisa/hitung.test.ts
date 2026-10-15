@@ -4,7 +4,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
-  analisaCepat, bangunBaris, buatRingkasan, keputusanIklan, median, roasImpas,
+  analisaCepat, bangunBaris, buatRingkasan, keputusanIklan, median, organikCr, roasImpas,
   urutSaranIklan, janganDiiklankan, AMBANG_CTR_SEHAT, AMBANG_DILIHAT_MIN, AMBANG_MARGIN_TIPIS,
   type MasukanAnalisa,
 } from "./hitung";
@@ -213,10 +213,11 @@ describe("stok (bila tersedia)", () => {
 
 describe("saran iklan", () => {
   const iklanKosong = { dilihat: null, klik: null, ctr: null, cr: null, biayaIklan: null, roasAktual: null };
+  const organikKosong = { organikDilihat: null, organikKunjungan: null, organikKeranjang: null, organikPesanan: null, organikOmzet: null };
   const barisUji: BarisSku[] = [
-    { sku: "A", nama: "A", unit: 1, hppSatuan: 8000, hargaJual: 10000, marginSatuan: 2000, marginPersen: 20, kontribusi: 2000, roasImpas: 5, hppMaster: 8000, hppNaik: 0, stok: 5, ...iklanKosong },
-    { sku: "B", nama: "B", unit: 1, hppSatuan: 9000, hargaJual: 10000, marginSatuan: 1000, marginPersen: 10, kontribusi: 1000, roasImpas: 10, hppMaster: 9000, hppNaik: 0, stok: 5, ...iklanKosong },
-    { sku: "C", nama: "C", unit: 1, hppSatuan: 11000, hargaJual: 10000, marginSatuan: -1000, marginPersen: -10, kontribusi: -1000, roasImpas: null, hppMaster: 11000, hppNaik: 0, stok: 5, ...iklanKosong },
+    { sku: "A", nama: "A", unit: 1, hppSatuan: 8000, hargaJual: 10000, marginSatuan: 2000, marginPersen: 20, kontribusi: 2000, roasImpas: 5, hppMaster: 8000, hppNaik: 0, stok: 5, ...iklanKosong, ...organikKosong },
+    { sku: "B", nama: "B", unit: 1, hppSatuan: 9000, hargaJual: 10000, marginSatuan: 1000, marginPersen: 10, kontribusi: 1000, roasImpas: 10, hppMaster: 9000, hppNaik: 0, stok: 5, ...iklanKosong, ...organikKosong },
+    { sku: "C", nama: "C", unit: 1, hppSatuan: 11000, hargaJual: 10000, marginSatuan: -1000, marginPersen: -10, kontribusi: -1000, roasImpas: null, hppMaster: 11000, hppNaik: 0, stok: 5, ...iklanKosong, ...organikKosong },
   ];
 
   it("diurutkan ROAS impas terendah = paling aman diiklankan", () => {
@@ -334,6 +335,7 @@ describe("keputusanIklan", () => {
     sku: "X", nama: "X", unit: 20, hppSatuan: 8000, hargaJual: 10000, marginSatuan: 2000,
     marginPersen: 20, kontribusi: 40000, roasImpas: 5, hppMaster: 8000, hppNaik: 0, stok: 10,
     dilihat: 5000, klik: 100, ctr: 2, cr: 20, biayaIklan: 20000, roasAktual: 10,
+    organikDilihat: null, organikKunjungan: null, organikKeranjang: null, organikPesanan: null, organikOmzet: null,
   };
 
   it("belum_cukup_data: dilihat null", () => {
@@ -386,6 +388,130 @@ describe("keputusanIklan", () => {
     const b = { ...dasar };
     keputusanIklan(b);
     assert.deepEqual(b, dasar);
+  });
+});
+
+describe("metrik ORGANIK per SKU (performa_produk dipakai, bukan cuma dihitung)", () => {
+  async function masukanOrganik(
+    data: { dilihat: number; klik: number; kunjungan: number; keranjang: number; pesanan: number; omzet: number; tanpaBeli: number },
+    ubah: Partial<MasukanAnalisa> = {}
+  ): Promise<MasukanAnalisa> {
+    const fx = await muatFixture();
+    const r0 = fx.rincian[0];
+    const rincian = [r0];
+    const dasar = masukan(fx, { snapshot: { ...masukan(fx).snapshot, rincian } });
+    return { ...dasar, performaPerSku: new Map([[r0.sku, data]]), ...ubah };
+  }
+
+  it("field organik terisi dari map; TIDAK tercampur dengan field iklan", async () => {
+    const b = bangunBaris(await masukanOrganik({
+      dilihat: 900, klik: 30, kunjungan: 200, keranjang: 12, pesanan: 4, omzet: 400000, tanpaBeli: 180,
+    }))[0];
+    assert.equal(b.organikDilihat, 900);
+    assert.equal(b.organikKunjungan, 200);
+    assert.equal(b.organikKeranjang, 12);
+    assert.equal(b.organikPesanan, 4);
+    assert.equal(b.organikOmzet, 400000);
+    // Data iklan tidak ikut terisi oleh performa organik — inilah pencampuran yang dilarang.
+    assert.equal(b.dilihat, null);
+    assert.equal(b.klik, null);
+    assert.equal(b.ctr, null);
+    assert.equal(b.biayaIklan, null);
+    assert.equal(b.roasAktual, null);
+  });
+
+  it("SKU tanpa baris performa -> semua field organik null (bukan nol)", async () => {
+    const fx = await muatFixture();
+    const m = masukan(fx, { performaPerSku: new Map() });
+    assert.ok(bangunBaris(m).every((b) => b.organikDilihat === null && b.organikKunjungan === null && b.organikPesanan === null && b.organikOmzet === null));
+  });
+
+  it("organikCr null saat kunjungan 0, BUKAN Infinity/NaN", async () => {
+    const b = bangunBaris(await masukanOrganik({
+      dilihat: 100, klik: 5, kunjungan: 0, keranjang: 0, pesanan: 3, omzet: 100000, tanpaBeli: 0,
+    }))[0];
+    assert.equal(b.organikKunjungan, 0);
+    assert.equal(organikCr(b), null, "pembagi nol tidak boleh menghasilkan Infinity");
+    assert.ok(Number.isFinite(b.organikPesanan ?? 0));
+  });
+
+  it("organikCr = pesanan / kunjungan * 100 (rumus sama dengan CR iklan)", async () => {
+    const b = bangunBaris(await masukanOrganik({
+      dilihat: 500, klik: 10, kunjungan: 200, keranjang: 20, pesanan: 5, omzet: 500000, tanpaBeli: 175,
+    }))[0];
+    assert.equal(organikCr(b), 2.5);
+  });
+
+  it("organikCr null bila kunjungan null (data tidak ada, bukan nol)", async () => {
+    const fx = await muatFixture();
+    const b = bangunBaris(masukan(fx))[0];
+    assert.equal(organikCr(b), null);
+  });
+});
+
+describe("temuan organik_dilihat_tanpa_beli (masalah HALAMAN, bukan iklan)", () => {
+  async function temuanDenganKunjungan(kunjungan: number, pesanan: number) {
+    const fx = await muatFixture();
+    const r0 = fx.rincian[0];
+    const dasar = masukan(fx, { snapshot: { ...masukan(fx).snapshot, rincian: [r0] } });
+    const h = analisaCepat({
+      ...dasar,
+      adaPerforma: true,
+      performaPerSku: new Map([[r0.sku, { dilihat: kunjungan * 2, klik: 10, kunjungan, keranjang: 5, pesanan, omzet: 0, tanpaBeli: kunjungan }]]),
+    });
+    return { h, r0 };
+  }
+
+  it("kunjungan 60 & pesanan 0 -> temuan muncul, keparahan peringatan, angka pendukung ada", async () => {
+    const { h, r0 } = await temuanDenganKunjungan(60, 0);
+    const t = h.temuan.find((x) => x.kode === "organik_dilihat_tanpa_beli");
+    assert.ok(t, "temuan harus muncul");
+    assert.equal(t.keparahan, "peringatan");
+    assert.equal(t.angka.nilai, 60, "angka pendukung = total kunjungan");
+    assert.equal(t.angka.satuan, "jumlah");
+    assert.equal(t.angka.jumlahTerkena, 1);
+    assert.ok(t.contohSku.some((s) => s.sku === r0.sku && s.nilai === 60));
+    assert.ok(Number.isFinite(t.angka.nilai));
+  });
+
+  it("kunjungan 10 & pesanan 0 -> temuan TIDAK muncul (sampel terlalu kecil)", async () => {
+    const { h } = await temuanDenganKunjungan(10, 0);
+    assert.equal(h.temuan.find((x) => x.kode === "organik_dilihat_tanpa_beli"), undefined);
+  });
+
+  it("menyebut ini masalah halaman, bukan iklan", async () => {
+    const { h } = await temuanDenganKunjungan(60, 0);
+    const t = h.temuan.find((x) => x.kode === "organik_dilihat_tanpa_beli");
+    assert.match(t?.penjelasan ?? "", /BUKAN masalah iklan/);
+  });
+});
+
+describe("pesan 'Data kunjungan/konversi' tidak muncul saat adaPerforma true", () => {
+  it("adaPerforma: true -> tidak ada pesan kunjungan/konversi di kurang", async () => {
+    const fx = await muatFixture();
+    const h = analisaCepat(masukan(fx, { adaPerforma: true }));
+    assert.ok(!h.kurang.some((k) => /kunjungan\/konversi/i.test(k)), "pesan itu sudah tidak jujur: datanya ADA");
+  });
+
+  it("adaPerforma: false -> pesan tetap muncul (data memang belum ada)", async () => {
+    const fx = await muatFixture();
+    const h = analisaCepat(masukan(fx, { adaPerforma: false }));
+    assert.ok(h.kurang.some((k) => /kunjungan\/konversi/i.test(k)));
+  });
+});
+
+describe("filter periode kosong TIDAK mengosongkan data (regresi bug lama)", () => {
+  it("kunjungan terbaca dari map walau periode tidak difilter", async () => {
+    // penyimpanan di produksi menulis periode = "" (importer `simpanPerforma(db, id, "", …)`).
+    // `performaPerSku` karena itu TIDAK menyaring periode; uji ini mengunci janji itu:
+    // satu SKU dengan data apa pun tetap terbaca, bukan menghasilkan map kosong.
+    const fx = await muatFixture();
+    const r0 = fx.rincian[0];
+    const b = bangunBaris(masukan(fx, {
+      performaPerSku: new Map([[r0.sku, { dilihat: 300, klik: 10, kunjungan: 80, keranjang: 6, pesanan: 2, omzet: 200000, tanpaBeli: 60 }]]),
+    }))[0];
+    assert.equal(b.organikKunjungan, 80, "data periode kosong tetap terbaca");
+    assert.equal(b.organikPesanan, 2);
   });
 });
 

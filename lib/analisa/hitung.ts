@@ -67,6 +67,15 @@ export type MasukanAnalisa = {
    * Kunci = SKU. Isi: dilihat/klik/biaya/omzet dari `ads_produk` (agregat rentang).
    */
   iklanPerSku?: Map<string, { dilihat: number; klik: number; biaya: number; omzet: number }>;
+  /**
+   * Metrik ORGANIK per SKU (kunjungan halaman produk TANPA iklan) dari `performa_produk`.
+   * Kunci = SKU. Opsional supaya pemanggil lama tetap jalan; kosong = data belum ada.
+   * JANGAN dicampur dengan `iklanPerSku` — keduanya menjawab pertanyaan berbeda.
+   */
+  performaPerSku?: Map<string, {
+    dilihat: number; klik: number; kunjungan: number; keranjang: number;
+    pesanan: number; omzet: number; tanpaBeli: number;
+  }>;
   /** Jumlah snapshot tersedia — menentukan apakah tren bisa dihitung. */
   jmlSnapshot: number;
   /** Apakah ada data performa produk (kunjungan/konversi) untuk periode ini. */
@@ -100,6 +109,7 @@ export function bangunBaris(m: MasukanAnalisa): BarisSku[] {
   return m.snapshot.rincian.map((r) => {
     const hppMaster = m.hppMaster.get(r.sku) ?? null;
     const iklan = m.iklanPerSku?.get(r.sku) ?? null;
+    const organik = m.performaPerSku?.get(r.sku) ?? null;
     // Pembagi nol → null, BUKAN Infinity/NaN. Angka tak terhingga yang lolos ke UI
     // akan tampil sebagai "∞%" dan merusak kepercayaan pada seluruh halaman.
     const ctr = iklan && iklan.dilihat > 0 ? bulat2((iklan.klik / iklan.dilihat) * 100) : null;
@@ -125,8 +135,24 @@ export function bangunBaris(m: MasukanAnalisa): BarisSku[] {
       cr,
       biayaIklan: iklan ? iklan.biaya : null,
       roasAktual,
+      // Organik: null bila SKU tidak ada di impor Performa Produk — bukan nol.
+      organikDilihat: organik ? organik.dilihat : null,
+      organikKunjungan: organik ? organik.kunjungan : null,
+      organikKeranjang: organik ? organik.keranjang : null,
+      organikPesanan: organik ? organik.pesanan : null,
+      organikOmzet: organik ? organik.omzet : null,
     };
   });
+}
+
+/**
+ * CR organik = pesanan ÷ kunjungan × 100 (persen).
+ * Rumus SAMA dengan CR iklan: pembagi nol/tidak ada → null, BUKAN Infinity.
+ * Dipakai menemukan halaman produk yang didatangi tapi tidak menghasilkan pesanan.
+ */
+export function organikCr(b: BarisSku): number | null {
+  if (b.organikKunjungan === null || b.organikKunjungan <= 0 || b.organikPesanan === null) return null;
+  return bulat2((b.organikPesanan / b.organikKunjungan) * 100);
 }
 
 /** Bulatkan ke 2 desimal; satu tempat supaya UI, AI, dan uji memakai angka yang sama. */
@@ -216,6 +242,8 @@ export function buatTemuan(m: MasukanAnalisa, baris: BarisSku[], ringkas: Ringka
   const temuan: Temuan[] = [];
   const kurang: string[] = [];
   if (m.biayaIklan === null) kurang.push("Biaya iklan per produk belum diimpor — margin belum memperhitungkan iklan.");
+  // Pesan ini HANYA jujur saat performa benar-benar tidak ada. Begitu `adaPerforma` true,
+  // datanya ada dan dipakai (temuan organik di bawah) — menambahkannya berarti berbohong.
   if (!m.adaPerforma) kurang.push("Data kunjungan/konversi produk belum ada — belum bisa membedakan 'sedikit dilihat' vs 'dilihat tapi tidak dibeli'.");
 
   // ── 1. SKU merugi (paling mendesak) ──
@@ -317,6 +345,30 @@ export function buatTemuan(m: MasukanAnalisa, baris: BarisSku[], ringkas: Ringka
           .map((b) => ({ sku: b.sku, nama: b.nama, nilai: (b.stok ?? 0) * b.hppSatuan })),
       });
     }
+  }
+
+  // ── 7. Halaman produk dilihat tapi tidak dibeli (MASALAH HALAMAN, bukan iklan) ──
+  // Kenapa temuan ini ada: dulu data kunjungan organik hanya dihitung jumlah barisnya,
+  // sehingga tidak ada satu pun tempat yang bisa membedakan "produk tidak pernah dilihat"
+  // (masalah iklan/pencarian) dari "produk dilihat banyak orang tapi tak seorang pun beli"
+  // (masalah halaman: foto, judul, harga, ongkir). Dua masalah itu obatnya berbeda total.
+  // Ambang kunjungan 50 = PRAKTIK UMUM sampel minimum, bukan aturan resmi Shopee.
+  const TANPA_BELI_MIN = 50;
+  const halamanBermasalah = baris.filter(
+    (b) => b.organikKunjungan !== null && b.organikKunjungan >= TANPA_BELI_MIN && b.organikPesanan === 0
+  );
+  if (halamanBermasalah.length > 0) {
+    const totalKunjungan = halamanBermasalah.reduce((a, b) => a + (b.organikKunjungan ?? 0), 0);
+    temuan.push({
+      kode: "organik_dilihat_tanpa_beli", keparahan: "peringatan",
+      judul: `${halamanBermasalah.length} produk dilihat banyak orang tapi tidak ada yang membeli`,
+      penjelasan: `Ini BUKAN masalah iklan: pengunjungnya sudah datang sendiri (tanpa iklan) dan tetap tidak ada pesanan. Berarti yang menghalangi ada di halaman produknya — foto, judul, harga, atau ongkir — bukan di setelan iklannya. Perbaiki halaman dulu sebelum membelanjakannya untuk iklan.`,
+      angka: { nilai: totalKunjungan, satuan: "jumlah", jumlahTerkena: halamanBermasalah.length, dariTotal: baris.length },
+      // Kunjungan 0 tetap ditulis apa adanya agar pembaca tahu angka pendukungnya.
+      contohSku: [...halamanBermasalah].sort((a, b) => (b.organikKunjungan ?? 0) - (a.organikKunjungan ?? 0)).slice(0, 10)
+        .map((b) => ({ sku: b.sku, nama: b.nama, nilai: b.organikKunjungan ?? 0 })),
+      dataKurang: [`Ambang ${TANPA_BELI_MIN} kunjungan adalah praktik umum, bukan aturan resmi Shopee.`],
+    });
   }
 
   return temuan;

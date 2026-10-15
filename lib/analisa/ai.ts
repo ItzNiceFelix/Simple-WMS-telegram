@@ -22,7 +22,8 @@
 //   * "Batas temuan mengikuti kedalaman" — panjang jawaban adalah pilihan pengguna,
 //     bukan angka yang dipaku di kode.
 import { panggilTeks, type Konteks } from "@/lib/ai/provider";
-import { keputusanIklan } from "./hitung";
+import type { UpayaGagal } from "@/lib/d1/hasil";
+import { keputusanIklan, organikCr } from "./hitung";
 import type { BarisSku, HasilAnalisa } from "./tipe";
 
 /** Tingkat kedalaman jawaban yang boleh diminta pengguna. */
@@ -138,6 +139,9 @@ export function susunBahan(h: HasilAnalisa): string {
 
   // 20 SKU teratas supaya AI bisa mengaitkan temuan dengan produk nyata tanpa
   // bahan membengkak (batas token provider tetap harus dihormati).
+  // Metrik ORGANIK ikut dikirim HANYA saat ada (null = jangan dikirim), supaya model
+  // tidak membahas kunjungan dari ketiadaan data. Angka ini beda dari iklan — diberi
+  // label "organik" agar tidak tertukar dengan Dilihat/Klik iklan di blok keputusan.
   const teratas = [...h.baris].sort((a, b) => b.kontribusi - a.kontribusi).slice(0, 20);
   if (teratas.length > 0) {
     baris.push("20 SKU PENYUMBANG TERBESAR:");
@@ -145,12 +149,29 @@ export function susunBahan(h: HasilAnalisa): string {
       baris.push(
         `- ${b.sku} ${b.nama ?? ""}: terjual ${b.unit}, harga Rp ${b.hargaJual}, ` +
           `HPP Rp ${b.hppSatuan}, margin Rp ${b.marginSatuan} (${b.marginPersen}%), ` +
-          `kontribusi Rp ${b.kontribusi}, ROAS impas ${b.roasImpas ?? "tidak ada (margin ≤ 0)"}`
+          `kontribusi Rp ${b.kontribusi}, ROAS impas ${b.roasImpas ?? "tidak ada (margin ≤ 0)"}` +
+          organikRingkas(b)
       );
     }
   }
 
   return baris.join("\n");
+}
+
+/**
+ * Cuplikan metrik ORGANIK satu SKU untuk bahan prompt. String KOSONG bila tak ada data —
+ * supaya SKU tanpa baris Performa Produk tidak menambah kalimat kosong ke bahan.
+ * Label "organik" ditulis eksplisit: angka ini dari kunjungan tanpa iklan, dan mencampurnya
+ * dengan Dilihat/Klik iklan akan membuat AI menyimpulkan sebab yang salah.
+ */
+function organikRingkas(b: BarisSku): string {
+  if (b.organikKunjungan === null && b.organikPesanan === null) return "";
+  const cr = organikCr(b);
+  return (
+    `, ORGANIK (tanpa iklan): kunjungan ${b.organikKunjungan ?? "belum ada"}, ` +
+    `keranjang ${b.organikKeranjang ?? "belum ada"}, pesanan ${b.organikPesanan ?? "belum ada"}, ` +
+    `omzet Rp ${b.organikOmzet ?? "belum ada"}, CR organik ${cr === null ? "belum bisa dihitung" : `${cr}%`}`
+  );
 }
 
 /** Angka iklan satu SKU dalam bentuk yang bisa dibaca model; "belum ada" bila null. */
@@ -231,7 +252,7 @@ export async function analisaMendalam(
   ctx: Konteks,
   h: HasilAnalisa,
   opsi: OpsiMendalam
-): Promise<{ ok: true; data: HasilMendalam } | { ok: false; status: number; error: string }> {
+): Promise<{ ok: true; data: HasilMendalam } | { ok: false; status: number; error: string; upaya?: UpayaGagal[] }> {
   const bahan = susunBahan(h);
 
   const pesan = [
@@ -248,6 +269,8 @@ export async function analisaMendalam(
     },
     "teks"
   );
+  // `hasil` gagal sudah memuat `upaya` (provider/model/alasan) dari panggilTeks —
+  // diteruskan apa adanya supaya endpoint bisa menampilkannya, bukan diringkas lagi.
   if (!hasil.ok) return hasil;
 
   return {

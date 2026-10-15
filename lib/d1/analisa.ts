@@ -160,6 +160,57 @@ export async function metrikIklanPerSku(
   return peta;
 }
 
+/**
+ * Metrik performa ORGANIK per SKU (kunjungan/keranjang/pesanan dari halaman produk,
+ * TANPA iklan) — inilah datanya yang selama ini hanya dihitung jumlah barisnya.
+ *
+ * KENAPA TIDAK MEMFILTER `periode = ?`: importer memanggil `simpanPerforma(db, presetId, "",
+ * baris)` (lib/d1/shopeePetaImpor.ts) sehingga kolom `periode` di produksi berisi string
+ * KOSONG. Filter ketat `periode = ?` akan menghasilkan nol baris dan mengembalikan bug lama
+ * ("data belum ada" padahal 264 baris tersimpan). Jadi: ambil semua baris preset itu, lalu
+ * bila ada beberapa periode berbeda pilih kelompok TERBARU lewat `at DESC` — satu periode
+ * saja yang dipakai supaya angka dari rentang waktu berbeda tidak dijumlahkan diam-diam.
+ *
+ * Kosong (Map tanpa isi) bila tabel belum ada / belum diimpor — sengaja TIDAK melempar,
+ * sama seperti `metrikIklanPerSku`: halaman analisa harus tetap tampil.
+ */
+export async function performaPerSku(
+  db: D1Database,
+  presetId: number,
+  periode: string
+): Promise<Map<string, { dilihat: number; klik: number; kunjungan: number; keranjang: number; pesanan: number; omzet: number; tanpaBeli: number }>> {
+  void periode; // disengaja tidak dipakai menyaring — lihat catatan di atas.
+  const peta = new Map<string, { dilihat: number; klik: number; kunjungan: number; keranjang: number; pesanan: number; omzet: number; tanpaBeli: number }>();
+  const r = await db
+    .prepare(
+      "SELECT sku, dilihat, klik, kunjungan, keranjang, pesanan, omzet, melihat_tanpa_beli " +
+        "FROM performa_produk WHERE preset_id = ? ORDER BY at DESC, sku"
+    )
+    .bind(presetId)
+    .all<{
+      sku: string; dilihat: number; klik: number; kunjungan: number;
+      keranjang: number; pesanan: number; omzet: number; melihat_tanpa_beli: number;
+    }>()
+    .catch(() => null);
+  // `sku` adalah kunci utama tabel, jadi satu SKU tidak mungkin muncul dua kali dalam
+  // periode yang sama. Baris pertama per SKU karena itu sudah yang terbaru (`at DESC`).
+  for (const x of r?.results ?? []) {
+    const sku = String(x.sku ?? "");
+    if (sku === "" || peta.has(sku)) continue;
+    const angka = [
+      Number(x.dilihat ?? 0), Number(x.klik ?? 0), Number(x.kunjungan ?? 0),
+      Number(x.keranjang ?? 0), Number(x.pesanan ?? 0), Number(x.omzet ?? 0),
+      Number(x.melihat_tanpa_beli ?? 0),
+    ];
+    if (!angka.every(Number.isFinite)) continue; // baris rusak dilewati, bukan meracuni tabel
+    peta.set(sku, {
+      dilihat: angka[0], klik: angka[1], kunjungan: angka[2],
+      keranjang: angka[3], pesanan: angka[4], omzet: angka[5], tanpaBeli: angka[6],
+    });
+  }
+  return peta;
+}
+
 /** Apakah ada data performa produk untuk rentang ini. */
 export async function adaPerforma(db: D1Database, presetId: number): Promise<boolean> {
   const r = await db
