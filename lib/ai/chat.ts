@@ -10,7 +10,7 @@ import type { BagianChat } from "@/lib/ai/http";
 import { listGudang } from "@/lib/d1/gudang";
 import { daftarTool, petaKataTool } from "@/lib/d1/aiTool";
 import { daftarSpesifikasiTool, jalankanTool, opsiGudang } from "@/lib/ai/tools";
-import { daftarGudangPrompt, susunPromptSistem } from "@/lib/ai/prompt";
+import { PROMPT_DESAIN, daftarGudangPrompt, susunPromptSistem } from "@/lib/ai/prompt";
 import { potongRiwayat, pilihTool } from "@/lib/ai/hematToken";
 import { panggilTeks } from "@/lib/ai/panggil";
 
@@ -32,6 +32,23 @@ export type MasukanChat = {
   user: { tg_id: string };
   settings: AiSettings;
   kunci: string;
+  /**
+   * Role pemanggil, diteruskan apa adanya ke `Konteks.role` supaya izin model per role
+   * (lib/d1/aiIzinModel.ts) ditegakkan. WAJIB diisi pemanggil yang sudah tahu role-nya:
+   * `himpunanIzin` gagal-tertutup pada role kosong, jadi tanpa field ini SEMUA model
+   * tersaring habis dan chat selalu gagal. Opsional demi pemanggil lama.
+   */
+  role?: string;
+  /**
+   * `true` = jalur chat TANPA tool sama sekali (dipakai role `designer`).
+   * Alasannya penegakan, bukan gaya: menulis "jangan pakai tool" di prompt hanya
+   * imbauan — model tetap boleh memanggil tool kalau spesifikasinya dikirim.
+   * Satu-satunya cara mengunci adalah TIDAK mengirim daftar tool ke provider,
+   * jadi `pilihTool`/`daftarTool`/`daftarSpesifikasiTool` dilewati seluruhnya.
+   * Efek sampingnya: mode `saatTakCocok = "semua_tool"` (yang bisa mengirim
+   * SELURUH tool aktif saat kata kunci tak cocok) tidak punya jalur masuk di sini.
+   */
+  tanpaTool?: boolean;
   env?: { AI_KEY_ENCRYPTION_KEY?: string; KENARI_BASE_URL?: string };
 };
 
@@ -51,14 +68,52 @@ function parseArgumen(raw: string): Record<string, unknown> {
 }
 
 /**
+ * Chat mode desain untuk role `designer`: provider TIDAK menerima daftar tool
+ * sama sekali. Dipisah dari `balasChat` supaya jalur ber-tool tidak perlu
+ * dijaga kondisi di dalam loop — tidak ada tool yang bisa dijangkau dari sini,
+ * jadi `ringkasAksi`/`jalankanTool` mustahil terpanggil (dan karenanya
+ * `perluKonfirmasi` mustahil dikembalikan).
+ *
+ * Prompt sistem TIDAK memakai `daftarGudangPrompt` dan TIDAK memakai prompt
+ * kustom admin (`settings.promptSistem`) yang memuat aturan stok/inventory.
+ */
+async function balasTanpaTool(db: D1Database, m: MasukanChat, settings: AiSettings): Promise<HasilChat> {
+  const riwayat = potongRiwayat(m.riwayat, settings.maksRiwayat);
+  const pesan: BagianChat[] = [
+    { role: "system", teks: PROMPT_DESAIN },
+    ...riwayat,
+    { role: "user", teks: m.pesan },
+  ];
+  // `tool` sengaja undefined: provider tidak menerima daftar tool sama sekali.
+  // `db` tetap diisi karena `Konteks` mewajibkannya, tetapi jalur ini tidak
+  // pernah memanggil `jalankanTool`/`daftarTool`, jadi DB tidak tersentuh.
+  const h = await panggilTeks({ db, kunci: m.kunci, role: m.role, env: m.env }, { pesan, tool: undefined }, "teks");
+  if (!h.ok) return { ok: false, error: h.error };
+  return {
+    ok: true,
+    balasan: h.teks.trim() || "Tidak ada yang bisa kusampaikan.",
+    tokenMasuk: h.tokenMasuk,
+    tokenKeluar: h.tokenKeluar,
+    provider: h.provider,
+    model: h.model,
+  };
+}
+
+/**
  * Orkestrator satu putaran chat. `riwayat` TIDAK memuat pesan terbaru —
  * fungsi ini yang menambahkannya, supaya pemanggil tidak pernah salah susun.
  */
 export async function balasChat(db: D1Database, m: MasukanChat): Promise<HasilChat> {
   const settings = m.settings;
+  // Jalur TANPA tool (designer): prompt sistem dibangun SENDIRI, tanpa
+  // `daftarGudangPrompt`. Menyisipkan daftar gudang + aturan stok lalu meminta
+  // model "mengabaikannya" bukan batas — konteks gudang tidak boleh dikirim
+  // sama sekali supaya tidak ada satu pun nama gudang/SKU yang bocor.
+  if (m.tanpaTool) {
+    return balasTanpaTool(db, m, settings);
+  }
   const gudangAktif = await listGudang(db, false);
   const promptSistem = `${susunPromptSistem(settings)}\n\n${daftarGudangPrompt(gudangAktif.map((g) => ({ id: g.id, nama: g.nama })))}`;
-
   const semuaTool = await daftarTool(db, true);
   const namaAktif = semuaTool.map((t) => t.nama);
   const peta = await petaKataTool(db);
@@ -84,7 +139,7 @@ export async function balasChat(db: D1Database, m: MasukanChat): Promise<HasilCh
     { role: "user", teks: m.pesan },
   ];
 
-  const ctx = { db, kunci: m.kunci, env: m.env };
+  const ctx = { db, kunci: m.kunci, role: m.role, env: m.env };
   const tulis = await petaToolTulis(db);
   let tokenMasuk = 0;
   let tokenKeluar = 0;

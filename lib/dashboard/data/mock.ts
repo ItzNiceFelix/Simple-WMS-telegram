@@ -71,7 +71,7 @@ import type {
   UbahNamaAdminRequest,
   UbahNamaAdminResponse,
 } from "../types";
-import type { DataSource, MovementFilter, ProdukDetail } from "./index";
+import type { DataSource, MovementFilter, ProdukDetail, RingkasanIrisan } from "./index";
 import { guardHapusMock, superAdminMock, validasiHppMock } from "./mock-paritas";
 import {
   gabungItemDuplikat,
@@ -99,6 +99,13 @@ import {
   MOCK_SYNC_DRAFTS,
   MOCK_SYNC_ORPHAN,
 } from "./mock-data";
+
+// Cerminan MAKS_MINUS_RINGKASAN / MAKS_MENIPIS_RINGKASAN / MAKS_GERAK_RINGKASAN di
+// app/api/baca/route.ts. Disalin, bukan diimpor, karena route server tidak boleh ikut
+// masuk bundel klien — paritasnya dijaga test e2e beranda.
+const MAKS_MINUS_MOCK = 20;
+const MAKS_MENIPIS_MOCK = 10;
+const MAKS_GERAK_MOCK = 10;
 
 // Store mutable supaya aksi tulis mock mengubah state (dan UI refetch melihat hasilnya).
 const store = {
@@ -158,7 +165,7 @@ function guardAksiPermintaan(
   role: Role,
   tanggal: string
 ): { error: string } | { doc: DailyRequestDoc } {
-  if (role !== "owner" && role !== "admin") return { error: "Akses ditolak. Hubungi owner." };
+  if (!isAdminMock(role)) return { error: "Akses ditolak. Hubungi owner." };
   const doc = dokumenMock(tanggal);
   if (!doc) return { error: "Permintaan tidak ditemukan." };
   if (doc.status === "selesai") return { error: "Permintaan sudah selesai." };
@@ -208,6 +215,14 @@ function adminById(id: string): AdminDoc | undefined {
 }
 
 type GuardGagal = { ok: false; error: string };
+
+/**
+ * Paritas `is_admin` server (lib/d1/auth.ts): owner || high_admin || admin.
+ * `designer` TIDAK admin-tier, jadi ikut ditolak bersama guest.
+ */
+function isAdminMock(role: Role): boolean {
+  return role === "owner" || role === "high_admin" || role === "admin";
+}
 
 // ---------------- v5: batas & helper master gudang / opname ----------------
 
@@ -637,7 +652,7 @@ export function makeMockDataSource(getRole: () => Role): DataSource {
         .map((p) => toRow(p.kode_barang))
         .filter((r): r is StockRow => r !== null);
       const role = getRole();
-      const staff = role === "owner" || role === "admin";
+      const staff = isAdminMock(role);
       const draftPending = staff
         ? store.opnameDrafts.filter((d) => d.status === "pending_confirmation").length +
           store.syncDrafts.filter((d) => d.status === "pending_confirmation").length +
@@ -651,6 +666,53 @@ export function makeMockDataSource(getRole: () => Role): DataSource {
         draftPending,
         permintaanHariIni: staff ? hariIni?.items.length ?? 0 : null,
       };
+    },
+
+    /**
+     * Paritas scope `ringkasan` server (agregat + irisan kecil, bukan enumerasi).
+     *
+     * Batas di sini HARUS sama dengan MAKS_*_RINGKASAN di app/api/baca/route.ts: kalau mock
+     * lebih longgar, e2e melihat 20 baris minus sementara produksi hanya 5 — dan sebaliknya
+     * mock yang lebih ketat menyembunyikan regresi. Scope ini terbuka untuk guest, jadi
+     * hanya kolom yang dirender beranda yang boleh ikut.
+     */
+    async getRingkasanIrisan(): Promise<RingkasanIrisan> {
+      await delay();
+      const rows = store.produk
+        .filter((p) => p.is_online_product)
+        .map((p) => toRow(p.kode_barang))
+        .filter((r): r is StockRow => r !== null);
+
+      const minus = rows
+        .filter((r) => r.status === "minus")
+        .sort((a, b) => (a.stok_gudang_online ?? 0) - (b.stok_gudang_online ?? 0))
+        .slice(0, MAKS_MINUS_MOCK)
+        .map((r) => ({
+          kode_barang: r.kode_barang,
+          nama_accurate: r.nama_accurate,
+          stok_gudang_online: r.stok_gudang_online ?? 0,
+          // Sama seperti server: kekurangan = |qty| untuk baris minus.
+          kekurangan: Math.abs(r.stok_gudang_online ?? 0),
+        }));
+
+      const menipis = rows
+        .filter((r) => r.status === "menipis")
+        .sort((a, b) => (b.reorder_point ?? 0) - (b.stok_gudang_online ?? 0) - ((a.reorder_point ?? 0) - (a.stok_gudang_online ?? 0)))
+        .slice(0, MAKS_MENIPIS_MOCK)
+        .map((r) => ({
+          kode_barang: r.kode_barang,
+          nama_accurate: r.nama_accurate,
+          stok_gudang_online: r.stok_gudang_online ?? 0,
+          reorder_point: r.reorder_point,
+        }));
+
+      // Histori = 12 movement lama saja (paritas listMovements mock; seed picking tidak muncul).
+      const movements = store.movements
+        .slice()
+        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())
+        .slice(0, MAKS_GERAK_MOCK);
+
+      return { minus, menipis, movements };
     },
 
     async listStock(filter?: StockFilter): Promise<StockRow[]> {
@@ -804,7 +866,7 @@ export function makeMockDataSource(getRole: () => Role): DataSource {
 
       // --- Otorisasi role dulu (paritas route: guest 403 sebelum baca dokumen) ---
       const role = getRole();
-      if (role !== "owner" && role !== "admin") {
+      if (!isAdminMock(role)) {
         return { ok: false, error: "Akses ditolak. Hubungi owner." };
       }
 
@@ -1097,7 +1159,7 @@ export function makeMockDataSource(getRole: () => Role): DataSource {
       await delay(300);
       if (mockSesiKedaluwarsa()) return { ok: false, error: SESI_KEDALUWARSA };
       const role = getRole();
-      if (role !== "owner" && role !== "admin") {
+      if (!isAdminMock(role)) {
         return { ok: false, error: "Akses ditolak. Hubungi owner." };
       }
       const dokumen0 = dokumenMock(req.tanggal);
@@ -1140,7 +1202,7 @@ export function makeMockDataSource(getRole: () => Role): DataSource {
       // validasi payload dulu (dispatcher), lalu cek role -> tirukan urutannya.
       const valid = validasiTambahProdukMock(req);
       if (!valid.ok) return { ok: false, error: valid.error };
-      if (role !== "owner" && role !== "admin") {
+      if (!isAdminMock(role)) {
         return { ok: false, error: "Akses ditolak. Hubungi owner." };
       }
       // B5 paritas: create-only. Produk ATAU stok orphan sama-sama menolak (409).
@@ -1208,7 +1270,7 @@ export function makeMockDataSource(getRole: () => Role): DataSource {
         return { ok: false, error: "Produk tidak ditemukan." };
       }
       const role = getRole();
-      if (role !== "owner" && role !== "admin") {
+      if (!isAdminMock(role)) {
         return { ok: false, error: "Akses ditolak. Hubungi owner." };
       }
       // Validasi per mode (PRD 13.1 / E6).
@@ -1322,7 +1384,7 @@ export function makeMockDataSource(getRole: () => Role): DataSource {
       await delay(300);
       if (mockSesiKedaluwarsa()) return { ok: false, error: SESI_KEDALUWARSA };
       const role = getRole();
-      if (role !== "owner" && role !== "admin") {
+      if (!isAdminMock(role)) {
         return { ok: false, error: "Akses ditolak. Hubungi owner." };
       }
       const stok = stokByKode(req.kode_barang);
@@ -1482,7 +1544,7 @@ export function makeMockDataSource(getRole: () => Role): DataSource {
       await delay(300);
       if (mockSesiKedaluwarsa()) return { ok: false, error: SESI_KEDALUWARSA };
       const role = getRole();
-      if (role !== "owner" && role !== "admin") return { ok: false, error: "Akses ditolak. Hubungi owner." };
+      if (!isAdminMock(role)) return { ok: false, error: "Akses ditolak. Hubungi owner." };
       if (!Number.isInteger(req.qty) || req.qty < 0) {
         return { ok: false, error: "Jumlah harus bilangan bulat >= 0." };
       }
@@ -1512,7 +1574,7 @@ export function makeMockDataSource(getRole: () => Role): DataSource {
       await delay(300);
       if (mockSesiKedaluwarsa()) return { ok: false, error: SESI_KEDALUWARSA };
       const role = getRole();
-      if (role !== "owner" && role !== "admin") {
+      if (!isAdminMock(role)) {
         return { ok: false, error: "Akses ditolak. Hubungi owner." };
       }
       // BR7: admin hanya boleh memindah DARI gudangnya (keputusan D8).
@@ -1552,7 +1614,7 @@ export function makeMockDataSource(getRole: () => Role): DataSource {
       await delay(300);
       if (mockSesiKedaluwarsa()) return { ok: false, error: SESI_KEDALUWARSA };
       const role = getRole();
-      if (role !== "owner" && role !== "admin") return { ok: false, error: "Akses ditolak. Hubungi owner." };
+      if (!isAdminMock(role)) return { ok: false, error: "Akses ditolak. Hubungi owner." };
       if (typeof req.is_online !== "boolean") return { ok: false, error: "Status online harus boolean." };
       const produk = produkByKode(req.kode_barang);
       if (!produk) return { ok: false, error: "Produk tidak ditemukan." };
@@ -1574,7 +1636,7 @@ export function makeMockDataSource(getRole: () => Role): DataSource {
       await delay(300);
       if (mockSesiKedaluwarsa()) return { ok: false, error: SESI_KEDALUWARSA };
       const role = getRole();
-      if (role !== "owner" && role !== "admin") return { ok: false, error: "Akses ditolak. Hubungi owner." };
+      if (!isAdminMock(role)) return { ok: false, error: "Akses ditolak. Hubungi owner." };
       const gudangId = typeof req.gudang_id === "string" ? req.gudang_id.trim() : "";
       if (!gudangId) return { ok: false, error: "Gudang tidak dikenal." };
       const gudang = store.gudang.find((g) => g.gudang_id === gudangId);
@@ -1703,7 +1765,7 @@ export function makeMockDataSource(getRole: () => Role): DataSource {
       await delay(300);
       if (mockSesiKedaluwarsa()) return { ok: false, error: SESI_KEDALUWARSA };
       const role = getRole();
-      if (role === "guest") return { ok: false, error: "Akses ditolak. Hubungi owner." };
+      if (role === "guest" || role === "designer") return { ok: false, error: "Akses ditolak. Hubungi owner." };
       if (role === "admin" && MOCK_SESSION.gudangId && req.dari_gudang_id !== MOCK_SESSION.gudangId) {
         return { ok: false, error: "Anda hanya dapat meminta dari gudang Anda." };
       }
@@ -1814,7 +1876,7 @@ export function makeMockDataSource(getRole: () => Role): DataSource {
     async tolakPermintaanGudang(req) {
       await delay(300);
       const role = getRole();
-      if (role !== "owner" && role !== "admin") return { ok: false, error: "Akses ditolak. Hubungi owner." };
+      if (!isAdminMock(role)) return { ok: false, error: "Akses ditolak. Hubungi owner." };
       const dok = store.permintaanGudang.find((r) => r.id === String(req.id));
       if (!dok) return { ok: false, error: "Permintaan tidak ditemukan." };
       const terminal = pesanStatusTerminalMock(dok.status);

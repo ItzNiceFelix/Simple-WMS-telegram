@@ -1,0 +1,31 @@
+-- 0037_ai_editor_model.sql — EDITOR boleh memakai model pilihannya SENDIRI (per user).
+--
+-- MASALAH YANG DIPERBAIKI:
+--   Sejak 0036 editor bisa menyetel reasoning + plafon token, tapi TIDAK bisa memilih
+--   model. `app/api/desain/layout/route.ts` memanggil `panggilTeks` tanpa `modelDiminta`,
+--   sehingga editor selalu jatuh ke model teks GLOBAL (`settings.ai` → `modelTeks`) —
+--   model yang ditetapkan owner untuk BOT CHAT. Menyusun skrip canvas-op adalah tugas
+--   penalaran + tool-call yang berbeda dari menjawab pesan; user yang tahu model mana
+--   yang sanggup mengerjakannya tidak punya jalan untuk memakainya.
+--
+-- KENAPA KOLOM DI `ai_editor_setting` (pilihan a), BUKAN tujuan baru di allowlist + peta global:
+--   `ai_model_izin.jenis` punya CHECK ('teks','vision','gambar'); menambah nilai di sana
+--   menuntut rebuild tabel + backfill seluruh izin yang sudah ada demi satu konsep yang
+--   sebenarnya BUKAN jenis model: editor memakai model TEKS biasa. Kayu ukur yang benar
+--   sudah ada dan tidak perlu ditambah — yaitu allowlist `teks` per role
+--   (`himpunanIzin(db, role, "teks")`, ditegakkan di lib/ai/provider.ts).
+--   Sebaliknya, model default GLOBAL (pilihan b) juga salah bentuk: pemilihan model di
+--   editor adalah preferensi PRIBADI user (siapa pun yang sedang menggambar), sama seperti
+--   reasoning/maks_token di tabel ini, dan sama seperti ai_analisa_setting/ai_gambar_setting
+--   yang keduanya menyimpan pilihan modelnya sendiri. Kolom per user = satu ADD COLUMN,
+--   tanpa tabel baru, dan mengikuti pola yang sudah ada di tiga tabel setting AI lain.
+--
+-- `''` = BELUM DIPILIH → jatuh ke model teks global (perilaku lama, tidak ada user yang
+-- berubah perilakunya karena migrasi ini). Model yang disimpan TETAP diperiksa ulang di
+-- server saat dipakai: baris lama, izin yang dicabut owner sesudahnya, atau provider yang
+-- kredensialnya dimatikan tidak bisa menyelundupkan model terlarang — lihat
+-- `kandidatHanyaDipilih` di lib/ai/provider.ts (menolak dengan catatan, bukan diam-diam
+-- memakai model lain).
+ALTER TABLE ai_editor_setting ADD COLUMN model_editor TEXT NOT NULL DEFAULT '';
+
+PRAGMA optimize;

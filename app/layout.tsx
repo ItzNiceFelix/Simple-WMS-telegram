@@ -11,7 +11,7 @@ import "./globals.css";
 const geist = Geist({ subsets: ["latin"], variable: "--font-sans" });
 
 export const metadata: Metadata = {
-  title: "Admin Toko — Dashboard",
+  title: "SuPrapto Online — Dashboard",
   description: "Dashboard Telegram Mini App untuk operasional toko.",
 };
 

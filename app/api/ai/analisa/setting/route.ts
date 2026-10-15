@@ -59,6 +59,8 @@ async function modelTeksGlobal(db: D1Database): Promise<{ provider: string; mode
 export async function GET(request: Request) {
   const sesi = await sesiRoute(request, 30);
   if (!sesi.ok) return json({ ok: false, error: sesi.error }, sesi.status);
+  // Preferensi pribadi: user login mana pun boleh, KECUALI guest.
+  if (sesi.user.role === "guest") return json({ ok: false, error: "Akses ditolak." }, 403);
   const db = getDb();
   const setting = await ambilSettingAnalisa(db, sesi.user.tg_id);
   const model = await modelTeksGlobal(db);
@@ -68,6 +70,8 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const sesi = await sesiRoute(request, 30);
   if (!sesi.ok) return json({ ok: false, error: sesi.error }, sesi.status);
+  // Sama seperti GET: preferensi pribadi, guest dikecualikan.
+  if (sesi.user.role === "guest") return json({ ok: false, error: "Akses ditolak." }, 403);
   const body = await bacaBody(request);
   const db = getDb();
   const model = await modelTeksGlobal(db);

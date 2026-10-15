@@ -1,12 +1,16 @@
 // app/api/order/route.ts — Import pesanan 2-fase + transisi fulfill + daftar order (stok, tanpa laba).
 // POST { aksi:'preview', rows } → validasi per baris → import_batches(tipe='pesanan') + import_errors → { batch_id, total, sukses, gagal, peringatan }.
 // POST { aksi:'konfirmasi', batch_id } → imporPesanan → { ok, order, item }.
+// POST { aksi:'preview-shopee', ordersRows, advanceRows } → klasifikasi + tebak SKU → batch 'preview' (klien memegang barisnya).
+// POST { aksi:'mulai-impor', namaBerkas, totalBaris } → batch bertahap baru (atau lanjutkan yang belum selesai) → { batchId, sudahBaris }.
+// POST { aksi:'impor-potong', batchId, potongan, nomorPotong } → commit SATU potongan → { tersimpan, dilewati, progressBaris }.
+// POST { aksi:'selesai-impor', batchId } → tutup batch bertahap → { ok, order, item, batch_id, dilewati }.
 // POST { aksi:'transisi', marketplace, no_pesanan, ke } → transisiFulfill.
 // POST { aksi:'hapus', targets:[{ marketplace, no_pesanan }] } → hapus baris order (koreksi salah impor).
 // GET ?aksi=daftar&dari=&sampai=&mp=&status=&sku=&limit= → { ok, orders } (header+item+fee, tanpa laba).
 // Semua owner/admin.
 import { getDb } from "@/lib/d1/db";
-import { ambilProduk, normalisasiNama } from "@/lib/d1/produk";
+import { ambilProduk, ambilProdukBanyak, normalisasiNama } from "@/lib/d1/produk";
 import { ambilOrder, imporPesanan, listOrder, transisiFulfill, type BarisPesanan, type OrderDetail } from "@/lib/d1/order";
 import { transisiFulfillBatch, type KeFulfill } from "@/lib/d1/orderTransisi";
 import { buatPicklist, buatPicklistPaket } from "@/lib/d1/picklist";
@@ -41,19 +45,39 @@ const UKURAN_BATCH_SKU = 20;
 // (ratusan grup) menghabiskan anggaran CPU Worker dan request mati sebagai 500 buta.
 const MAKS_GRUP_TEBAK = 40;
 /**
- * Ambang cepat-tolak: baris (order + advance) yang masih aman diproses sekali preview.
+ * Batas UKURAN preview (byte JSON), pengganti batas baris.
  *
- * Dinaikkan dari 150 ke 600 setelah diukur: berkas nyata pemilik repo berisi 73 orders +
- * 98 advance = 171 baris, dan angka 150 membuat berkas itu DITOLAK — padahal justru berkas
- * itulah yang harus bisa diimpor. Penolakan cepat hanya berguna untuk berkas yang benar-benar
- * di luar jangkauan, bukan untuk berkas yang cuma sedikit di atas perkiraan awal.
+ * Batas baris dihapus karena bukan batas yang nyata: yang benar-benar gagal adalah request
+ * yang terlalu besar untuk dikirim/dibaca, bukan "jumlah barisnya banyak". Dengan angka baris,
+ * berkas 601 baris ditolak padahal bisa diproses, sementara berkas 600 baris dengan kolom
+ * sangat lebar tetap bisa mengirim muatan lebih besar dari yang 601 baris.
  *
- * 600 dipilih karena: setelah kueri dipotong-potong (UKURAN_BATCH_SKU) dan tebakan dibatasi
- * MAKS_GRUP_TEBAK, jumlah kueri untuk 600 baris masih di bawah anggaran; sementara ekspor
- * Shopee dengan rentang tanggal sangat lebar (ribuan baris) tetap ditolak cepat dengan
- * penjelasan, bukan mati sebagai 500.
+ * 8 MB dipilih sebagai plafon muatan request yang masih aman bagi Worker (batas keras platform
+ * 100 MB jauh di atas kemampuan memori Free, dan preview menyimpan hasil parse sementara).
+ * Melewatinya = 413 dengan pesan yang menyebut angka nyatanya, bukan penolakan tanpa sebab.
  */
-const MAKS_BARIS_SHOPEE = 600;
+const MAKS_BYTE_PREVIEW = 8 * 1024 * 1024;
+/**
+ * Jumlah baris per potongan impor BERTAHAP (jalur `mulai-impor` → `impor-potong` → `selesai-impor`).
+ *
+ * Kenapa ada potongan sama sekali: Worker Free dibatasi ~50 KUERI per invokasi (bukan 50
+ * pernyataan — `db.batch()` mengirim banyak pernyataan dalam SATU panggilan, jadi satu batch
+ * = satu kueri). Jalur konfirmasi lama memanggil `ambilProduk` per baris, dan TIAP panggilan
+ * itu satu kueri: berkas 5000 baris = ~5000 kueri, jauh di atas plafon, dan request mati di
+ * tengah. Memotong di klien memberi tiap request anggaran kueri yang segar.
+ *
+ * Angka 200 dihitung dari anggaran, bukan ditebak. Biaya satu potongan 200 baris:
+ *   - `ambilProdukBanyak`: 1 kueri per 100 SKU unik (prefetch, lihat susunPernyataanOrder);
+ *   - `db.batch` pernyataan impor: 1 kueri per 50 pernyataan, ~8-12 kueri;
+ *   - `siapkanProdukPenanda`: 1 kueri; SELECT batch + UPDATE progres: 2 kueri.
+ * Total kasus terburuk terukur ≈ 17 dari 50. Sisanya sengaja disisakan untuk fallback
+ * per-pernyataan saat satu batch ditolak (lihat `jalankanPernyataan`), yang biayanya lebih
+ * mahal dan dibatasi `batasFallback`.
+ *
+ * Turunkan bila log produksi menunjukkan potongan masih kehabisan anggaran; NAIKKAN hanya
+ * setelah diukur ulang — batas sebenarnya adalah 50 kueri/invokasi, bukan angka ini.
+ */
+const UKURAN_POTONG = 200;
 const MODE_PICKLIST = ["per_paket", "pisah", "gabung", "gabung-order"] as const;
 type ModePicklist = (typeof MODE_PICKLIST)[number];
 
@@ -173,6 +197,191 @@ type StmtOrder = { no: string; stmt: D1PreparedStatement };
 
 /** Nama master + gudang tempat stok SKU benar-benar berada. */
 type InfoSku = { nama: string; lokasi: string; lokasiLain: string };
+
+/** Hasil satu kali penyusunan pernyataan impor (dipakai jalur konfirmasi lama DAN potongan bertahap). */
+type HasilSusun = {
+  stmts: StmtOrder[];
+  nItem: number;
+  produkPenanda: { sku: string; nama: string }[];
+  /** Terisi bila ada baris tanpa SKU yang tidak ditandai belum-MP — pemanggil harus menolak. */
+  pesanKurangSku?: string;
+};
+
+/**
+ * Susun seluruh pernyataan D1 untuk sekumpulan order + SKU manual.
+ *
+ * Ada sebagai fungsi supaya jalur LAMA (`konfirmasi-shopee`, satu berkas sekali jalan) dan
+ * jalur BARU (`impor-potong`, beberapa baris per request) memakai aturan yang PERSIS sama:
+ * produk penanda, baris "perlu SKU", pemetaan SKU manual, dan HPP snapshot. Kalau logika ini
+ * disalin, cepat atau lambat dua jalur akan berbeda perilaku untuk file yang sama.
+ *
+ * `ambildProduk` di-inject supaya pemanggil bisa men-cache hasil SELECT produk per potongan:
+ * satu SKU yang muncul di 50 baris cukup satu kueri, dan itulah yang menjaga jalur bertahap
+ * tetap di bawah anggaran subrequest.
+ */
+async function susunPernyataanOrder(
+  db: D1Database,
+  batchId: number,
+  orders: GabunganOrder[],
+  opsi: {
+    skuManual: Map<string, string>;
+    kunciBelumMp: Set<string>;
+    ambilProdukCache: Map<string, { hpp: number } | null>;
+  },
+): Promise<HasilSusun> {
+  const stmts: StmtOrder[] = [];
+  let nItem = 0;
+  const produkPenanda = new Map<string, { sku: string; nama: string }>();
+  const { skuManual, kunciBelumMp, ambilProdukCache } = opsi;
+  // Ambil SEMUA SKU yang dibutuhkan potongan ini dalam SATU kueri sebelum menyusun pernyataan.
+  // Kenapa: Worker Free hanya 50 kueri per invokasi, dan satu `ambilProduk` = satu kueri —
+  // memanggilnya per baris membuat potongan 200 baris langsung melewati anggaran. Prefetch
+  // membuat biaya baca master jadi ~1 kueri per potongan, bukan ~1 per SKU.
+  const skuDibutuhkan: string[] = [];
+  for (const o of orders) {
+    for (const item of o.items) {
+      const kunci = `${o.no_pesanan}\u0000${item.nama_shopee}\u0000${item.variasi}`;
+      const skuFinal = skuManual.get(kunci) ?? item.sku;
+      if (skuFinal) skuDibutuhkan.push(skuFinal);
+    }
+  }
+  const belumAda = skuDibutuhkan.filter((s) => !ambilProdukCache.has(s));
+  if (belumAda.length > 0) {
+    const banyak = await ambilProdukBanyak(db, belumAda);
+    for (const s of belumAda) {
+      const p = banyak.get(s);
+      ambilProdukCache.set(s, p ? { hpp: p.hpp ?? 0 } : null);
+    }
+  }
+  for (const o of orders) {
+    stmts.push({
+      no: o.no_pesanan,
+      stmt: db
+        .prepare(
+          `INSERT INTO orders (marketplace, no_pesanan, tanggal, buyer, status_fulfill, pajak_pph, pajak_ppn_persen, stok_dikurangi, no_resi,
+            asal_import, opsi_kirim, antar_ke, status_mp, batch_import, jasa_kirim, tipe_layanan, cod, preorder, item_json)
+           VALUES ('shopee', ?, ?, ?, ?, 0, 0, 0, ?, 'orders_toship', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(marketplace, no_pesanan) DO UPDATE SET
+             tanggal = excluded.tanggal, buyer = excluded.buyer, no_resi = CASE WHEN excluded.no_resi = '' THEN orders.no_resi ELSE excluded.no_resi END,
+             opsi_kirim = excluded.opsi_kirim, antar_ke = excluded.antar_ke, status_mp = excluded.status_mp, batch_import = excluded.batch_import,
+             jasa_kirim = excluded.jasa_kirim, tipe_layanan = excluded.tipe_layanan, cod = excluded.cod, preorder = excluded.preorder, item_json = excluded.item_json,
+             asal_import = CASE WHEN orders.asal_import = '' THEN excluded.asal_import ELSE orders.asal_import END,
+             status_fulfill = CASE WHEN orders.status_fulfill = 'pending' THEN excluded.status_fulfill ELSE orders.status_fulfill END`,
+        )
+        .bind(
+          o.no_pesanan, o.tanggal, o.buyer, o.statusAwal, o.noResi,
+          o.opsiKirim, o.antarKe, o.statusMp, batchId, o.jasaKirim, o.tipeLayanan, o.cod ? 1 : 0, o.preorder ? 1 : 0, JSON.stringify(o.items),
+        ),
+    });
+    stmts.push({ no: o.no_pesanan, stmt: db.prepare("DELETE FROM order_items WHERE marketplace = 'shopee' AND no_pesanan = ?").bind(o.no_pesanan) });
+    for (const item of o.items) {
+      const kunci = `${o.no_pesanan}\u0000${item.nama_shopee}\u0000${item.variasi}`;
+      const skuFinal = skuManual.get(kunci) ?? item.sku;
+      // Belum ada SKU sama sekali (tidak dipilih manual, tidak ditandai belum-MP):
+      // hentikan supaya tidak menulis item tanpa rujukan produk.
+      if (!skuFinal) {
+        if (kunciBelumMp.has(kunci)) {
+          // Baris TETAP disimpan sebagai item bertanda "perlu SKU" supaya ikut tercetak di
+          // picklist dengan kolom pembeda. Dulu barisnya di-`continue` (tidak masuk
+          // order_items) sehingga picklist memakai INNER JOIN dan barangnya raib tanpa
+          // pesan — checker menerima lembar tidak lengkap tanpa tahu.
+          const skuTanda = skuPenandaPerluSku(o.no_pesanan, item.nama_shopee, item.variasi);
+          produkPenanda.set(skuTanda, { sku: skuTanda, nama: `[BELUM DI MP] ${item.nama_shopee}${item.variasi ? ` (${item.variasi})` : ""}` });
+          stmts.push({
+            no: o.no_pesanan,
+            stmt: db
+              .prepare(
+                "INSERT INTO order_items (marketplace, no_pesanan, sku, variasi, nama_shopee, qty, harga_satuan, hpp_snapshot, subtotal, sku_asal, perlu_sku) VALUES ('shopee', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
+              )
+              .bind(o.no_pesanan, skuTanda, item.variasi, item.nama_shopee, item.qty, item.harga_satuan, 0, item.subtotal, ""),
+          });
+          nItem++;
+          continue;
+        }
+        return { stmts, nItem, produkPenanda: [...produkPenanda.values()], pesanKurangSku: `Baris "${item.nama_shopee}" (order ${o.no_pesanan}) belum dipilih SKU — pilih SKU atau centang "Belum di MP".` };
+      }
+      // Cache diisi lebih dulu oleh prefetch `ambilProdukBanyak` di atas. `undefined` di sini
+      // berarti prefetch tidak menutup SKU ini — tidak boleh terjadi, dan menjawabnya dengan
+      // satu kueri lagi pelan-pelan menghabiskan anggaran 50 kueri. Jadi dianggap "tidak ada
+      // di master": barisnya tetap disimpan sebagai penanda "perlu SKU" dan user diberi tahu,
+      // bukan request-nya mati di tengah tanpa penjelasan.
+      const produk = ambilProdukCache.get(skuFinal) ?? null;
+      if (!produk) {
+        // SKU tertulis di file tapi tidak ada di master: JANGAN buang ordernya. Simpan
+        // sebagai baris bertanda supaya bisa dicetak di picklist dan diperbaiki nanti.
+        const skuTanda = skuPenandaPerluSku(o.no_pesanan, item.nama_shopee, item.variasi);
+        produkPenanda.set(skuTanda, { sku: skuTanda, nama: `[PERLU SKU] ${item.nama_shopee} — file: ${skuFinal}` });
+        stmts.push({
+          no: o.no_pesanan,
+          stmt: db
+            .prepare(
+              "INSERT INTO order_items (marketplace, no_pesanan, sku, variasi, nama_shopee, qty, harga_satuan, hpp_snapshot, subtotal, sku_asal, perlu_sku) VALUES ('shopee', ?, ?, ?, ?, ?, ?, 0, ?, ?, 1)",
+            )
+            .bind(o.no_pesanan, skuTanda, item.variasi, item.nama_shopee, item.qty, item.harga_satuan, item.subtotal, skuFinal),
+        });
+        nItem++;
+        continue;
+      }
+      stmts.push({
+        no: o.no_pesanan,
+        stmt: db
+          .prepare(
+            "INSERT INTO order_items (marketplace, no_pesanan, sku, variasi, nama_shopee, qty, harga_satuan, hpp_snapshot, subtotal, sku_asal, perlu_sku) VALUES ('shopee', ?, ?, ?, ?, ?, ?, ?, ?, '', 0)",
+          )
+          .bind(o.no_pesanan, skuFinal, item.variasi, item.nama_shopee, item.qty, item.harga_satuan, produk.hpp ?? 0, item.subtotal),
+      });
+      nItem++;
+    }
+  }
+  return { stmts, nItem, produkPenanda: [...produkPenanda.values()] };
+}
+
+/**
+ * Jalankan pernyataan impor dengan fallback PER PERNYATAAN.
+ *
+ * `db.batch` bisa menolak satu pernyataan buruk (mis. FK) dan ikut menggagalkan seluruh
+ * potongan. Menjalankan ulang satu per satu membuat baris yang sehat tetap tersimpan dan
+ * baris yang buruk dilaporkan — bukan hilang tanpa jejak. Perilaku ini dipertahankan dari
+ * jalur lama karena inilah yang membuat impor parsial tetap hidup.
+ *
+ * `batasFallback` membatasi berapa pernyataan yang boleh dicoba ulang satu-satu. Tanpa batas,
+ * potongan yang SEMUA batch-nya gagal akan menjalankan satu kueri per pernyataan — ratusan
+ * kueri, jauh di atas plafon 50 kueri/invokasi Worker Free — dan request mati di tengah tanpa
+ * balasan. Dengan batas, sisanya dilaporkan sebagai belum dicoba supaya user bisa mengulang;
+ * lebih baik tahu "N baris belum tersimpan" daripada kehilangan seluruh jawaban.
+ */
+async function jalankanPernyataan(
+  db: D1Database,
+  stmts: StmtOrder[],
+  batasFallback = 30,
+): Promise<{ gagalTotal: number; dilewati: { no_pesanan: string; pesan: string }[]; belumDicoba: number }> {
+  const dilewati: { no_pesanan: string; pesan: string }[] = [];
+  let gagalTotal = 0;
+  let sisaFallback = batasFallback;
+  let belumDicoba = 0;
+  for (let i = 0; i < stmts.length; i += 50) {
+    const potong = stmts.slice(i, i + 50);
+    try {
+      await db.batch(potong.map((s) => s.stmt));
+    } catch {
+      for (const s of potong) {
+        if (sisaFallback <= 0) {
+          belumDicoba++;
+          continue;
+        }
+        sisaFallback--;
+        try {
+          await s.stmt.run();
+        } catch (e) {
+          gagalTotal++;
+          dilewati.push({ no_pesanan: s.no, pesan: e instanceof Error ? e.message : "pernyataan ditolak D1" });
+        }
+      }
+    }
+  }
+  return { gagalTotal, dilewati, belumDicoba };
+}
+
 
 /**
  * Ambil nama resmi dan LOKASI GUDANG untuk sekumpulan SKU.
@@ -497,20 +706,213 @@ export async function POST(request: Request) {
     if (!hasil.ok) return json({ ok: false, error: hasil.error }, hasil.status);
     return json({ ok: true, status: hasil.status });
   }
+  // ── Impor BERTAHAP (mulai-impor → impor-potong → selesai-impor) ────────────────────────
+  // Dipakai klien untuk berkas besar. Tiap potongan = satu invocation Worker sendiri, jadi
+  // anggaran 50 KUERI per invokasi di-reset tiap request. Jalur LAMA di bawah tetap ada
+  // (dan tetap berfungsi untuk batch 'fase2' yang sudah terlanjur dibuat), tetapi klien
+  // sekarang selalu memakai jalur bertahap — berkas kecil pun hanya jadi satu potongan,
+  // sehingga jalur kecil dan besar memakai kode yang sama.
+  if (aksi === "mulai-impor") {
+    const file = teks(body.namaBerkas).slice(0, 120) || "orders.xlsx";
+    const totalBaris = Number(body.totalBaris);
+    if (!Number.isFinite(totalBaris) || totalBaris <= 0) {
+      return json({ ok: false, error: "totalBaris wajib angka > 0." }, 400);
+    }
+    // `mulaiBaru: true` = user sengaja memilih "Mulai dari awal" untuk berkas yang sama. Batch
+    // lama ditandai 'batal', BUKAN dihapus: `import_errors.batch_id` ber-ON DELETE CASCADE, jadi
+    // menghapus batch ikut membuang riwayat galat per baris yang masih berguna. 'batal' sudah
+    // nilai sah CHECK status (migrasi 0005), jadi tak perlu migrasi baru. Setelah ditandai,
+    // batch itu otomatis tak lagi terlihat oleh SELECT resume di bawah (`status = 'preview'`).
+    if (body.mulaiBaru === true) {
+      await db
+        .prepare("UPDATE import_batches SET status = 'batal', sukses = progres_baris WHERE file = ? AND mode_impor = 'bertahap' AND status = 'preview' AND progres_baris > 0")
+        .bind(file)
+        .run();
+    }
+    // Resume: unggah ulang berkas yang sama (tab tertutup / jaringan putus) harus MELANJUTKAN
+    // batch yang sudah ada, bukan memulai dari nol. Batch tanpa progres sama saja batch baru,
+    // jadi sengaja dilewati supaya baris kosong menumpuk.
+    // `total` = jumlah ORDER (unit yang dipotong klien), bukan baris berkas — lihat catatan
+    // di `impor-potong` soal kenapa satuan progres harus order.
+    const lama = await db
+      .prepare("SELECT id, progres_baris FROM import_batches WHERE file = ? AND mode_impor = 'bertahap' AND status = 'preview' AND progres_baris > 0 ORDER BY at DESC LIMIT 1")
+      .bind(file)
+      .first<{ id: number; progres_baris: number }>();
+    if (lama) {
+      return json({ ok: true, batchId: lama.id, sudahBaris: lama.progres_baris, dilanjutkan: true, ukuranPotong: UKURAN_POTONG });
+    }
+    const ins = await db
+      .prepare("INSERT INTO import_batches (tipe, file, total, sukses, gagal, gudang_id, payload_json, status, at, by, mode_impor) VALUES ('pesanan_shopee', ?, ?, 0, 0, 'ONLINE', '[]', 'preview', ?, ?, 'bertahap')")
+      .bind(file, totalBaris, Math.floor(Date.now() / 1000), user.tg_id)
+      .run();
+    return json({ ok: true, batchId: Number(ins.meta.last_row_id), sudahBaris: 0, dilanjutkan: false, ukuranPotong: UKURAN_POTONG });
+  }
+
+  if (aksi === "impor-potong") {
+    const batchId = Number(body.batchId);
+    if (!Number.isFinite(batchId) || batchId <= 0) return json({ ok: false, error: "batchId wajib angka." }, 400);
+    const nomorPotong = Number(body.nomorPotong);
+    if (!Number.isFinite(nomorPotong) || nomorPotong <= 0) return json({ ok: false, error: "nomorPotong wajib angka > 0." }, 400);
+    const potongan = Array.isArray(body.potongan) ? (body.potongan as GabunganOrder[]) : [];
+    if (potongan.length === 0) return json({ ok: false, error: "Potongan kosong." }, 400);
+    if (potongan.length > UKURAN_POTONG) {
+      return json({ ok: false, error: `Satu potongan maksimal ${UKURAN_POTONG} baris (dikirim ${potongan.length}).` }, 400);
+    }
+    const batch = await db
+      .prepare("SELECT id, file, total, status, nomor_potong, progres_baris, dilewati FROM import_batches WHERE id = ? AND tipe = 'pesanan_shopee' AND mode_impor = 'bertahap'")
+      .bind(batchId)
+      .first<{ id: number; file: string; total: number; status: string; nomor_potong: number; progres_baris: number; dilewati: number }>();
+    if (!batch) return json({ ok: false, error: "Batch impor tidak ditemukan." }, 404);
+    if (batch.status === "done") return json({ ok: false, error: "Batch ini sudah selesai diimpor." }, 409);
+    // Idempoten: klien boleh mengulang kirim karena jaringan putus. Potongan yang nomornya
+    // sudah tercatat TIDAK diproses ulang — kalau diproses, barisnya tersimpan dua kali.
+    if (nomorPotong <= batch.nomor_potong) {
+      return json({ ok: true, tersimpan: 0, dilewati: 0, progressBaris: batch.progres_baris, sudahDiproses: true });
+    }
+    // Potongan harus berurutan: lompatan nomor menandakan klien kehilangan jawaban, dan
+    // memprosesnya akan membuat `progres_baris` tak lagi mencerminkan baris yang benar masuk.
+    if (nomorPotong > batch.nomor_potong + 1) {
+      return json(
+        { ok: false, error: `Potongan ${nomorPotong} datang terlalu jauh — potongan ${batch.nomor_potong + 1} belum dikirim. Ulangi dari potongan itu.`, progressBaris: batch.progres_baris },
+        409,
+      );
+    }
+    const skuManual = new Map<string, string>();
+    if (Array.isArray(body.skuManual)) {
+      for (const m of body.skuManual as Record<string, unknown>[]) {
+        const ref = teks(m.order_ref);
+        const nama = teks(m.nama_shopee);
+        const variasi = teks(m.variasi);
+        const sku = teks(m.sku).toUpperCase();
+        if (ref && sku) skuManual.set(`${ref}\u0000${nama}\u0000${variasi}`, sku);
+      }
+    }
+    const kunciBelumMp = new Set<string>();
+    if (Array.isArray(body.tandaiBelumMp)) {
+      for (const t of body.tandaiBelumMp as Record<string, unknown>[]) {
+        const namaShopee = teks(t.nama_shopee);
+        if (!namaShopee) continue;
+        kunciBelumMp.add(`${teks(t.order_ref)}\u0000${namaShopee}\u0000${teks(t.variasi)}`);
+        await tandaiBelumMp(db, {
+          namaShopee, variasi: teks(t.variasi), orderRef: teks(t.order_ref), oleh: String(user.tg_id),
+          sumber: teks(t.sumber) || "order",
+          skuAsal: teks(t.sku_asal),
+          qtyTotal: Number(t.qty_total) || 0,
+        });
+      }
+    }
+    // Cache SELECT produk per potongan: satu SKU yang muncul di puluhan baris cukup satu kueri.
+    // Inilah penghemat utama yang membuat potongan 200 baris tetap di bawah anggaran subrequest.
+    const susunan = await susunPernyataanOrder(db, batch.id, potongan, {
+      skuManual,
+      kunciBelumMp,
+      ambilProdukCache: new Map(),
+    });
+    if (susunan.pesanKurangSku) return json({ ok: false, error: susunan.pesanKurangSku }, 400);
+    if (susunan.produkPenanda.length > 0) {
+      await db.batch(siapkanProdukPenanda(db, susunan.produkPenanda, Math.floor(Date.now() / 1000)));
+    }
+    const { gagalTotal, dilewati, belumDicoba } = await jalankanPernyataan(db, susunan.stmts);
+    if (susunan.stmts.length > 0 && gagalTotal === susunan.stmts.length) {
+      return json({ ok: false, error: `Seluruh ${susunan.stmts.length} pernyataan potongan ${nomorPotong} ditolak (masalah skema/DB). Contoh: ${dilewati[0]?.pesan ?? "-"}` }, 500);
+    }
+    // `dilewati` dihitung PER PERNYATAAN, bukan per order: satu order bisa menyimpan header
+    // tapi kehilangan salah satu item-nya, dan menghitungnya sebagai "satu order dilewati"
+    // akan melaporkan angka yang lebih kecil dari kenyataan.
+    const stmtsTersimpan = susunan.stmts.length - gagalTotal - belumDicoba;
+    // Progres dihitung dalam ORDER, bukan baris: klien memotong array `orders` dari hasil
+    // preview, jadi resume harus bisa menjawab "order ke berapa yang sudah masuk". Menghitung
+    // baris membuat berkas dengan >1 item/order melompati order yang belum dikirim (potongan
+    // berikutnya dihitung dari indeks order, bukan dari jumlah baris).
+    const suksesPotong = gagalTotal === 0 && belumDicoba === 0;
+    const progresOrder = suksesPotong ? batch.progres_baris + potongan.length : batch.progres_baris;
+    const nomorTercatat = suksesPotong ? nomorPotong : batch.nomor_potong;
+    // `sukses`/`dilewati` di sini adalah AKUMULASI batch, bukan angka potongan: laporan akhir
+    // harus menyebut total berkas, dan angka potongan sebelumnya sudah tak bisa dibaca lagi.
+    await db
+      .prepare("UPDATE import_batches SET nomor_potong = ?, progres_baris = ?, sukses = ?, dilewati = ? WHERE id = ?")
+      .bind(nomorTercatat, progresOrder, progresOrder, batch.dilewati + dilewati.length, batch.id)
+      .run();
+    if (!suksesPotong) {
+      return json(
+        {
+          ok: false,
+          error:
+            `Potongan ${nomorPotong}: ${dilewati.length} pernyataan ditolak${belumDicoba > 0 ? ` dan ${belumDicoba} belum dicoba (anggaran kueri request habis)` : ""}. ` +
+            `${progresOrder} dari ${batch.total} order berkas sudah tersimpan. Tekan Konfirmasi lagi untuk mencoba potongan ini sekali lagi.`,
+          tersimpan: stmtsTersimpan,
+          dilewati: dilewati.length,
+          belumDicoba,
+          progressBaris: progresOrder,
+        },
+        409,
+      );
+    }
+    return json({ ok: true, tersimpan: potongan.length, dilewati: 0, progressBaris: progresOrder });
+  }
+
+  if (aksi === "selesai-impor") {
+    const batchId = Number(body.batchId);
+    if (!Number.isFinite(batchId) || batchId <= 0) return json({ ok: false, error: "batchId wajib angka." }, 400);
+    const batch = await db
+      .prepare("SELECT id, file, total, progres_baris, dilewati, by FROM import_batches WHERE id = ? AND tipe = 'pesanan_shopee' AND mode_impor = 'bertahap'")
+      .bind(batchId)
+      .first<{ id: number; file: string; total: number; progres_baris: number; dilewati: number; by: string | null }>();
+    if (!batch) return json({ ok: false, error: "Batch impor tidak ditemukan." }, 404);
+    const hash = teks(body.hash);
+    // `tandaiBelumMp`/`skuManual` TIDAK diproses di sini: keduanya sudah ditangani tiap potongan
+    // (`impor-potong`) — di sanalah baris yang bersangkutan benar-benar ditulis. Memprosesnya
+    // lagi di sini akan mendaftarkan produk yang sama dua kali ke daftar tunggu.
+    const advance = Array.isArray(body.advance) ? (body.advance as ShopeeBooking[]) : [];
+    const bookingBaru = advance.length > 0 ? await simpanBooking(db, advance, batch.id) : 0;
+    const jmlResi = await isiResiGrup(db, batch.id);
+    // Anti-dobel berkas dicatat di sini, bukan di `mulai-impor`: berkas yang batal di tengah
+    // jalan justru HARUS bisa diunggah ulang, jadi belum boleh dianggap "sudah diimpor".
+    if (hash) {
+      await catatImportFile(db, {
+        tipe: "orders_toship",
+        file: batch.file,
+        hash,
+        no_json: [],
+        batch_id: batch.id,
+        by: String(user.tg_id),
+      });
+    }
+    await db.prepare("UPDATE import_batches SET status = 'done', sukses = ? WHERE id = ?").bind(batch.progres_baris, batch.id).run();
+    return json({
+      ok: true,
+      // `order` = jumlah ORDER di berkas; `item` = order yang benar-benar masuk (progres_baris).
+      // Keduanya dibedakan supaya laporan tidak mengaku menyimpan order yang ternyata dilewati.
+      order: batch.total,
+      item: batch.progres_baris,
+      advance: bookingBaru,
+      advance_skip: advance.length - bookingBaru,
+      resi_grup: jmlResi,
+      batch_id: batch.id,
+      dilewati: batch.dilewati,
+    });
+  }
+
   if (aksi === "preview-shopee") {
     const orderRows = Array.isArray(body.ordersRows) ? (body.ordersRows as ShopeeOrderRow[]) : [];
     const advanceRows = Array.isArray(body.advanceRows) ? (body.advanceRows as ShopeeAdvanceRow[]) : [];
     if (orderRows.length === 0 && advanceRows.length === 0) return json({ ok: false, error: "Sheet orders/Advance Fulfilment kosong." }, 400);
     const file = typeof body.file === "string" ? body.file.trim().slice(0, 120) : "orders.xlsx";
-    // Tolak cepat SEBELUM kerja berat (fingerprint + ratusan kueri). Lebih baik user tahu
-    // dalam 1 detik daripada menunggu 30 detik lalu dapat 500 tanpa penjelasan.
-    if (orderRows.length + advanceRows.length > MAKS_BARIS_SHOPEE) {
+    // Berkas besar TIDAK lagi ditolak berdasarkan jumlah baris: preview hanya membaca, dan
+    // baris hasilnya kini dipegang KLIEN (bukan disimpan sebagai satu payload_json). Batas
+    // baris dipindah ke jalur impor bertahap, yang memang memprosesnya sepotong-sepotong.
+    // Yang masih dijaga di sini adalah UKURAN muatan — request raksasa gagal di jaringan
+    // sebelum sampai ke Worker, dan pesannya harus jelas, bukan 413 tanpa sebab.
+    const byteMuatan = Number(request.headers.get("content-length") ?? 0);
+    if (byteMuatan > MAKS_BYTE_PREVIEW) {
+      const mb = (byteMuatan / 1024 / 1024).toFixed(1);
+      const batasMb = (MAKS_BYTE_PREVIEW / 1024 / 1024).toFixed(0);
       return json(
         {
           ok: false,
           error:
-            `Berkas terlalu besar untuk diproses sekaligus: ${orderRows.length} baris orders + ${advanceRows.length} baris Advance Fulfilment ` +
-            `= ${orderRows.length + advanceRows.length} baris (batas ${MAKS_BARIS_SHOPEE}). ` +
+            `Berkas terlalu besar untuk dibaca server: ${mb} MB (batas ${batasMb} MB). ` +
+            `Isinya ${orderRows.length} baris orders + ${advanceRows.length} baris Advance Fulfilment. ` +
             "Pilih rentang tanggal lebih pendek di ekspor Shopee lalu unggah beberapa berkas terpisah.",
         },
         413,
@@ -564,10 +966,13 @@ export async function POST(request: Request) {
       // D3: compare nama (peringatan saja).
       const pasangan = normal.orders.flatMap((o) => o.items.map((i) => ({ sku: i.sku, nama_shopee: i.nama_shopee })));
       const compare = await compareNama(db, pasangan);
-      const payload = { orders: normal.orders, advance: normal.advance, hash, file };
+      // `payload_json` DIBIARKAN KOSONG. Dulu seluruh dataset di-JSON-kan ke kolom ini: pada
+      // 5000 baris itu satu baris ~2 MB di D1 — risiko nyata (batas ukuran baris/nilai) dan
+      // tak pernah dibaca lagi sejak jalur konfirmasi dipecah. Sekarang baris hasil preview
+      // dipegang KLIEN di memori dan dikirim balik per potongan lewat `impor-potong`.
       const ins = await db
-        .prepare("INSERT INTO import_batches (tipe, file, total, sukses, gagal, gudang_id, payload_json, status, at, by) VALUES ('pesanan_shopee', ?, ?, ?, ?, 'ONLINE', ?, 'preview', ?, ?)")
-        .bind(file, orderRows.length + advanceRows.length, normal.orders.length, normal.gagal.length, JSON.stringify(payload), Math.floor(Date.now() / 1000), user.tg_id)
+        .prepare("INSERT INTO import_batches (tipe, file, total, sukses, gagal, gudang_id, payload_json, status, at, by) VALUES ('pesanan_shopee', ?, ?, ?, ?, 'ONLINE', '[]', 'preview', ?, ?)")
+        .bind(file, orderRows.length + advanceRows.length, normal.orders.length, normal.gagal.length, Math.floor(Date.now() / 1000), user.tg_id)
         .run();
       return json({
         ok: true,
@@ -598,9 +1003,9 @@ export async function POST(request: Request) {
         {
           ok: false,
           error:
-            `Preview berkas ini gagal: ${pesan}. Kemungkinan besar berkasnya terlalu besar untuk diproses sekaligus ` +
+            `Preview berkas ini gagal: ${pesan}. Berkas ini terlalu besar untuk dibaca server dalam sekali jalan ` +
             `(${orderRows.length} baris orders + ${advanceRows.length} baris Advance Fulfilment). ` +
-            "Pilih rentang tanggal lebih pendek di ekspor Shopee lalu unggah beberapa berkas terpisah.",
+            "Coba pisah berkasnya, atau ulangi — impor besar diproses bertahap setelah ini.",
           orders: orderRows.length,
           advance: advanceRows.length,
         },
@@ -680,12 +1085,9 @@ export async function POST(request: Request) {
         if (ref && sku) skuManual.set(`${ref}\u0000${nama}\u0000${variasi}`, sku);
       }
     }
-    const stmts: StmtOrder[] = [];
-    let nItem = 0;
     const noList: string[] = [];
     // Produk penanda yang WAJIB disisipkan sebelum `order_items` menunjuknya (FK). Kunci =
     // SKU penanda supaya satu penanda yang muncul di beberapa baris tidak didaftarkan dua kali.
-    const produkPenanda = new Map<string, { sku: string; nama: string }>();
     // Item tanpa SKU yang ditandai "belum ada di MP": dicatat di sku_belum_mp untuk diurus
     // nanti, dan TIDAK ditulis ke order_items (belum punya SKU master untuk dirujuk).
     const kunciBelumMp = new Set<string>();
@@ -704,121 +1106,48 @@ export async function POST(request: Request) {
         });
       }
     }
-    for (const o of orders) {
-      noList.push(o.no_pesanan);
-      stmts.push({
-        no: o.no_pesanan,
-        stmt: db
-          .prepare(
-            `INSERT INTO orders (marketplace, no_pesanan, tanggal, buyer, status_fulfill, pajak_pph, pajak_ppn_persen, stok_dikurangi, no_resi,
-              asal_import, opsi_kirim, antar_ke, status_mp, batch_import, jasa_kirim, tipe_layanan, cod, preorder, item_json)
-             VALUES ('shopee', ?, ?, ?, ?, 0, 0, 0, ?, 'orders_toship', ?, ?, ?, ?, ?, ?, ?, ?, ?)
-             ON CONFLICT(marketplace, no_pesanan) DO UPDATE SET
-               tanggal = excluded.tanggal, buyer = excluded.buyer, no_resi = CASE WHEN excluded.no_resi = '' THEN orders.no_resi ELSE excluded.no_resi END,
-               opsi_kirim = excluded.opsi_kirim, antar_ke = excluded.antar_ke, status_mp = excluded.status_mp, batch_import = excluded.batch_import,
-               jasa_kirim = excluded.jasa_kirim, tipe_layanan = excluded.tipe_layanan, cod = excluded.cod, preorder = excluded.preorder, item_json = excluded.item_json,
-               asal_import = CASE WHEN orders.asal_import = '' THEN excluded.asal_import ELSE orders.asal_import END,
-               status_fulfill = CASE WHEN orders.status_fulfill = 'pending' THEN excluded.status_fulfill ELSE orders.status_fulfill END`,
-          )
-          .bind(
-            o.no_pesanan, o.tanggal, o.buyer, o.statusAwal, o.noResi,
-            o.opsiKirim, o.antarKe, o.statusMp, batch.id, o.jasaKirim, o.tipeLayanan, o.cod ? 1 : 0, o.preorder ? 1 : 0, JSON.stringify(o.items),
-          ),
-      });
-      stmts.push({ no: o.no_pesanan, stmt: db.prepare("DELETE FROM order_items WHERE marketplace = 'shopee' AND no_pesanan = ?").bind(o.no_pesanan) });
-      for (const item of o.items) {
-        const kunci = `${o.no_pesanan}\u0000${item.nama_shopee}\u0000${item.variasi}`;
-        const skuFinal = skuManual.get(kunci) ?? item.sku;
-        // Belum ada SKU sama sekali (tidak dipilih manual, tidak ditandai belum-MP):
-        // hentikan supaya tidak menulis item tanpa rujukan produk.
-        if (!skuFinal) {
-          if (kunciBelumMp.has(kunci)) {
-            // Baris TETAP disimpan sebagai item bertanda "perlu SKU" supaya ikut tercetak di
-            // picklist dengan kolom pembeda. Dulu barisnya di-`continue` (tidak masuk
-            // order_items) sehingga picklist memakai INNER JOIN dan barangnya raib tanpa
-            // pesan — checker menerima lembar tidak lengkap tanpa tahu.
-            const skuTanda = skuPenandaPerluSku(o.no_pesanan, item.nama_shopee, item.variasi);
-            produkPenanda.set(skuTanda, { sku: skuTanda, nama: `[BELUM DI MP] ${item.nama_shopee}${item.variasi ? ` (${item.variasi})` : ""}` });
-            stmts.push({
-              no: o.no_pesanan,
-              stmt: db
-                .prepare(
-                  "INSERT INTO order_items (marketplace, no_pesanan, sku, variasi, nama_shopee, qty, harga_satuan, hpp_snapshot, subtotal, sku_asal, perlu_sku) VALUES ('shopee', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
-                )
-                .bind(o.no_pesanan, skuTanda, item.variasi, item.nama_shopee, item.qty, item.harga_satuan, 0, item.subtotal, ""),
-            });
-            nItem++;
-            continue;
-          }
-          return json(
-            { ok: false, error: `Baris "${item.nama_shopee}" (order ${o.no_pesanan}) belum dipilih SKU — pilih SKU atau centang "Belum di MP".` },
-            400,
-          );
-        }
-        const hpp = await ambilProduk(db, skuFinal);
-        if (!hpp) {
-          // SKU tertulis di file tapi tidak ada di master: JANGAN buang ordernya. Simpan
-          // sebagai baris bertanda supaya bisa dicetak di picklist dan diperbaiki nanti.
-          const skuTanda = skuPenandaPerluSku(o.no_pesanan, item.nama_shopee, item.variasi);
-          produkPenanda.set(skuTanda, { sku: skuTanda, nama: `[PERLU SKU] ${item.nama_shopee} — file: ${skuFinal}` });
-          stmts.push({
-            no: o.no_pesanan,
-            stmt: db
-              .prepare(
-                "INSERT INTO order_items (marketplace, no_pesanan, sku, variasi, nama_shopee, qty, harga_satuan, hpp_snapshot, subtotal, sku_asal, perlu_sku) VALUES ('shopee', ?, ?, ?, ?, ?, ?, 0, ?, ?, 1)",
-              )
-              .bind(o.no_pesanan, skuTanda, item.variasi, item.nama_shopee, item.qty, item.harga_satuan, item.subtotal, skuFinal),
-          });
-          nItem++;
-          continue;
-        }
-        stmts.push({
-          no: o.no_pesanan,
-          stmt: db
-            .prepare(
-              "INSERT INTO order_items (marketplace, no_pesanan, sku, variasi, nama_shopee, qty, harga_satuan, hpp_snapshot, subtotal, sku_asal, perlu_sku) VALUES ('shopee', ?, ?, ?, ?, ?, ?, ?, ?, '', 0)",
-            )
-            .bind(o.no_pesanan, skuFinal, item.variasi, item.nama_shopee, item.qty, item.harga_satuan, hpp.hpp ?? 0, item.subtotal),
-        });
-        nItem++;
-      }
-    }
+    // Penyusunan pernyataan dibagi dengan jalur bertahap (susunPernyataanOrder) supaya kedua
+    // jalur tak pernah menyimpang aturannya.
+    const susunan = await susunPernyataanOrder(db, batch.id, orders, {
+      skuManual,
+      kunciBelumMp,
+      ambilProdukCache: new Map(),
+    });
+    if (susunan.pesanKurangSku) return json({ ok: false, error: susunan.pesanKurangSku }, 400);
+    const stmts = susunan.stmts;
+    let nItem = susunan.nItem;
+    for (const o of orders) noList.push(o.no_pesanan);
     // Produk penanda WAJIB masuk sebelum order_items menunjuknya, dan tanpa penundaan: satu
     // batch terpisah yang kecil. `INSERT OR IGNORE` + pemetaan per penanda → impor ulang
     // tidak membuat duplikat.
-    if (produkPenanda.size > 0) {
+    if (susunan.produkPenanda.length > 0) {
       const at = Math.floor(Date.now() / 1000);
-      await db.batch(siapkanProdukPenanda(db, [...produkPenanda.values()], at));
+      await db.batch(siapkanProdukPenanda(db, susunan.produkPenanda, at));
     }
     // Baris yang tidak bisa disimpan — dibalas ke UI, BUKAN menggagalkan seluruh berkas.
     // Sebelum ini `await db.batch(...)` telanjang: satu pernyataan buruk (mis. FK) melempar,
     // seluruh konfirmasi jadi 500, order yang sehat ikut hilang, dan pesannya tidak
-    // menjelaskan apa pun. Sekarang batch dijalankan, lalu bila gagal diulang PER PERNYATAAN
-    // supaya baris baik tetap tersimpan.
-    const dilewati: { no_pesanan: string; pesan: string }[] = [];
-    let gagalTotal = 0;
-    for (let i = 0; i < stmts.length; i += 50) {
-      const potong = stmts.slice(i, i + 50);
-      try {
-        await db.batch(potong.map((s) => s.stmt));
-      } catch {
-        for (const s of potong) {
-          try {
-            await s.stmt.run();
-          } catch (e) {
-            gagalTotal++;
-            dilewati.push({
-              no_pesanan: s.no,
-              pesan: e instanceof Error ? e.message : "pernyataan ditolak D1",
-            });
-          }
-        }
-      }
-    }
+    // menjelaskan apa pun.
+    const { gagalTotal, dilewati, belumDicoba } = await jalankanPernyataan(db, stmts);
     // Semua pernyataan gagal = bukan satu baris buruk, tapi masalah skema/lingkungan.
     // Balas error supaya tidak berpura-pura sukses menyimpan nol baris.
     if (stmts.length > 0 && gagalTotal === stmts.length) {
       return json({ ok: false, error: `Semua ${stmts.length} pernyataan impor ditolak (masalah skema/DB), bukan satu baris. Contoh: ${dilewati[0]?.pesan ?? "-"}` }, 500);
+    }
+    if (belumDicoba > 0) {
+      // Anggaran kueri request habis sebelum semua baris dicoba. Berkas kecil tetap dijalur ini,
+      // jadi kasusnya jarang — tapi kalau terjadi, umpan baliknya harus menyebut sisa barisnya,
+      // bukan mengaku "selesai" dengan angka yang lebih kecil dari isi berkas.
+      return json(
+        {
+          ok: false,
+          error: `${belumDicoba} pernyataan belum sempat dicoba karena anggaran kueri request habis. Ulangi impor berkas ini — baris yang sudah tersimpan tidak ditulis ulang.`,
+          tersimpan: nItem - dilewati.length,
+          dilewati: dilewati.length,
+          belumDicoba,
+        },
+        503,
+      );
     }
     nItem -= dilewati.length;
     const bookingBaru = await simpanBooking(db, advance, batch.id);

@@ -4,7 +4,7 @@ import { test, expect } from "@playwright/test";
 
 test("halaman /masuk render form login", async ({ page }) => {
   await page.goto("/masuk");
-  await expect(page.getByRole("heading", { name: /masuk simple-wms/i })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /masuk suprapto online/i })).toBeVisible();
   await expect(page.getByLabel(/telegramid/i).first()).toBeVisible();
   await expect(page.getByLabel(/^password$/i)).toBeVisible();
   await expect(page.getByRole("button", { name: /^masuk$/i })).toBeVisible();

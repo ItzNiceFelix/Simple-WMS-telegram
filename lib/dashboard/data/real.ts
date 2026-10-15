@@ -15,7 +15,7 @@ import type {
   StockFilter,
   StockRow,
 } from "../types";
-import type { DataSource, MovementFilter, ProdukDetail } from "./index";
+import type { DataSource, MovementFilter, ProdukDetail, RingkasanIrisan } from "./index";
 
 type SesiWeb = {
   uid: string;
@@ -137,7 +137,7 @@ export function makeRealDataSource(_getRole: () => Role): DataSource {
         bacaServer<{ ringkasan: { totalProdukOnline: number; itemMenipis: number; itemMinus: number } }>("ringkasan"),
         sesi(),
       ]);
-      const staff = s.role === "owner" || s.role === "admin";
+      const staff = s.role === "owner" || s.role === "high_admin" || s.role === "admin";
       let draftPending: number | null = null;
       let permintaanHariIni: number | null = null;
       if (staff) {
@@ -154,6 +154,24 @@ export function makeRealDataSource(_getRole: () => Role): DataSource {
         itemMinus: ringkasan.ringkasan.itemMinus,
         draftPending,
         permintaanHariIni,
+      };
+    },
+
+    /**
+     * Irisan beranda dari scope `ringkasan`.
+     *
+     * Kenapa tidak memakai `listStockHalaman` + `listMovements` seperti dulu: kedua jalur itu
+     * scope `stok`/`histori` yang sengaja ditutup untuk guest (403), sehingga Promise.all di
+     * beranda pecah dan guest hanya melihat kartu error di satu-satunya halaman yang dia punya.
+     * Scope `ringkasan` terbuka untuk guest dan isinya sudah dibatasi server (agregat + irisan
+     * kecil), jadi beranda tidak lagi bergantung pada endpoint enumerasi.
+     */
+    async getRingkasanIrisan(): Promise<RingkasanIrisan> {
+      const data = await bacaServer<RingkasanIrisan>("ringkasan");
+      return {
+        minus: data.minus ?? [],
+        menipis: data.menipis ?? [],
+        movements: data.movements ?? [],
       };
     },
 

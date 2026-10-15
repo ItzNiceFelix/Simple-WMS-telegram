@@ -313,7 +313,9 @@ function Admin() {
 
 /** `old_role`/`new_role` di dokumen riwayat bertipe string bebas. */
 function labelRolePeran(role: string | null): string {
-  if (role === "owner" || role === "admin" || role === "guest") return labelRole(role);
+  if (role === "owner" || role === "high_admin" || role === "admin" || role === "designer" || role === "guest") {
+    return labelRole(role);
+  }
   return role ?? "—";
 }
 

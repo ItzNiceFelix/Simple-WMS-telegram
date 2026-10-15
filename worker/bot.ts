@@ -14,6 +14,7 @@ import { listOpname } from "../lib/d1/opname";
 import { listTransfer } from "../lib/d1/transfer";
 import { listAkses, mintaAkses } from "../lib/d1/akses";
 import { ambilAdmin } from "../lib/d1/admin";
+import { kapabilitas } from "../lib/d1/peran";
 import type { Konteks } from "../lib/ai/provider";
 import { panggilGambar } from "../lib/ai/panggil";
 import { parsePerintahGambar } from "../lib/ai/parserGambar";
@@ -168,7 +169,13 @@ function namaUser(u?: TgUser): string {
 /** Gating akses: owner/admin lanjut; guest/belum → pesan arahan. */
 async function gateAdmin(env: Env, tgId: string, chatId: number): Promise<{ role: string } | null> {
   const admin = await ambilAdmin(env.DB, tgId);
-  if (admin && (admin.role === "owner" || admin.role === "admin")) return { role: admin.role };
+  // high_admin sedarajat admin (lib/d1/admin.ts: isAdmin = owner || high_admin || admin).
+  // designer/guest sengaja DITOLAK di sini: gate ini berarti "boleh SELURUH perintah bot".
+  // designer punya gate sendiri yang jauh lebih sempit (gateDesain), bukan role tambahan di sini —
+  // menaruhnya di sini akan otomatis membuka /stok, /menipis, /laba, /gudang, /tambah,
+  // /kurangi, /transfer, /opname, dan /cari.
+  if (admin && (admin.role === "owner" || admin.role === "high_admin" || admin.role === "admin")) return { role: admin.role };
+  if (admin?.role === "designer") return null; // ditangani gateDesain; jangan kirim pesan "belum terdaftar"
   const akses = await env.DB.prepare("SELECT status FROM access_requests WHERE tg_id = ?").bind(Number(tgId)).first<{ status: string }>().catch(() => null);
   if (!akses || akses.status === "rejected" || akses.status === "revoked") {
     await kirimPesanBot(env, chatId, `Halo! Kamu belum terdaftar.\nKirim <code>/daftar</code> untuk meminta akses admin.`);
@@ -177,6 +184,48 @@ async function gateAdmin(env: Env, tgId: string, chatId: number): Promise<{ role
   } else {
     await kirimPesanBot(env, chatId, `Akses ditolak. Hubungi owner.`);
   }
+  return null;
+}
+
+/** Pesan penolakan untuk designer yang mencoba jalur non-gambar: sebut yang BISA dipakai. */
+const TOLAK_DESAIN =
+  `Perintah itu tidak tersedia untuk akun desain.\nYang bisa kamu pakai: <code>@gambar deskripsi gambar</code> untuk membuat gambar ` +
+  `(lampirkan foto = mode edit), dan chat seputar desain.`;
+
+/**
+ * Gating jalur desain: HANYA role `designer` yang lolos. Dipakai untuk chat desain
+ * (bebas-tool) dan sebagai cadangan `@gambar`. Fail-closed: guest/tak terdaftar
+ * ditolak dengan arahan pendaftaran, sama seperti gateAdmin.
+ */
+async function gateDesain(env: Env, tgId: string, chatId: number): Promise<{ role: string } | null> {
+  const admin = await ambilAdmin(env.DB, tgId);
+  if (admin?.role === "designer") return { role: admin.role };
+  if (admin) return null; // role lain bukan urusan gate ini; pemanggilnya sudah menangani
+  const akses = await env.DB.prepare("SELECT status FROM access_requests WHERE tg_id = ?").bind(Number(tgId)).first<{ status: string }>().catch(() => null);
+  if (!akses || akses.status === "rejected" || akses.status === "revoked") {
+    await kirimPesanBot(env, chatId, `Halo! Kamu belum terdaftar.\nKirim <code>/daftar</code> untuk meminta akses.`);
+  } else if (akses.status === "pending") {
+    await kirimPesanBot(env, chatId, `Permintaan aksesmu masih menunggu persetujuan owner.`);
+  } else {
+    await kirimPesanBot(env, chatId, `Akses ditolak. Hubungi owner.`);
+  }
+  return null;
+}
+
+/**
+ * Gerbang untuk `@gambar`: satu-satunya jalur yang boleh dijangkau designer.
+ * Dipilih lewat `kapabilitas().bolehGambar` supaya pesan penolakan dikirim
+ * SEKALI saja (memanggil gateAdmin lalu gateDesain berurutan akan mengirim dua
+ * pesan untuk guest yang belum terdaftar).
+ */
+async function gateGambar(env: Env, tgId: string, chatId: number): Promise<{ role: string } | null> {
+  const role = (await ambilAdmin(env.DB, tgId))?.role ?? "";
+  if (kapabilitas(role).bolehGambar) {
+    const gate = await gateAdmin(env, tgId, chatId);
+    return gate ?? gateDesain(env, tgId, chatId);
+  }
+  // guest / belum terdaftar / role tak dikenal → jalur pendaftaran yang biasa.
+  await gateAdmin(env, tgId, chatId);
   return null;
 }
 
@@ -190,7 +239,19 @@ async function tanganiCommand(env: Env, tgId: string, chatId: number, msgId: num
   const { cmd, args } = parseCommand(teks);
 
   if (cmd === "start") {
-    await kirimPesanBot(env, chatId, `<b>Simple-WMS</b> 🤖\n\nPerintah:\n/stok [kode] — cek stok\n/menipis — stok di bawah reorder\n/laba [7h|30h] — ringkasan laba per MP\n/gudang — daftar gudang\n/tambah &lt;kode&gt; &lt;qty&gt; — tambah stok ONLINE\n/kurangi &lt;kode&gt; &lt;qty&gt; — kurangi stok ONLINE\n/transfer — transfer pending\n/opname — opname menunggu approval\n/daftar — minta akses admin\n/batal — batalkan sesi kenalan`, msgId);
+    // /start jalan SEBELUM gate (registrasi harus tetap bisa), jadi teks bantuan
+    // disesuaikan role: designer hanya diberi perintah yang benar-benar bisa dia pakai,
+    // supaya bantuan tidak mengiklankan /stok, /tambah, dan kawan-kawan.
+    if ((await ambilAdmin(env.DB, tgId))?.role === "designer") {
+      await kirimPesanBot(
+        env,
+        chatId,
+        `<b>SuPrapto Online — akun desain</b> 🎨\n\nYang bisa kamu pakai:\n<code>@gambar deskripsi gambar</code> — buat gambar\n<code>@gambar ubah latarnya</code> + foto terlampir — edit gambar\nTulis pertanyaan biasa seputar desain (komposisi, warna, layout, prompt gambar).\n\n/daftar — minta akses\n/batal — bersihkan sesi`,
+        msgId
+      );
+      return;
+    }
+    await kirimPesanBot(env, chatId, `<b>SuPrapto Online</b> 🤖\n\nPerintah:\n/stok [kode] — cek stok\n/menipis — stok di bawah reorder\n/laba [7h|30h] — ringkasan laba per MP\n/gudang — daftar gudang\n/tambah &lt;kode&gt; &lt;qty&gt; — tambah stok ONLINE\n/kurangi &lt;kode&gt; &lt;qty&gt; — kurangi stok ONLINE\n/transfer — transfer pending\n/opname — opname menunggu approval\n/daftar — minta akses admin\n/batal — batalkan sesi kenalan`, msgId);
     return;
   }
   if (cmd === "daftar") {
@@ -216,6 +277,17 @@ async function tanganiCommand(env: Env, tgId: string, chatId: number, msgId: num
   if (cmd === "batal" || cmd === "reset") {
     await env.DB.prepare("DELETE FROM bot_sessions WHERE tg_id = ?").bind(Number(tgId)).run().catch(() => undefined);
     await kirimPesanBot(env, chatId, `Sesi bot dibersihkan.`, msgId);
+    return;
+  }
+
+  // `designer` DITOLAK untuk semua perintah non-gambar — sebut apa yang bisa dia pakai.
+  // Dicek sebelum gateAdmin supaya designer tidak menerima pesan "belum terdaftar" yang
+  // menyesatkan, dan supaya /stok, /tambah, /kurangi, /transfer, /opname, /cari, /menipis,
+  // /laba, /gudang tidak pernah dieksekusi untuk role ini.
+  // `guest` SENGAJA tidak masuk cabang ini: penolakannya tetap lewat gateAdmin (pesan
+  // pendaftaran), jadi perilakunya tak berubah.
+  if ((await ambilAdmin(env.DB, tgId))?.role === "designer") {
+    await kirimPesanBot(env, chatId, TOLAK_DESAIN, msgId);
     return;
   }
 
@@ -450,14 +522,17 @@ async function kirimFotoBot(env: Env, chatId: number | string, base64: string, m
 
 /** Jalur `@gambar`: text-to-image, atau edit bila ada lampiran foto sebagai referensi. */
 async function jalurGambar(env: Env, msg: TgMessage, prompt: string, tgId: string, chatId: number, foto: FotoTelegram[]): Promise<void> {
-  const gate = await gateAdmin(env, tgId, chatId);
+  // Satu-satunya jalur yang terbuka untuk designer. Peran lain tetap lewat gateAdmin.
+  const gate = await gateGambar(env, tgId, chatId);
   if (!gate) return;
   if (!prompt) {
     await kirimPesanBot(env, chatId, `Format: <code>@gambar deskripsi gambar</code>\nBoleh dengan lampiran foto sebagai referensi (mode edit).`, msg.message_id);
     return;
   }
   await kirimTyping(env, chatId);
-  const ctx: Konteks = { db: env.DB, kunci: env.AI_KEY_ENCRYPTION_KEY ?? "" };
+  // `role` diteruskan: izin model gambar per role (ROLE_GAMBAR/include designer) ditegakkan
+  // di dalam provider, jadi bot Telegram tidak bisa menembus allowlist dashboard.
+  const ctx: Konteks = { db: env.DB, kunci: env.AI_KEY_ENCRYPTION_KEY ?? "", role: gate.role };
 
   let referensi: { mime: string; base64: string }[] | undefined;
   if (foto.length) {
@@ -491,6 +566,18 @@ async function jalurGambar(env: Env, msg: TgMessage, prompt: string, tgId: strin
 
 /** Jalur foto tanpa perintah: ekstraksi picking list (vision) lalu ringkas sebagai tabel. */
 async function jalurVision(env: Env, msg: TgMessage, tgId: string, chatId: number, foto: FotoTelegram[]): Promise<void> {
+  // designer TIDAK boleh menyentuh vision: jalur ini membaca isi picking list
+  // (nama produk + qty) dan hasilnya ditampilkan — kebocoran data inventory.
+  // Diarahkan ke `@gambar` (dengan lampiran foto) untuk keperluan edit gambar.
+  if ((await ambilAdmin(env.DB, tgId))?.role === "designer") {
+    await kirimPesanBot(
+      env,
+      chatId,
+      `Foto tanpa perintah hanya untuk admin.\nKalau mau mengedit gambar, kirim dengan perintah: <code>@gambar ubah sesuai keinginan</code> + foto terlampir.`,
+      msg.message_id
+    );
+    return;
+  }
   const gate = await gateAdmin(env, tgId, chatId);
   if (!gate) return;
   await kirimTyping(env, chatId);
@@ -512,7 +599,8 @@ async function jalurVision(env: Env, msg: TgMessage, tgId: string, chatId: numbe
     await kirimPesanBot(env, chatId, `Gagal mengunduh foto: ${esc(e instanceof Error ? e.message : String(e))}`, msg.message_id);
     return;
   }
-  const ctx: Konteks = { db: env.DB, kunci: env.AI_KEY_ENCRYPTION_KEY ?? "" };
+  // `role` diteruskan supaya izin model vision per role tetap ditegakkan di provider.
+  const ctx: Konteks = { db: env.DB, kunci: env.AI_KEY_ENCRYPTION_KEY ?? "", role: gate.role };
   const r = await ekstrakPickingList(ctx, { mime: "image/jpeg", base64: base64Foto });
   if (!r.ok) {
     await kirimPesanBot(env, chatId, `Gagal membaca picking list: ${esc(r.error)}`, msg.message_id);
@@ -589,7 +677,7 @@ function amanHtml(teks: string): string {
 }
 
 /** Jalur teks biasa → orchestrator AI, dengan typing + riwayat + tombol konfirmasi. */
-async function jalurAiTeks(env: Env, tgId: string, chatId: number, msgId: number, teks: string): Promise<void> {
+async function jalurAiTeks(env: Env, tgId: string, chatId: number, msgId: number, teks: string, tanpaTool: boolean, role = ""): Promise<void> {
   const batas = await cekBatas(env.DB, tgId, 20);
   if (!batas.ok) {
     await kirimPesanBot(env, chatId, esc(batas.error), msgId);
@@ -604,6 +692,11 @@ async function jalurAiTeks(env: Env, tgId: string, chatId: number, msgId: number
     user: { tg_id: tgId },
     settings,
     kunci: env.AI_KEY_ENCRYPTION_KEY ?? "",
+    // Role diteruskan: izin model per role (lib/d1/aiIzinModel.ts) ditegakkan sama
+    // seperti dashboard, dan `tanpaTool` menegakkan chat bebas-tool untuk designer
+    // (bukan sekadar imbauan di prompt — tool tidak dikirim ke provider sama sekali).
+    role: role || undefined,
+    tanpaTool,
     env,
   });
   const baru: EntriRiwayat[] = [...riwayatLama, { role: "user", teks }, { role: "assistant", teks: "" }];
@@ -657,6 +750,20 @@ async function tanganiCallbackAi(
   if (!tertunda) {
     await jawabCallback(env, callbackId, "Tidak ada aksi tertunda.");
     await editPesan(env, chatId, messageId, "Aksi sudah tidak berlaku. Ulangi perintahmu.");
+    return;
+  }
+  // KONTROL AKSES (bukan sekadar tombol): `ai:ya` mengeksekusi aksi TULIS lewat
+  // `jalankanTool`. Tanpa cek ini, siapa pun yang bisa mengirim callback `ai:ya`
+  // mengeksekusi aksi tertunda miliknya sendiri tanpa pernah melewati gateAdmin —
+  // dan karena designer chat-nya bebas-tool, dia juga tidak boleh sampai ke sini.
+  // Aturan: role yang tidak boleh memakai perintah bot (kapabilitas().bolehPerintah)
+  // tidak boleh mengeksekusi aksi AI apa pun.
+  const peranCb = (await ambilAdmin(env.DB, tgId))?.role ?? "";
+  if (!kapabilitas(peranCb).bolehPerintah) {
+    // Aksi tertunda dibersihkan supaya tidak bisa dicoba lagi (mis. setelah role diubah).
+    await simpanSesi(env, tgId, await bacaRiwayat(env, tgId), null);
+    await jawabCallback(env, callbackId, "Tidak diizinkan.");
+    await editPesan(env, chatId, messageId, "Aksi ini tidak diizinkan untuk role kamu.");
     return;
   }
   const r = await jalankanTool(env.DB, tertunda.aksi, tertunda.arg, { tg_id: tgId });
@@ -717,7 +824,15 @@ async function prosesUpdate(env: Env, update: Update): Promise<void> {
     return;
   }
   // Teks biasa → AI. Riwayat disimpan di bot_sessions.history_json.
+  // designer: chat DESAIN tanpa tool apa pun (kapabilitas().chatTanpaTool),
+  // jadi balasChat tidak pernah dibiarkan memilih tool di jalur ini.
+  const peran = (await ambilAdmin(env.DB, tgId))?.role ?? "";
   const gate = await gateAdmin(env, tgId, chatId);
-  if (!gate) return;
-  await jalurAiTeks(env, tgId, chatId, msg.message_id, teks);
+  if (gate) {
+    await jalurAiTeks(env, tgId, chatId, msg.message_id, teks, kapabilitas(gate.role).chatTanpaTool, gate.role);
+    return;
+  }
+  if (peran === "designer" && (await gateDesain(env, tgId, chatId))) {
+    await jalurAiTeks(env, tgId, chatId, msg.message_id, teks, true, "designer");
+  }
 }

@@ -10,6 +10,7 @@
 import { getDb } from "@/lib/d1/db";
 import { normalisasiNama } from "@/lib/d1/produk";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
+import { bolehBukaHalaman } from "@/lib/d1/akses-halaman";
 import * as XLSX from "xlsx";
 
 export const runtime = "nodejs";
@@ -82,6 +83,14 @@ function validasiBaris(row: Record<string, unknown>, noBaris: number): { ok: tru
 export async function GET(request: Request) {
   const sesi = await sesiRoute(request, 30);
   if (!sesi.ok) return json({ ok: false, error: sesi.error }, sesi.status);
+  // `!is_admin` bukan cek role: designer bukan admin-tier tapi memang tak boleh
+  // mengunduh seluruh buku besar. Pakai daftar halaman /stok supaya owner+high_admin+
+  // admin lolos dan guest/designer tertolak — sama seperti tombol ekspornya di UI.
+  if (!bolehBukaHalaman(sesi.user.role, "/stok")) {
+    return json({ ok: false, error: "Akses ditolak." }, 403);
+  }
+  // Export = unduh SELURUH katalog (termasuk HPP) dalam satu berkas; paritas dengan
+  // gerbang POST di bawah (is_admin: owner+high_admin+admin; designer bukan admin-tier).
   const url = new URL(request.url);
   if (url.searchParams.get("format") !== "export") {
     return json({ ok: true, template: "/template-import-produk.xlsx" });

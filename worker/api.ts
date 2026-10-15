@@ -190,7 +190,7 @@ export async function tanganiApi(request: Request, env: Env): Promise<Response |
     if (user) {
       const { kode } = await terbitkanKode(env.DB, tgId, "reset");
       try {
-        await kirimViaBot(env, tgId, `Kode reset password Simple-WMS: ${kode}\nBerlaku 10 menit. Jangan berikan ke siapa pun.`);
+        await kirimViaBot(env, tgId, `Kode reset password SuPrapto Online: ${kode}\nBerlaku 10 menit. Jangan berikan ke siapa pun.`);
       } catch (e) {
         return json(
           { ok: false, error: e instanceof Error ? e.message : "Gagal kirim via bot." },

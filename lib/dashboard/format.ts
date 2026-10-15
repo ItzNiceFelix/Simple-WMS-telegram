@@ -40,12 +40,15 @@ export function labelStatusMovement(s: MovementStatus): string {
 
 const LABEL_ROLE: Record<Role, string> = {
   owner: "Owner",
+  high_admin: "High Admin",
   admin: "Admin",
+  designer: "Designer",
   guest: "Guest",
 };
 
+/** Fallback aman: role sisa baris lama (mis. `staff`) tetap tampil apa adanya, bukan `undefined`. */
 export function labelRole(role: Role): string {
-  return LABEL_ROLE[role];
+  return LABEL_ROLE[role] ?? String(role);
 }
 
 /** Angle: angka dengan pemisah ribuan id-ID, tanda minus dipertahankan. */

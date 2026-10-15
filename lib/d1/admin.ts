@@ -21,8 +21,10 @@ export function isOwner(admin: { role: string } | null): boolean {
   return admin?.role === "owner";
 }
 
+// high_admin setara admin di semua jalur tulis; bedanya HANYA tampilan halaman
+// pengaturan AI, dan itu dijaga di sisi akses halaman + guard env (SUPER_ADMIN_ID).
 export function isAdmin(admin: { role: string } | null): boolean {
-  return admin?.role === "owner" || admin?.role === "admin";
+  return admin?.role === "owner" || admin?.role === "high_admin" || admin?.role === "admin";
 }
 
 async function catatRole(db: D1Database, tgId: string, lama: string | null, baru: string | null, catatan: string | null, oleh: string | null): Promise<void> {
@@ -35,7 +37,7 @@ export async function tambahAdmin(
   const tg = String(tgId).trim();
   // tg_id bertipe TEXT di D1. Validasi: digit saja (Telegram ID selalu numerik).
   if (!/^\d{3,20}$/.test(tg)) return gagal(400, "telegramId tidak valid.");
-  if (!["owner", "admin", "guest"].includes(role)) return gagal(400, "Role tidak dikenal.");
+  if (!["owner", "high_admin", "admin", "designer", "guest"].includes(role)) return gagal(400, "Role tidak dikenal.");
   const ada = await ambilAdmin(db, tg);
   if (ada) return gagal(409, "User sudah terdaftar.");
   await db.prepare("INSERT INTO users (tg_id, display_name, role, added_at, approved_by) VALUES (?, ?, ?, ?, ?)").bind(tg, nama, role, sekarang(), oleh).run();
@@ -49,7 +51,7 @@ export async function ubahRole(
   db: D1Database, tgId: string, roleBaru: string, oleh: string | null
 ): Promise<Hasil<{ admin: AdminRow }>> {
   if (String(tgId) === String(oleh)) return gagal(400, "Tidak bisa mengubah role sendiri.");
-  if (!["owner", "admin", "guest"].includes(roleBaru)) return gagal(400, "Role tidak dikenal.");
+  if (!["owner", "high_admin", "admin", "designer", "guest"].includes(roleBaru)) return gagal(400, "Role tidak dikenal.");
   const target = await ambilAdmin(db, tgId);
   if (!target) return gagal(404, "User belum terdaftar.");
   if (target.role === "owner" && roleBaru !== "owner") {

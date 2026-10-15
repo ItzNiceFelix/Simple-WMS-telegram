@@ -25,14 +25,17 @@ import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { formatAngka, formatDelta, formatTanggal } from "@/lib/dashboard/format";
 import { useData } from "@/lib/dashboard/sumber-data";
-import type { MovementDoc, RingkasanData, StockRow } from "@/lib/dashboard/types";
+import type { RingkasanBarisMenipis, RingkasanBarisMinus } from "@/lib/dashboard/data";
+import type { MovementDoc, RingkasanData } from "@/lib/dashboard/types";
 
 export default function HalamanRingkasan() {
   const data = useData();
   const [ringkasan, setRingkasan] = useState<RingkasanData | null>(null);
-  // Dua irisan sempit, bukan seluruh katalog: beranda cuma butuh daftar minus + 10 menipis.
-  const [minus, setMinus] = useState<StockRow[] | null>(null);
-  const [menipis, setMenipis] = useState<StockRow[] | null>(null);
+  // Dua irisan sempit dari scope `ringkasan`, bukan `StockRow` penuh: scope itu terbuka
+  // untuk guest, jadi server hanya mengirim kolom yang dirender di sini (tanpa hpp/qty
+  // per gudang). Tipe sempit ini yang menjaga UI tidak diam-diam menuntut kolom biaya.
+  const [minus, setMinus] = useState<RingkasanBarisMinus[] | null>(null);
+  const [menipis, setMenipis] = useState<RingkasanBarisMenipis[] | null>(null);
   const [movements, setMovements] = useState<MovementDoc[] | null>(null);
   const [pesanError, setPesanError] = useState<string | null>(null);
 
@@ -43,19 +46,22 @@ export default function HalamanRingkasan() {
     setMenipis(null);
     setMovements(null);
     try {
-      const [r, s, sm, m] = await Promise.all([
+      // Dua permintaan, bukan empat: agregat + irisan berasal dari SATU scope (`ringkasan`).
+      //
+      // Kenapa tidak lagi `listStockHalaman`/`listMovements`: kedua jalur itu scope
+      // `stok`/`histori` yang sengaja ditutup untuk guest (403 di app/api/baca/route.ts).
+      // Promise.all menolak pada 403 pertama, jadi guest — yang hanya punya halaman ini —
+      // selalu melihat kartu error. Scope `ringkasan` terbuka untuk guest dan isinya sudah
+      // dibatasi server (agregat SQL + irisan ≤20/10/10 baris), jadi beranda tidak lagi
+      // bergantung pada endpoint enumerasi.
+      const [r, irisan] = await Promise.all([
         data.getRingkasan(),
-        // Beranda hanya menampilkan daftar minus + 10 menipis. Menarik SELURUH katalog
-        // (dulu ~2000 baris JOIN) demi dua potongan kecil itu jelas boros; ambil dua
-        // irisan sempit ini dari server. Dua panggilan supaya daftar minus tetap utuh.
-        data.listStockHalaman({ status: "minus", limit: 200 }),
-        data.listStockHalaman({ status: "menipis", limit: 10 }),
-        data.listMovements({ limit: 10 }),
+        data.getRingkasanIrisan(),
       ]);
       setRingkasan(r);
-      setMinus(s.rows);
-      setMenipis(sm.rows);
-      setMovements(m);
+      setMinus(irisan.minus);
+      setMenipis(irisan.menipis);
+      setMovements(irisan.movements);
     } catch (e) {
       setPesanError(e instanceof Error ? e.message : "Gagal memuat ringkasan. Coba lagi.");
     }
@@ -65,8 +71,8 @@ export default function HalamanRingkasan() {
     void muat();
   }, [muat]);
 
-  // Urutan dihitung di sini karena SQL hanya menyaring statusnya; server tak tahu
-  // mana yang paling mendesak. Daftarnya sudah sempit (≤200 + 10), jadi murah.
+  // Urutan dihitung di sini karena SQL sudah membatasi jumlahnya; server tak tahu mana yang
+  // paling mendesak (ia hanya memotong di ujung). Daftarnya sangat sempit (≤20 + 10), jadi murah.
   const minusUrut = useMemo(
     () => (minus ?? []).slice().sort((a, b) => b.kekurangan - a.kekurangan),
     [minus]

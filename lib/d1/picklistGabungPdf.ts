@@ -135,7 +135,7 @@ export async function bangunPdfPicklistGabung(
 
   hal.drawText(opsi.judul ?? "PICKLIST - ORDER + ADVANCE", { x: MARGIN, y, size: JUDUL_FS, font: tebal });
   y -= 15;
-  hal.drawText("Admin Toko", { x: MARGIN, y, size: ISI_FS, font: tebal });
+  hal.drawText("SuPrapto Online", { x: MARGIN, y, size: ISI_FS, font: tebal });
   y -= 13;
   hal.drawText(`Dicetak ${waktuJakarta()}`, { x: MARGIN, y, size: ISI_FS, font: biasa });
   y -= 13;

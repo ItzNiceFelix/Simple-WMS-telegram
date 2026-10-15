@@ -20,7 +20,7 @@ export function AppSidebar() {
     <aside className="hidden w-60 shrink-0 border-r border-border bg-sidebar md:flex md:flex-col">
       <div className="flex items-center gap-2 px-4 py-4">
         <ShieldCheck aria-hidden className="size-5 text-primary" />
-        <span className="text-sm font-semibold">Admin Toko</span>
+        <span className="text-sm font-semibold">SuPrapto Online</span>
       </div>
       <nav aria-label="Navigasi utama" className="flex flex-1 flex-col gap-1 px-2 pb-4">
         {items.map((item) => {

@@ -6,7 +6,10 @@ import type { ProviderAi } from "./providerAi";
 
 export type { ProviderAi } from "./providerAi";
 
-export type Role = "owner" | "admin" | "guest";
+// `staff` SENGAJA tidak ada di sini walau tetap sah di CHECK D1: kolom `users.role`
+// memakai DEFAULT 'staff' untuk baris lama/seed, dan baris itu HARUS turun jadi 'guest'
+// saat login (lihat whitelist di lib/d1/auth.ts), bukan dianggap role penuh.
+export type Role = "owner" | "high_admin" | "admin" | "designer" | "guest";
 
 export type MovementType =
   | "keluar_resi"

@@ -31,7 +31,7 @@ import { labelRole } from "@/lib/dashboard/format"
 import { useData } from "@/lib/dashboard/sumber-data"
 import type { AdminDoc, Role } from "@/lib/dashboard/types"
 
-const PILIHAN: Role[] = ["owner", "admin", "guest"]
+const PILIHAN: Role[] = ["owner", "high_admin", "admin", "designer", "guest"]
 
 interface Props {
   admin: AdminDoc

@@ -118,37 +118,60 @@ function buatDbFk(skuAwal: string[], payload: unknown) {
           if (sql.startsWith("INSERT INTO import_batches")) return { meta: { last_row_id: ++seq } };
           return { meta: { changes: 1 } };
         },
+        // Contoh resmi Cloudflare memakai `_isInBatch` pada objek INNER yang dibagikan antara
+        // `batch()` dan `run()`; `route.ts` sendiri belum memakainya. Disiapkan supaya mock
+        // setia bentuknya bila penanganan error batch ditambahkan nanti.
+        _isInBatch: true,
         async all<T>() {
+          // `ambilProdukBanyak` membaca master lewat SATU query `WHERE sku IN (...)`. Mock dulu
+          // selalu membalas array kosong, jadi prefetch menganggap SEMUA SKU tidak ada di master
+          // dan setiap baris jatuh ke cabang penanda "PERLU SKU" — jauh dari perilaku produksi,
+          // dan itu yang membuat uji FK gagal. Di sini query itu benar-benar dijawab.
+          if (sql.includes("FROM products WHERE sku IN")) {
+            const hasil = args
+              .map(String)
+              .filter((sku) => products.has(sku))
+              .map((sku) => ({ sku, nama_accurate: "X", hpp: 5000, hpp_baru: 0, is_online_product: 0, stok_min: 0 }));
+            return { results: hasil as T[] };
+          }
           if (sql.includes("FROM resi_grup")) return { results: [] as T[] };
           return { results: [] as T[] };
         },
       };
       return st;
     },
-    /** Batch TRANSACTIONAL: snapshot dulu, satu gagal → kembalikan snapshot. */
+    /**
+     * Batch TRANSACTIONAL, tapi ATOMIK seperti D1 asli.
+     *
+     * D1 `batch()` mengirim banyak pernyataan dalam SATU transaksi: D1 memvalidasi SELURUH
+     * pernyataan dulu, dan bila ada satu yang melanggar FK, TIDAK ADA yang dijalankan —
+     * yang dilempar adalah error FK dari pernyataan pertama yang buruk.
+     *
+     * Mock ini dulu menjalankan pernyataan satu per satu sambil MENGUBAH state, lalu melempar
+     * error dan memulihkan snapshot lewat `items.length = snap.items`. Dua akibatnya salah:
+     * (1) rollback hanya memangkas panjang array, jadi `orders.set()` hasil tulisan parsial
+     * TIDAK ikut dipulihkan — beda dari D1 yang benar-benar rollback; (2) yang dilempar adalah
+     * error FK pernyataan terakhir sementara D1 melempar yang pertama. Karena jalur produksi
+     * memutuskan "coba satu-satu" dari error itu, mock yang tidak setia membuat uji memeriksa
+     * perilaku yang tidak pernah terjadi di produksi.
+     */
     async batch(stmts: { _sql: string; _args: unknown[] }[]) {
       batches.push({ n: stmts.length });
-      const snap = {
-        products: new Set(products),
-        orders: new Map(orders),
-        items: items.length,
-      };
-      const hasil: { meta: { changes?: number; last_row_id?: number } }[] = [];
-      try {
-        for (const s of stmts) {
-          jalankan(s._sql, s._args);
-          hasil.push({ meta: { changes: 1 } });
+      // DEBUG
+      // 1) Validasi dulu SEMUA pernyataan tanpa menyentuh state; error pertama yang dilempar.
+      for (const s of stmts) {
+        if (s._sql.startsWith("INSERT INTO order_items")) {
+          const sku = String(s._args[1]);
+          if (!products.has(sku)) throw gagalFk(sku);
         }
-        return hasil;
-      } catch (e) {
-        // Rollback: D1 asli membatalkan seluruh batch.
-        products.clear();
-        for (const p of snap.products) products.add(p);
-        orders.clear();
-        for (const [k, v] of snap.orders) orders.set(k, v);
-        items.length = snap.items;
-        throw e;
       }
+      // 2) Semua lolos validasi → baru jalankan.
+      const hasil: { meta: { changes?: number; last_row_id?: number } }[] = [];
+      for (const s of stmts) {
+        jalankan(s._sql, s._args);
+        hasil.push({ meta: { changes: 1 } });
+      }
+      return hasil;
     },
   };
   return {
@@ -190,7 +213,24 @@ function buatDbFk(skuAwal: string[], payload: unknown) {
         if (sql.includes("FROM import_batches WHERE id = ?")) return stGagal();
         if (sql.includes("FROM products WHERE sku")) {
           let args: unknown[] = [];
-          const st = { _sql: sql, _args: args, bind(...a: unknown[]) { args = a; st._args = a; return st; }, async first() { return products.has(String(args[0])) ? { sku: args[0], nama_accurate: "X", hpp: 5000 } : null; }, async run() { return { meta: {} }; }, async all() { return { results: [] }; } };
+          const st = {
+            _sql: sql,
+            _args: args,
+            bind(...a: unknown[]) { args = a; st._args = a; return st; },
+            async first() { return products.has(String(args[0])) ? { sku: args[0], nama_accurate: "X", hpp: 5000 } : null; },
+            async run() { return { meta: {} }; },
+            // Prefetch `ambilProdukBanyak` (`WHERE sku IN (...)`) juga harus dijawab di sini:
+            // kalau tidak, SEMUA SKU dianggap tak ada di master, tiap baris jadi baris penanda,
+            // dan `siapkanProdukPenanda` menulis — padahal niat uji ini hanya menggagalkan
+            // pernyataan tulis `order_items`, bukan memicu jalur penanda.
+            async all() {
+              const hasil = args
+                .map(String)
+                .filter((sku) => products.has(sku))
+                .map((sku) => ({ sku, nama_accurate: "X", hpp: 5000, hpp_baru: 0, is_online_product: 0, stok_min: 0 }));
+              return { results: hasil };
+            },
+          };
           return st;
         }
         return stGagal();
@@ -210,6 +250,12 @@ function req(body: unknown): Request {
 type Jawaban = {
   ok: boolean; error?: string; order?: number; item?: number;
   dilewati?: { no_pesanan: string; pesan: string }[];
+  /** `mulai-impor`: batch baru vs batch lama yang dilanjutkan. */
+  dilanjutkan?: boolean;
+  /** `mulai-impor`: order yang sudah tersimpan di batch (0 untuk batch baru). */
+  sudahBaris?: number;
+  /** `mulai-impor`: ukuran potongan yang ditetapkan server (klien memakainya apa adanya). */
+  ukuranPotong?: number;
 };
 
 async function panggil(db: unknown, body: Record<string, unknown>): Promise<{ status: number; body: Jawaban }> {
@@ -220,6 +266,103 @@ async function panggil(db: unknown, body: Record<string, unknown>): Promise<{ st
   const res = await POST(req(body));
   return { status: res.status, body: (await res.json()) as Jawaban };
 }
+
+/**
+ * Mock D1 seadanya untuk jalur BERTAHAP (`mulai-impor`). Hanya yang dipakai jalur itu yang
+ * dimodelkan: `import_batches` sebagai daftar baris + satu `db.run`, sehingga uji bisa memeriksa
+ * batch mana yang berstatus apa setelah tiap panggilan.
+ */
+function buatDbBertahap(awal: { file: string; status: string; progres_baris: number; nomor_potong?: number }[]) {
+  let seq = 100;
+  const rows = awal.map((b) => ({
+    id: ++seq,
+    file: b.file,
+    status: b.status,
+    progres_baris: b.progres_baris,
+    nomor_potong: b.nomor_potong ?? 0,
+    mode_impor: "bertahap",
+    sukses: 0,
+  }));
+  return {
+    rows,
+    prepare(sql: string) {
+      let args: unknown[] = [];
+      const st = {
+        _sql: sql,
+        _args: args,
+        bind(...a: unknown[]) {
+          args = a;
+          st._args = a;
+          return st;
+        },
+        /**
+         * SELECT resume: `status = 'preview' AND progres_baris > 0 ORDER BY at DESC LIMIT 1`.
+         * Urutan `at` disederhanakan jadi urutan id dari yang terbaru — cukup untuk uji ini.
+         */
+        async first<T>(): Promise<T | null> {
+          if (!sql.includes("FROM import_batches")) return null;
+          const file = String(args[0]);
+          const kandidat = rows.filter((r) => r.file === file && r.status === "preview" && r.progres_baris > 0);
+          if (kandidat.length === 0) return null;
+          const terakhir = kandidat[kandidat.length - 1];
+          return { id: terakhir.id, progres_baris: terakhir.progres_baris } as T;
+        },
+        async run() {
+          if (sql.startsWith("UPDATE import_batches SET status = 'batal'")) {
+            const file = String(args[0]);
+            for (const r of rows) {
+              if (r.file === file && r.mode_impor === "bertahap" && r.status === "preview" && r.progres_baris > 0) {
+                r.status = "batal";
+                r.sukses = r.progres_baris;
+              }
+            }
+            return { meta: { changes: 1 } };
+          }
+          if (sql.startsWith("INSERT INTO import_batches")) {
+            const id = ++seq;
+            rows.push({ id, file: String(args[0]), status: "preview", progres_baris: 0, nomor_potong: 0, mode_impor: "bertahap", sukses: 0 });
+            return { meta: { last_row_id: id } };
+          }
+          return { meta: { changes: 1 } };
+        },
+        async all<T>() {
+          return { results: [] as T[] };
+        },
+      };
+      return st;
+    },
+    async batch() {
+      return [];
+    },
+  };
+}
+
+describe("mulai-impor — resume vs mulai baru", () => {
+  it("tanpa flag: batch belum selesai untuk berkas sama DILANJUTKAN (bukan batch baru)", async () => {
+    const db = buatDbBertahap([{ file: "Order.toship.xlsx", status: "preview", progres_baris: 600, nomor_potong: 3 }]);
+    const r = await panggil(db, { aksi: "mulai-impor", namaBerkas: "Order.toship.xlsx", totalBaris: 5000 });
+    assert.equal(r.status, 200, `harus 200: ${r.body.error ?? ""}`);
+    assert.equal(r.body.dilanjutkan, true, "batch lama harus dilanjutkan");
+    assert.equal(r.body.sudahBaris, 600, "progres diteruskan apa adanya");
+    assert.equal(db.rows.length, 1, "tidak boleh ada batch baru");
+    assert.equal(db.rows[0].status, "preview", "batch lama tetap preview");
+  });
+
+  it("mulaiBaru: batch lama ditandai 'batal' dan batch BARU dibuat dengan progres 0", async () => {
+    const db = buatDbBertahap([{ file: "Order.toship.xlsx", status: "preview", progres_baris: 600, nomor_potong: 3 }]);
+    const r = await panggil(db, { aksi: "mulai-impor", namaBerkas: "Order.toship.xlsx", totalBaris: 5000, mulaiBaru: true });
+    assert.equal(r.status, 200, `harus 200: ${r.body.error ?? ""}`);
+    assert.equal(r.body.dilanjutkan, false, "mulaiBaru harus MEMBUAT batch baru, bukan melanjutkan");
+    assert.equal(r.body.sudahBaris, 0, "batch baru mulai dari nol");
+    assert.equal(db.rows.length, 2, "batch baru ditambahkan");
+    const [lama, baru] = db.rows;
+    assert.equal(lama.status, "batal", "batch lama ditandai batal");
+    assert.equal(lama.sukses, 600, "riwayat baris tersimpan tetap tercatat di batch lama");
+    assert.equal(baru.status, "preview");
+    assert.equal(baru.progres_baris, 0);
+    assert.notEqual(baru.id, lama.id, "batch baru = id baru");
+  });
+});
 
 describe("konfirmasi-shopee + FK order_items.sku", () => {
   it("baris tanpa SKU master TETAP tersimpan sebagai perlu_sku=1, order lain utuh", async () => {

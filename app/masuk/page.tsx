@@ -67,7 +67,7 @@ export default function HalamanMasuk() {
   return (
     <div className="flex min-h-dvh items-center justify-center bg-background p-6 text-foreground">
       <div className="w-full max-w-sm rounded-2xl border border-border bg-card p-6 shadow-sm">
-        <h1 className="text-lg font-semibold">Masuk Simple-WMS</h1>
+        <h1 className="text-lg font-semibold">Masuk SuPrapto Online</h1>
         <p className="mt-1 text-sm text-muted-foreground">
           {tahap === "masuk" && "Masuk dengan telegramId + password."}
           {tahap === "minta-kode" && "Masukkan telegramId untuk menerima kode via bot."}

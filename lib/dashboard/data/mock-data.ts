@@ -219,6 +219,8 @@ export const MOCK_MOVEMENTS: MovementDoc[] = MOVEMENT_SEEDS.map((s) => ({
 export const MOCK_ADMINS: AdminDoc[] = [
   { telegram_user_id: "900001", name: "Budi Owner", telegram_username: "owner_toko", role: "owner", added_at: hariLalu(120), approved_by: null, jabatan: "Owner", gudang_id: null },
   { telegram_user_id: "900002", name: "Siti Admin", telegram_username: "admin_gudang", role: "admin", added_at: hariLalu(90), approved_by: "900001", jabatan: "Admin Stok", gudang_id: "D12" },
+  { telegram_user_id: "900004", name: "Hendra High Admin", telegram_username: "hendra_ha", role: "high_admin", added_at: hariLalu(60), approved_by: "900001", jabatan: "Kepala Toko", gudang_id: "D12" },
+  { telegram_user_id: "900005", name: "Dian Designer", telegram_username: "dian_design", role: "designer", added_at: hariLalu(20), approved_by: "900001", jabatan: "Desainer", gudang_id: null },
   { telegram_user_id: "900003", name: "Rina Guest", telegram_username: "rina_lia", role: "guest", added_at: hariLalu(30), approved_by: "900001", jabatan: null, gudang_id: null },
 ];
 

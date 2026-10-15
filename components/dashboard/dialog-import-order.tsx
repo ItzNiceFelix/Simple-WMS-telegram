@@ -5,10 +5,17 @@
 // spesifik export Shopee 2-sheet: ringkasan, Perlu SKU + tebakan, Compare Nama, dan
 // blok peringatan (MUNDUR / resi gabungan / kriteria / gagal). dialog-import-excel
 // tetap dipakai template generik 7 kolom supaya jalur lama tidak berubah perilaku.
-// Sejak dukungan multi-seller: banyak berkas dipilih sekaligus, dipreview & dikonfirmasi
-// BERURUTAN per batch_id supaya server tetap idempoten dan satu berkas gagal tidak
+// Sejak dukungan multi-seller: banyak berkas dipilih sekaligus, dipreview & diimpor
+// BERURUTAN per batch supaya server tetap idempoten dan satu berkas gagal tidak
 // membatalkan berkas lain.
-import { useState } from "react"
+//
+// Impor BERTAHAP (berkas besar): setelah preview, order dikirim ke server dalam potongan
+// (ukuran potongan ditentukan SERVER lewat jawaban `mulai-impor`), satu request per potongan.
+// Worker Free hanya punya ~50 KUERI D1 per invokasi, jadi mengirim seluruh berkas sekaligus
+// akan mati di tengah jalan. Klien memegang barisnya (server tidak lagi menyimpan payload
+// raksasa), menyimpan `batchId` di state agar impor yang terputus bisa DILANJUTKAN, dan
+// menyediakan tombol Hentikan (AbortController) supaya impor bisa dibatalkan tanpa menutup dialog.
+import { useRef, useState } from "react"
 import { toast } from "sonner"
 
 // SheetJS 312 KB dimuat saat file benar-benar dibaca, bukan saat halaman dibuka.
@@ -63,8 +70,10 @@ type Dilewati = { no_pesanan: string; pesan: string }
 type Preview = {
   batch_id: number
   totalBaris: number
-  orders: unknown[]
-  advance: unknown[]
+  /** Fingerprint berkas — dipakai `selesai-impor` untuk mencatat anti-dobel. */
+  hash: string
+  orders: OrderRingkas[]
+  advance: BookingRingkas[]
   belumSku: BarisBelumSku[]
   gagal: Gagal[]
   klasifikasi: {
@@ -82,6 +91,15 @@ type Preview = {
   tebakan_dilewati: number
 }
 
+/**
+ * Satu order hasil normalisasi server, dikirim balik apa adanya lalu dipotong di klien.
+ * Bentuknya sengaja longgar: klien hanya perlu mengirim potongannya kembali tanpa membacanya,
+ * dan menyalin tipe server ke sini berarti dua definisi yang bisa menyimpang.
+ */
+type OrderRingkas = { no_pesanan: string; items: { nama_shopee: string; variasi: string }[] }
+/** Satu baris Advance Fulfilment, dikirim utuh di `selesai-impor` (bukan dipotong). */
+type BookingRingkas = { booking_sn: string }
+
 /** Satu baris "Perlu SKU" + asal berkasnya; indeks file dipakai supaya kunci tetap unik antar berkas. */
 type BarisGabungan = BarisBelumSku & { berkas: string }
 
@@ -91,7 +109,6 @@ type HasilBerkas =
   | {
       nama: string
       gagal: false
-      batch_id: number
       totalBaris: number
       orderCount: number
       advanceCount: number
@@ -101,7 +118,22 @@ type HasilBerkas =
       compareNama: Compare[]
       gagalBaris: Gagal[]
       tebakanDilewati: number
+      /** Baris hasil preview — dipegang klien supaya server tak perlu menyimpan payload raksasa. */
+      orders: OrderRingkas[]
+      advance: BookingRingkas[]
+      hash: string
     }
+
+/**
+ * Cadangan ukuran potongan, HANYA untuk server lama yang tidak mengirim `ukuranPotong`.
+ *
+ * Sumber kebenaran ukuran potongan adalah SERVER: `mulai-impor` mengembalikan `ukuranPotong`
+ * (lihat UKURAN_POTONG di app/api/order/route.ts) dan itulah yang dipakai untuk memotong.
+ * Angka di sini tidak boleh dipakai selama server menjawab normal — kalau dipakai, artinya
+ * server dan klien bisa menyimpang, dan penyimpangannya muncul sebagai 400 dari batas server
+ * (route.ts, "Satu potongan maksimal N baris") alih-alih tidak mungkin terjadi sama sekali.
+ */
+const UKURAN_POTONG_CADANGAN = 200
 
 interface Props {
   open: boolean
@@ -124,24 +156,75 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
   const [manual, setManual] = useState<Record<string, string>>({})
   const [master, setMaster] = useState<OpsiSku[]>([])
   const [tandai, setTandai] = useState<Set<string>>(new Set())
+  /**
+   * Batch bertahap yang SUDAH dibuat server (per nama berkas). Disimpan di state komponen
+   * dengan sengaja: bila jaringan putus atau impor gagal di tengah, `batchId` masih ada
+   * sehingga tombol "Lanjutkan" bisa meneruskan dari potongan terakhir, bukan mengulang
+   * dari nol dan menyimpan ulang ribuan baris yang sudah masuk.
+   *
+   * `ukuranPotong` diambil dari jawaban SERVER saat batch pertama kali dibuat, lalu ikut
+   * disimpan: percobaan ulang memakai `batchId` yang sama tanpa memanggil `mulai-impor` lagi,
+   * jadi tanpa menyimpannya di sini ukuran potongan akan hilang dan harus ditebak.
+   */
+  const [batchBertahap, setBatchBertahap] = useState<
+    Record<string, { batchId: number; sudahBaris: number; ukuranPotong: number; dilanjutkan: boolean }>
+  >({})
+  /** Progres impor bertahap: berapa baris sudah benar-benar tersimpan di server. */
+  const [progresImpor, setProgresImpor] = useState<{ nama: string; baris: number; total: number } | null>(null)
+  /**
+   * Pembatal impor. Disimpan di ref (bukan state) karena hanya dibaca di dalam loop async:
+   * kalau di state, closure loop akan menangkap nilai lama dan tombol Batal tak berefek.
+   * SATU controller per unggahan: dibuat saat berkas dipilih, bukan saat Konfirmasi ditekan.
+   * Dulu dibuat di `konfirmasi()`, jadi ada celah di mana loop sudah jalan tapi `batalRef`
+   * masih null (mis. Konfirmasi tepat setelah dialog dibuka) — impor panjang jadi tak bisa
+   * dihentikan. `mulai-impor` juga memakai controller ini agar request yang menggantung saat
+   * user menutup dialog benar-benar dihentikan, bukan lanjut di latar belakang.
+   */
+  const batalRef = useRef<AbortController | null>(null)
   /** Baris yang DITOLAK saat konfirmasi — ditampilkan supaya user tahu mana yang perlu diperbaiki. */
   const [dilewatiHasil, setDilewatiHasil] = useState<(Dilewati & { berkas: string })[]>([])
+  /**
+   * Berkas yang batch-nya baru saja DILANJUTKAN server (`dilanjutkan: true`). Dipakai untuk
+   * memunculkan tombol "Mulai dari awal": tanpa flag eksplisit, unggah ulang berkas yang sama
+   * selalu melanjutkan batch lama dan satu-satunya cara mulai dari nol adalah mengganti nama
+   * berkas — cara yang ditolak pemilik produk.
+   */
+  const [lanjutanBerkas, setLanjutanBerkas] = useState<{ nama: string; tersimpan: number } | null>(null)
+  /** Berkas yang sedang dipaksa mulai dari nol (lihat tombol "Mulai dari awal"). */
+  const mulaiBaruRef = useRef<string | null>(null)
 
   function kunciBaris(b: BarisBelumSku): string {
     return `${b.order_ref}\u0000${b.nama_shopee}\u0000${b.variasi}`
   }
 
   function tutup(v: boolean) {
-    if (mengirim) return
+    // Dulu `if (mengirim) return` di sini: menutup dialog saat impor jalan memang harus
+    // dihentikan, bukan ditolak — kalau ditolak, satu-satunya jalan keluar user adalah menutup
+    // tab, dan loop-nya tetap menulis di latar belakang. Sekarang penutupan selalu meng-abort
+    // lebih dulu; batchId tetap tersimpan di state sehingga impor bisa dilanjutkan nanti.
     if (!v) {
+      // Impor yang masih jalan dihentikan, bukan dibiarkan menulis di latar belakang setelah
+      // dialog hilang — batchId tersimpan di state sehingga bisa dilanjutkan nanti.
+      batalRef.current?.abort()
       setFiles([])
       setHasil(null)
       setProgres(null)
+      setProgresImpor(null)
       setManual({})
       setTandai(new Set())
       setDilewatiHasil([])
+      setLanjutanBerkas(null)
     }
     onOpenChange(v)
+  }
+
+  /** Hentikan impor yang sedang jalan; potongan yang sudah masuk tetap tersimpan di server. */
+  function batalkanImpor(): void {
+    batalRef.current?.abort()
+    // Tombol langsung kembali aktif walau request yang sedang menggantung belum menyerah:
+    // `mengirim` hanya dipakai untuk menonaktifkan tombol, bukan untuk menghentikan loop
+    // (loop berhenti sendiri di pemeriksaan `signal.aborted`).
+    setMengirim(false)
   }
 
   async function unggah() {
@@ -185,7 +268,6 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
             daftar.push({
               nama: f.name,
               gagal: false,
-              batch_id: raw.batch_id,
               totalBaris: ordersRows.length + advanceRows.length,
               orderCount: raw.orders.length,
               advanceCount: raw.advance.length,
@@ -195,6 +277,9 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
               compareNama: raw.compareNama ?? [],
               gagalBaris: raw.gagal,
               tebakanDilewati: raw.tebakan_dilewati ?? 0,
+              orders: raw.orders,
+              advance: raw.advance,
+              hash: raw.hash,
             })
           }
         } catch (e) {
@@ -252,10 +337,41 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
     return belumLengkap.length === 0
   }
 
+  /**
+   * "Mulai dari awal": buang batch lama untuk berkas yang dilanjutkan server, lalu impor ulang
+   * dari baris nol. Order yang sudah masuk batch lama TIDAK dihapus (server menandainya
+   * 'batal'), dan karena setiap order ditulis dengan `ON CONFLICT ... DO UPDATE`, baris yang
+   * sama tersimpan ulang di batch baru — bukan terduplikasi.
+   */
+  function mulaiDariAwal(): void {
+    const l = lanjutanBerkas
+    if (!l) return
+    const setuju = window.confirm(
+      `Mulai dari awal untuk "${l.nama}"?\n\n` +
+        `${l.tersimpan} order berkas ini sudah tersimpan di batch lama dan TETAP tersimpan di sana (tidak dihapus). ` +
+        `Sisa barisnya akan diimpor ulang dari nol ke batch baru. ` +
+        `Order yang sama ditulis ulang, jadi tidak menjadi order ganda.`,
+    )
+    if (!setuju) return
+    setBatchBertahap((lama) => {
+      const baru = { ...lama }
+      delete baru[l.nama]
+      return baru
+    })
+    mulaiBaruRef.current = l.nama
+    setLanjutanBerkas(null)
+    void konfirmasi()
+  }
+
   async function konfirmasi() {
     const siap = (hasil ?? []).filter((h): h is Extract<HasilBerkas, { gagal: false }> => !h.gagal)
     if (siap.length === 0) return
     setMengirim(true)
+    // Controller datang dari pemilihan berkas (lihat onChange input): Konfirmasi tidak pernah
+    // berjalan tanpa controller. Cadangan di sini hanya untuk jaga-jaga bila berkas dipilih
+    // sebelum perubahan itu ada di bundel yang termuat.
+    const batal = batalRef.current ?? new AbortController()
+    batalRef.current = batal
     try {
       // Peta baris per berkas: baris preview mewakili beberapa order sekaligus dan kunci
       // hanya unik di dalam berkasnya sendiri.
@@ -292,23 +408,21 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
             }))
           )
         try {
-          const res = await fetch("/api/order", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ aksi: "konfirmasi-shopee", batch_id: h.batch_id, skuManual, tandaiBelumMp }),
-            credentials: "include",
-          })
-          const raw = (await res.json().catch(() => null)) as
-            | { ok?: boolean; error?: string; order?: number; item?: number; advance?: number; dilewati?: Dilewati[] }
-            | null
-          if (!res.ok || !raw?.ok) {
-            gagal.push(`${h.nama} (${raw?.error ?? `HTTP ${res.status}`})`)
+          const r = await imporBertahap(h, skuManual, tandaiBelumMp, batal.signal)
+          if (r.batal) {
+            // Dibatalkan user: batchId SUDAH tersimpan di state, jadi impor bisa dilanjutkan
+            // nanti tanpa mengulang potongan yang sudah masuk.
+            tampilkanGagalTulis(`Impor ${h.nama} dihentikan di baris ke-${r.barisTersimpan}. Tekan "Lanjutkan" untuk meneruskan.`)
             continue
           }
-          total.order += raw.order ?? 0
-          total.item += raw.item ?? 0
-          total.advance += raw.advance ?? 0
-          for (const d of raw.dilewati ?? []) dilewati.push({ ...d, berkas: h.nama })
+          if (!r.ok) {
+            gagal.push(`${h.nama} (${r.pesan})`)
+            continue
+          }
+          total.order += r.order
+          total.item += r.item
+          total.advance += r.advance
+          for (const d of r.dilewati) dilewati.push({ ...d, berkas: h.nama })
           sukses.push(h.nama)
         } catch (e) {
           // Batch yang sudah sukses tetap sukses; yang gagal hanya disebut namanya.
@@ -334,8 +448,179 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
     } catch {
       tampilkanGagalTulis("Jaringan gagal. Coba lagi.")
     } finally {
+      batalRef.current = null
       setProgres(null)
+      setProgresImpor(null)
       setMengirim(false)
+    }
+  }
+
+  /**
+   * Impor satu berkas SECARA BERTAHAP: pastikan batch ada, kirim potongan berurutan, lalu tutup.
+   *
+   * Kenapa dipotong: Worker Free hanya punya ~50 subrequest dan 10 ms CPU per invokasi. Berkas
+   * besar yang dikirim sebagai satu body akan menghabiskan anggaran itu di tengah jalan dan
+   * gagal tanpa pesan berguna. Dengan potongan, tiap request punya anggaran segar.
+   *
+   * Resume: `batchId` disimpan di state komponen dan potongan lama tidak dikirim ulang karena
+   * server menolak nomor potongan yang sudah diproses (idempoten). Jadi menekan tombol lagi
+   * setelah gagal jaringan MELANJUTKAN, bukan menyimpan baris dua kali.
+   */
+  async function imporBertahap(
+    h: Extract<HasilBerkas, { gagal: false }>,
+    skuManual: { order_ref: string; nama_shopee: string; variasi: string; sku: string }[],
+    tandaiBelumMp: { order_ref: string; nama_shopee: string; variasi: string; sumber: string; sku_asal: string; qty_total: number }[],
+    signal: AbortSignal,
+  ): Promise<
+    | { batal: true; barisTersimpan: number }
+    | { batal: false; ok: false; pesan: string }
+    | { batal: false; ok: true; order: number; item: number; advance: number; dilewati: Dilewati[] }
+  > {
+    const kirim = async (body: Record<string, unknown>): Promise<{ ok: boolean; status: number; data: Record<string, unknown>; dibatalkan?: boolean }> => {
+      try {
+        const res = await fetch("/api/order", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          credentials: "include",
+          signal,
+        })
+        const data = (await res.json().catch(() => null)) as Record<string, unknown> | null
+        return { ok: res.ok, status: res.status, data: data ?? {} }
+      } catch (e) {
+        // Abort BUKAN kegagalan jaringan. Tanpa penanda ini, impor yang dihentikan user
+        // dilaporkan sebagai "jaringan gagal" dan user mengira koneksinya bermasalah —
+        // padahal batchId-nya tetap valid dan impor bisa dilanjutkan.
+        if (signal.aborted || (e instanceof DOMException && e.name === "AbortError")) {
+          return { ok: false, status: 0, data: {}, dibatalkan: true }
+        }
+        throw e
+      }
+    }
+
+    // 1) Batch: server mengembalikan batch yang BELUM selesai untuk berkas yang sama, sehingga
+    //    unggah ulang melanjutkan dari `sudahBaris` — bukan mulai dari nol.
+    let batchId: number | undefined = batchBertahap[h.nama]?.batchId
+    let sudahOrder = 0
+    let ukuranPotong: number
+    // Dipaksa mulai dari nol (tombol "Mulai dari awal"): batchId lama dibuang sehingga
+    // `mulai-impor` dipanggil ulang dengan `mulaiBaru`, dan server menandai batch lama 'batal'.
+    const mulaiBaru = mulaiBaruRef.current === h.nama
+    mulaiBaruRef.current = null
+    if (mulaiBaru) batchId = undefined
+    if (batchId === undefined) {
+      // `totalBaris` di sini = jumlah ORDER, bukan baris berkas: server mencatat progres dalam
+      // satuan order supaya resume bisa memotong array `orders` dengan indeks yang benar.
+      const mulai = await kirim({ aksi: "mulai-impor", namaBerkas: h.nama, totalBaris: h.orders.length, mulaiBaru })
+      if (mulai.dibatalkan) return { batal: true, barisTersimpan: sudahOrder }
+      if (!mulai.ok || mulai.data.ok !== true) {
+        return { batal: false, ok: false, pesan: String(mulai.data.error ?? `mulai-impor gagal (HTTP ${mulai.status}).`) }
+      }
+      batchId = Number(mulai.data.batchId)
+      sudahOrder = Number(mulai.data.sudahBaris ?? 0)
+      // Ukuran potongan datang dari SERVER supaya tak ada dua angka yang bisa menyimpang.
+      // `UKURAN_POTONG_CADANGAN` hanya untuk server lama yang belum mengirim field ini; bila
+      // dipakai, potongan berisiko ditolak batas server (400) — lihat komentar konstanta itu.
+      const ukuranServer = Number(mulai.data.ukuranPotong)
+      ukuranPotong = Number.isFinite(ukuranServer) && ukuranServer > 0 ? ukuranServer : UKURAN_POTONG_CADANGAN
+      // `dilanjutkan: true` = server mengembalikan batch lama, bukan membuat yang baru. Hanya
+      // di situlah tombol "Mulai dari awal" masuk akal.
+      const dilanjutkan = mulai.data.dilanjutkan === true && sudahOrder > 0
+      setLanjutanBerkas(dilanjutkan ? { nama: h.nama, tersimpan: sudahOrder } : null)
+      setBatchBertahap((lama) => ({
+        ...lama,
+        [h.nama]: { batchId: batchId!, sudahBaris: sudahOrder, ukuranPotong, dilanjutkan },
+      }))
+    } else {
+      const tersimpan = batchBertahap[h.nama]
+      sudahOrder = tersimpan?.sudahBaris ?? 0
+      // Percobaan ulang memakai batchId yang sudah ada, jadi `mulai-impor` tidak dipanggil lagi
+      // dan ukuran potongan diambil dari simpanan percobaan pertama (dari server saat itu).
+      ukuranPotong = tersimpan?.ukuranPotong ?? UKURAN_POTONG_CADANGAN
+    }
+
+    // 2) Potongan berurutan. `orders` datang dari preview, jadi server tidak perlu menyimpannya.
+    const potongan: OrderRingkas[][] = []
+    for (let i = sudahOrder; i < h.orders.length; i += ukuranPotong) {
+      potongan.push(h.orders.slice(i, i + ukuranPotong))
+    }
+    const nomorAwal = Math.floor(sudahOrder / ukuranPotong) + 1
+    let barisTersimpan = sudahOrder
+    let tersimpanTotal = 0
+    let dilewatiTotal = 0
+    for (const [idx, bagian] of potongan.entries()) {
+      if (signal.aborted) return { batal: true, barisTersimpan }
+      const nomorPotong = nomorAwal + idx
+      // SKU manual & "belum di MP" hanya relevan untuk order yang ada di potongan ini — kalau
+      // semuanya dikirim tiap potongan, body-nya membengkak dan `tandaiBelumMp` yang sama
+      // dicatat berulang di server.
+      const noPesananPotong = new Set(bagian.map((o) => o.no_pesanan))
+      const r = await kirim({
+        aksi: "impor-potong",
+        batchId,
+        nomorPotong,
+        potongan: bagian,
+        skuManual: skuManual.filter((m) => noPesananPotong.has(m.order_ref)),
+        tandaiBelumMp: tandaiBelumMp.filter((t) => noPesananPotong.has(t.order_ref)),
+      })
+      if (r.dibatalkan) return { batal: true, barisTersimpan }
+      if (!r.ok || r.data.ok !== true) {
+        // Server bisa membalas 409 dengan `progressBaris` — artinya potongan ini SEBAGIAN
+        // tersimpan. Progres itu disimpan supaya percobaan berikutnya melanjutkan dari titik
+        // yang benar, bukan mengulang potongan yang barisnya sudah masuk.
+        const progresServer = Number(r.data.progressBaris ?? barisTersimpan)
+        barisTersimpan = progresServer
+        setBatchBertahap((lama) => ({
+          ...lama,
+          [h.nama]: { batchId: batchId!, sudahBaris: barisTersimpan, ukuranPotong, dilanjutkan: lama[h.nama]?.dilanjutkan === true },
+        }))
+        setProgresImpor({ nama: h.nama, baris: barisTersimpan, total: h.orders.length })
+        return {
+          batal: false,
+          ok: false,
+          pesan: `${String(r.data.error ?? "potongan ditolak")} (potongan ${nomorPotong}, ${barisTersimpan}/${h.orders.length} order berkas sudah tersimpan)`,
+        }
+      }
+      barisTersimpan = Number(r.data.progressBaris ?? barisTersimpan)
+      tersimpanTotal += Number(r.data.tersimpan ?? 0)
+      dilewatiTotal += Number(r.data.dilewati ?? 0)
+      setBatchBertahap((lama) => ({
+        ...lama,
+        [h.nama]: { batchId: batchId!, sudahBaris: barisTersimpan, ukuranPotong, dilanjutkan: lama[h.nama]?.dilanjutkan === true },
+      }))
+      setProgresImpor({ nama: h.nama, baris: barisTersimpan, total: h.orders.length })
+    }
+
+    // 3) Tutup batch: simpan booking advance, catat resi grup, tandai anti-dobel berkas.
+    //    `skuManual`/`tandaiBelumMp` tidak dikirim lagi — keduanya sudah diproses tiap potongan.
+    const selesai = await kirim({
+      aksi: "selesai-impor",
+      batchId,
+      hash: h.hash,
+      advance: h.advance,
+    })
+    if (selesai.dibatalkan) return { batal: true, barisTersimpan }
+    if (!selesai.ok || selesai.data.ok !== true) {
+      return { batal: false, ok: false, pesan: String(selesai.data.error ?? `selesai-impor gagal (HTTP ${selesai.status}).`) }
+    }
+    // Batch ini tuntas → buang jejaknya supaya unggahan berikutnya membuat batch baru,
+    // bukan "melanjutkan" batch yang sudah selesai.
+    setBatchBertahap((lama) => {
+      const baru = { ...lama }
+      delete baru[h.nama]
+      return baru
+    })
+    return {
+      batal: false,
+      ok: true,
+      order: Number(selesai.data.order ?? 0),
+      item: Number(selesai.data.item ?? 0),
+      advance: Number(selesai.data.advance ?? 0),
+      dilewati: Array.isArray(selesai.data.dilewati)
+        ? (selesai.data.dilewati as Dilewati[])
+        : dilewatiTotal > 0
+          ? [{ no_pesanan: "-", pesan: `${dilewatiTotal} baris dilewati D1 selama impor bertahap.` }]
+          : [],
     }
   }
 
@@ -389,7 +674,13 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
               multiple
               accept=".xlsx,.xls"
               data-testid="berkas-import-order"
-              onChange={(e) => setFiles(Array.from(e.target.files ?? []))}
+              onChange={(e) => {
+                setFiles(Array.from(e.target.files ?? []))
+                // Controller dibuat di sini (bukan saat Konfirmasi): begitu ada berkas yang
+                // bisa diimpor, Konfirmasi sudah SELALU punya controller untuk di-abort.
+                batalRef.current = new AbortController()
+                setLanjutanBerkas(null)
+              }}
             />
             {files.length > 0 && (
               <p className="text-sm text-muted-foreground">
@@ -634,9 +925,47 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
                   {progres.nama} — {progres.ke}/{progres.dari}
                 </p>
               )}
-              <Button variant="secondary" onClick={() => { setHasil(null); setManual({}); setTandai(new Set()); setDilewatiHasil([]) }} disabled={mengirim}>
+              {progresImpor && (
+                <p className="mr-auto self-center text-xs text-muted-foreground" data-testid="progres-impor-bertahap">
+                  {progresImpor.nama}: {progresImpor.baris}/{progresImpor.total} order tersimpan
+                </p>
+              )}
+              {lanjutanBerkas && !mengirim && (
+                <p className="mr-auto self-center text-xs text-amber-700" data-testid="lanjutan-impor-bertahap">
+                  {lanjutanBerkas.nama}: {lanjutanBerkas.tersimpan} order sudah tersimpan — Konfirmasi akan
+                  melanjutkan. Pilih "Mulai dari awal" untuk mengimpor ulang berkas ini dari nol.
+                </p>
+              )}
+              <Button
+                variant="outline"
+                onClick={mulaiDariAwal}
+                disabled={!lanjutanBerkas || mengirim || !siapCommit()}
+                data-testid="mulai-baru-import-order"
+              >
+                Mulai dari awal
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => {
+                  // Ganti file = meninggalkan impor yang sedang jalan; hentikan dulu supaya
+                  // loop tidak menulis di latar belakang sementara daftar berkas sudah diganti.
+                  batalRef.current?.abort()
+                  setMengirim(false)
+                  setHasil(null)
+                  setManual({})
+                  setTandai(new Set())
+                  setDilewatiHasil([])
+                  setLanjutanBerkas(null)
+                }}
+                disabled={mengirim}
+              >
                 Ganti file
               </Button>
+              {mengirim && (
+                <Button variant="outline" onClick={batalkanImpor} data-testid="batal-import-order">
+                  Hentikan
+                </Button>
+              )}
               <Button onClick={konfirmasi} disabled={mengirim || !siapCommit()} data-testid="konfirmasi-import-order">
                 {mengirim && <Spinner />} Konfirmasi
               </Button>

@@ -52,7 +52,7 @@ export async function bangunPdfPermintaan(data: DataPermintaanPdf): Promise<Uint
   let hal = doc.addPage([LEBAR, TINGGI]);
   let y = TINGGI - MARGIN;
 
-  hal.drawText("Admin Toko", { x: MARGIN, y, size: JUDUL_FS, font: tebal });
+  hal.drawText("SuPrapto Online", { x: MARGIN, y, size: JUDUL_FS, font: tebal });
   y -= 20;
   hal.drawText("PERMINTAAN STOK — GUDANG ONLINE", { x: MARGIN, y, size: ISI_FS, font: tebal });
   y -= 16;

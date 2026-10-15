@@ -49,7 +49,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         <header className="sticky top-0 z-30 flex items-center justify-between gap-3 border-b border-border bg-background/95 px-4 py-3 backdrop-blur md:px-6">
           <div className="flex items-center gap-2">
             <ShieldCheck aria-hidden className="size-5 text-primary md:hidden" />
-            <span className="text-sm font-semibold md:hidden">Admin Toko</span>
+            <span className="text-sm font-semibold md:hidden">SuPrapto Online</span>
           </div>
           <div className="hidden text-sm text-muted-foreground md:block">
             Dashboard Telegram Mini App

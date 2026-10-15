@@ -7,6 +7,7 @@
 
 import { ambilKredensial } from "@/lib/d1/aiKredensial";
 import { daftarModel } from "@/lib/d1/aiModel";
+import { himpunanIzin } from "@/lib/d1/aiIzinModel";
 import { ambilPengaturanAI, type EnvAi } from "@/lib/d1/pengaturan";
 import { gagal, type Hasil } from "@/lib/d1/hasil";
 import { BASE_OPENAI, baseKenari, chatOpenai, gambarOpenai, type OpsiAdapter } from "./adapterOpenai";
@@ -21,6 +22,16 @@ export type Konteks = {
   /** AI_KEY_ENCRYPTION_KEY — kunci dekripsi kredensial. */
   kunci: string;
   env?: EnvAi & { KENARI_BASE_URL?: string };
+  /**
+   * Role pemanggil, dipakai untuk menegakkan izin model (lib/d1/aiIzinModel.ts).
+   *
+   * OPSIONAL dengan default paling ketat: pemanggil yang lupa mengisi dianggap BUKAN
+   * owner. Kalau field ini wajib, setiap entrypoint baru harus ingat mengisinya — dan
+   * yang lupa akan gagal type-check; itu memang lebih baik, tetapi `Konteks` juga dibuat
+   * di jalur bot/Worker yang tidak semuanya punya sesi dashboard. Default `undefined`
+   * berarti "tidak diketahui" → diperlakukan sebagai non-owner (fail closed).
+   */
+  role?: string;
 };
 
 /** Provider OpenAI-compatible = semua kecuali gemini. */
@@ -200,6 +211,38 @@ function ringkasGagal(catatan: Catatan[], rantai: string[] = []): string {
   return `${badan} — Masih ada provider yang bisa dicoba: ${saran.join("; ")}.`;
 }
 
+/**
+ * Pesan saat kandidat model KOSONG.
+ *
+ * KENAPA dipisah dari `ringkasGagal`: sejak ada daftar izin per role, "tidak ada kandidat"
+ * punya DUA sebab yang sangat berbeda tindak lanjutnya — (a) kredensial/katalog bermasalah,
+ * atau (b) owner belum mengizinkan satu model pun untuk role ini. Keduanya dulu berbunyi
+ * "Semua percobaan gagal: ..." sehingga user non-owner mencari masalah di kredensial
+ * padahal izinnya yang kosong.
+ *
+ * Non-owner dengan kandidat kosong SELALU dijawab 403 + arahan ke owner: itu satu-satunya
+ * tindakan yang bisa memperbaikinya, dan menyembunyikannya di balik 502 membuat user
+ * mencoba ulang tanpa hasil.
+ */
+function gagalTanpaKandidat(
+  catatan: Catatan[],
+  rantai: string[],
+  role: string | undefined,
+  jenis: "teks" | "vision"
+): Hasil<never> {
+  const pemanggilNonOwner = role !== undefined && role !== "owner";
+  const semuaDitolakIzin = catatan.length > 0 && catatan.every((c) => c.error.includes("tidak diizinkan"));
+  if (pemanggilNonOwner && (catatan.length === 0 || semuaDitolakIzin)) {
+    return gagal<never>(
+      403,
+      `Belum ada model ${jenis} yang diizinkan owner untuk role Anda. ` +
+        `Hubungi owner untuk mengaktifkannya di Pengaturan AI → Izin Model per Role.`,
+      catatan
+    );
+  }
+  return gagal<never>(502, ringkasGagal(catatan, rantai), catatan);
+}
+
 type Kandidat = { provider: ProviderNama; model: string; apiKey: string; /** Alamat dasar dari kredensial; "" = pakai bawaan provider. */ baseUrl: string };
 
 /**
@@ -229,13 +272,25 @@ function kandidatHanyaDipilih(
   provider: ProviderNama,
   modelDipilih: string | undefined,
   kred: { plaintext: string; base_url: string | null },
-  catatan: Catatan[]
+  catatan: Catatan[],
+  izin: Set<string> | null
 ): Kandidat[] {
   if (!modelDipilih) {
     catatan.push({
       provider,
       model: "-",
       error: `dilewati: provider ${provider} belum punya model default dipilih — isi di Pengaturan AI → Model Default`,
+    });
+    return [];
+  }
+  // Izin model diperiksa SESUDAH kelengkapan pilihan, SEBELUM kandidat dibuat: model yang
+  // tidak diizinkan owner untuk role ini tidak boleh masuk daftar kandidat sama sekali,
+  // sekalipun user menulisnya sendiri di body permintaan. `izin === null` = owner → lolos.
+  if (izin !== null && !izin.has(`${provider}\u0000${modelDipilih}`)) {
+    catatan.push({
+      provider,
+      model: modelDipilih,
+      error: `ditolak: model "${modelDipilih}" tidak diizinkan owner untuk role ini`,
     });
     return [];
   }
@@ -247,15 +302,30 @@ async function kandidatTeks(
   jenis: "teks" | "vision",
   catatan: Catatan[],
   modelDiminta?: string,
-  hanyaModelDipilih?: boolean
+  hanyaModelDipilih?: boolean,
+  providerDiminta?: string
 ): Promise<{ kandidat: Kandidat[]; rantai: string[] }> {
   const set = await ambilPengaturanAI(ctx.db, ctx.env);
   const rantaiTeks = (set.chainTeks.length > 0 ? set.chainTeks : [set.textProvider || "groq"]).filter(
     (p): p is ProviderNama => (PROVIDER_OPENAI as string[]).concat("gemini").includes(p)
   );
   const peta = jenis === "vision" ? set.modelVision : set.modelTeks;
+  // Provider pembawa `modelDiminta` (bila pemanggil menyebutkannya). Provider itu DIPINDAH
+  // ke depan rantai: `modelDiminta` di bawah hanya sah untuk pemiliknya, jadi kalau
+  // pemiliknya tidak berada di urutan pertama, model yang DIMINTA user tidak pernah masuk
+  // kandidat sama sekali (hanya provider pertama yang membacanya) — permintaan user
+  // diabaikan tanpa pesan. Urutan sisa rantai tidak berubah, jadi fallback tetap apa adanya.
+  const rantaiUrut =
+    providerDiminta && rantaiTeks.includes(providerDiminta as ProviderNama)
+      ? [providerDiminta as ProviderNama, ...rantaiTeks.filter((p) => p !== providerDiminta)]
+      : rantaiTeks;
+  // Izin model per role+jenis, diambil SEKALI untuk seluruh rantai: satu kueri, bukan satu
+  // kueri per model. `null` = owner (tanpa batas) — lihat himpunanIzin. Non-owner tanpa izin
+  // sama sekali mendapat himpunan KOSONG, sehingga tidak ada kandidat dan permintaan berhenti
+  // dengan pesan yang bisa ditindaklanjuti, bukan diam-diam memakai model default.
+  const izin = await himpunanIzin(ctx.db, ctx.role ?? "", jenis);
   const hasil: Kandidat[] = [];
-  for (const provider of rantaiTeks) {
+  for (const provider of rantaiUrut) {
     const kred = await ambilKredensial(ctx.db, provider, ctx.kunci);
     if (!kred || !kred.plaintext) {
       catatan.push({ provider, model: "-", error: "tidak ada kredensial aktif" });
@@ -263,24 +333,40 @@ async function kandidatTeks(
     }
     const katalog = await daftarModel(ctx.db, provider, jenis);
     const aktif = katalog.filter((m) => m.aktif === 1).sort((a, b) => a.id - b.id);
-    const pilih = (provider === rantaiTeks[0] ? modelDiminta : undefined) ?? peta[provider];
+    // TANPA `providerDiminta`, `modelDiminta` hanya berlaku di provider pertama (perilaku
+    // lama: pemanggil lama seperti bot mengirim nama model tanpa menyebut providernya).
+    const pilih = (provider === rantaiTeks[0] || provider === providerDiminta ? modelDiminta : undefined) ?? peta[provider];
     // Jalur analisa: HANYA model yang dipilih user, tanpa cadangan katalog (lihat
     // `kandidatHanyaDipilih`). Provider tanpa pilihan dilewati, rantai lanjut.
     if (hanyaModelDipilih) {
-      hasil.push(...kandidatHanyaDipilih(provider, pilih, kred, catatan));
+      hasil.push(...kandidatHanyaDipilih(provider, pilih, kred, catatan, izin));
       continue;
     }
     const id: string[] = [];
     if (pilih) id.push(pilih);
     for (const m of aktif) if (!id.includes(m.model_id)) id.push(m.model_id);
+    // Izin disaring DI SINI, sebelum urutan `:free`/`MAKS_MODEL_PER_PROVIDER` dihitung:
+    // kalau disaring sesudah pemotongan, model terlarang bisa memakan jatah slot dan
+    // menggeser model yang sebenarnya boleh dipakai keluar dari daftar kandidat.
+    // `izin === null` (owner) melewati penyaringan sepenuhnya — owner tidak pernah dibatasi.
+    const boleh = izin === null ? id : id.filter((m) => izin.has(`${provider}\u0000${m}`));
+    if (izin !== null && boleh.length < id.length) {
+      // Dicatat supaya tidak tampak seperti katalog kosong: user perlu tahu modelnya ADA
+      // tapi tidak diizinkan, bukan menebak-nebak kenapa daftarnya pendek.
+      catatan.push({
+        provider,
+        model: "-",
+        error: `dilewati: ${id.length - boleh.length} model tidak diizinkan owner untuk role ini`,
+      });
+    }
     // Model berakhiran `:free` DITARUH DI BELAKANG model berbayar. Alasan: varian gratis
     // mengantre di sisi penyedia (kuota gratis diperebutkan), jadi hampir pasti melewati
     // batas waktu — dan kandidat PERTAMA memakai jatah waktu penuh provider, artinya satu
     // model `:free` bisa membakar jatah itu tanpa hasil. Model yang DIPILIH user (atau
     // ditetapkan peta model) tetap nomor satu apa pun namanya. Pengurutan stabil, jadi
     // urutan `id` tetap terjaga di dalam masing-masing kelompok (berbayar / `:free`).
-    const urut = id.slice(pilih ? 1 : 0).sort((a, b) => Number(a.endsWith(":free")) - Number(b.endsWith(":free")));
-    const urutan = pilih ? [pilih, ...urut] : urut;
+    const urut = boleh.slice(pilih && boleh[0] === pilih ? 1 : 0).sort((a, b) => Number(a.endsWith(":free")) - Number(b.endsWith(":free")));
+    const urutan = pilih && boleh[0] === pilih ? [pilih, ...urut] : urut;
     // Sisanya memang sengaja TIDAK dicoba — dicatat supaya tidak ada yang menyangka
     // katalog provider ini sudah dicoba habis lalu menyimpulkan modelnya memang mati.
     const sisa = Math.max(0, urutan.length - MAKS_MODEL_PER_PROVIDER);
@@ -295,7 +381,7 @@ async function kandidatTeks(
       hasil.push({ provider, model, apiKey: kred.plaintext, baseUrl: kred.base_url ?? "" });
     }
   }
-  return { kandidat: hasil, rantai: rantaiTeks };
+  return { kandidat: hasil, rantai: rantaiUrut };
 }
 
 /** Satu percobaan ke satu provider+model; semua error berasal dari adapter (asli dari provider). */
@@ -339,6 +425,15 @@ export async function panggilTeks(
     pesan: BagianChat[];
     tool?: unknown[];
     modelDiminta?: string;
+    /**
+     * Provider PEMBAWA `modelDiminta`. Diisi hanya kalau model yang diminta memang milik
+     * provider tertentu (mis. pilihan model per user yang disimpan sebagai kunci izin
+     * `provider\0model` — lihat lib/d1/aiEditorSetting.ts). Tanpa ini `modelDiminta`
+     * dianggap milik provider PERTAMA di rantai; penyedia lain yang KEBAHULAN punya
+     * model bernama sama lalu dipanggil dengan nama itu, dan model di provider sisa
+     * rantai (yang seharusnya jadi cadangan) tidak pernah punya kandidat.
+     */
+    providerDiminta?: string;
     reasoning?: string;
     reasoningHilir?: boolean;
     maksToken?: number;
@@ -365,8 +460,8 @@ export async function panggilTeks(
 > {
   const catatan: Catatan[] = [];
   if (!ctx.kunci && !ctx.env?.AI_KEY_ENCRYPTION_KEY) return gagal(500, "AI_KEY_ENCRYPTION_KEY belum diset.");
-  const { kandidat, rantai } = await kandidatTeks(ctx, jenis, catatan, minta.modelDiminta, minta.hanyaModelDipilih);
-  if (kandidat.length === 0) return gagal(502, ringkasGagal(catatan, rantai), catatan);
+  const { kandidat, rantai } = await kandidatTeks(ctx, jenis, catatan, minta.modelDiminta, minta.hanyaModelDipilih, minta.providerDiminta);
+  if (kandidat.length === 0) return gagalTanpaKandidat(catatan, rantai, ctx.role, jenis);
 
   // Anggaran hanya berlaku untuk "teks" — vision sudah dibatasi satu panggilan pendek.
   const mulai = Date.now();
@@ -439,7 +534,7 @@ export async function panggilTeks(
     });
     return { ok: true, teks: h.jawaban.teks, provider: k.provider, model: k.model, tokenMasuk: masuk, tokenKeluar: keluar, toolCall: h.jawaban.toolCall };
   }
-  return gagal(502, ringkasGagal(catatan, rantai), catatan);
+  return gagal<never>(502, ringkasGagal(catatan, rantai), catatan);
 }
 
 /**
@@ -476,6 +571,8 @@ export async function panggilTeksStream(
     pesan: BagianChat[];
     tool?: unknown[];
     modelDiminta?: string;
+    /** Sama seperti `panggilTeks.providerDiminta`. */
+    providerDiminta?: string;
     reasoning?: string;
     reasoningHilir?: boolean;
     maksToken?: number;
@@ -492,8 +589,8 @@ export async function panggilTeksStream(
 > {
   const catatan: Catatan[] = [];
   if (!ctx.kunci && !ctx.env?.AI_KEY_ENCRYPTION_KEY) return gagal(500, "AI_KEY_ENCRYPTION_KEY belum diset.");
-  const { kandidat, rantai } = await kandidatTeks(ctx, "teks", catatan, minta.modelDiminta, minta.hanyaModelDipilih);
-  if (kandidat.length === 0) return gagal(502, ringkasGagal(catatan, rantai), catatan);
+  const { kandidat, rantai } = await kandidatTeks(ctx, "teks", catatan, minta.modelDiminta, minta.hanyaModelDipilih, minta.providerDiminta);
+  if (kandidat.length === 0) return gagalTanpaKandidat(catatan, rantai, ctx.role, "teks");
 
   const mulai = Date.now();
   let providerKini = kandidat[0]!.provider;
@@ -664,7 +761,7 @@ export async function panggilTeksStream(
     }
     return { ok: true, provider: k.provider, model: k.model, potongan: potongan() };
   }
-  return gagal(502, ringkasGagal(catatan, rantai), catatan);
+  return gagal<never>(502, ringkasGagal(catatan, rantai), catatan);
 }
 
 /** Panggil image gen: coba provider tepat satu model (pilihan user/peta modelGambar, lalu katalog gambar). */
@@ -709,6 +806,11 @@ export async function panggilGambar(
       ? [pilihan as ProviderNama, ...dasarLengkap.filter((p) => p !== pilihan)]
       : dasarLengkap;
 
+  // Izin model gambar untuk role pemanggil, diambil SEKALI di luar rantai.
+  // `null` = owner (tanpa batas); himpunan KOSONG = non-owner tanpa izin sama sekali
+  // (fail closed) — lihat himpunanIzin di lib/d1/aiIzinModel.ts.
+  const izinGambar = await himpunanIzin(ctx.db, ctx.role ?? "", "gambar");
+
   const gagalSemua = () => {
     // Bila SEMUA kandidat gagal karena kredensial, pesannya harus menuntun user
     // ke tindakan: provider mana yang perlu diisi kuncinya. Pesan "tidak ada
@@ -723,6 +825,15 @@ export async function panggilGambar(
           `atau pilih provider yang kredensialnya sudah ada (mis. di Model Default).`
       );
     }
+    // Semua kandidat tersaring oleh izin → pesan yang bisa ditindaklanjuti. Tanpa cabang
+    // ini user hanya melihat "semua provider gagal" dan menyangka kredensialnya rusak,
+    // padahal masalahnya owner belum mengizinkan model gambar untuk role-nya.
+    if (izinGambar !== null && catatan.length > 0 && catatan.every((c) => c.error.includes("tidak diizinkan"))) {
+      return gagal<{ base64: string; mime: string; provider: string; model: string; dilewati?: string }>(
+        403,
+        "Belum ada model gambar yang diizinkan owner untuk role Anda. Hubungi owner untuk mengaktifkannya di Pengaturan AI → Izin Model per Role."
+      );
+    }
     return gagal<{ base64: string; mime: string; provider: string; model: string; dilewati?: string }>(502, ringkasGagal(catatan));
   };
 
@@ -733,13 +844,27 @@ export async function panggilGambar(
       continue;
     }
     const katalog = (await daftarModel(ctx.db, provider, "gambar")).filter((m) => m.aktif === 1).sort((a, b) => a.id - b.id);
-    const id: string[] = [];
+    const kandidatId: string[] = [];
     // Model pilihan user hanya diprioritaskan di provider pilihannya.
     const modelUser = provider === pilihan ? String(minta.model ?? "").trim() : "";
-    if (modelUser) id.push(modelUser);
+    if (modelUser) kandidatId.push(modelUser);
     const pilih = set.modelGambar[provider];
-    if (pilih) id.push(pilih);
-    for (const m of katalog) if (!id.includes(m.model_id)) id.push(m.model_id);
+    if (pilih) kandidatId.push(pilih);
+    for (const m of katalog) if (!kandidatId.includes(m.model_id)) kandidatId.push(m.model_id);
+
+    // INI titik lubang yang sudah pernah terjadi di repo ini: `modelGambar` datang dari body
+    // permintaan, jadi memfilter pilihan di dropdown TIDAK menahan siapa pun yang mengirim
+    // id model langsung ke /api/ai/gambar. Izin karena itu diperiksa di sini, tempat model
+    // benar-benar ditentukan — bukan di route, bukan di UI.
+    // `izin === null` = owner → melewati penyaringan sepenuhnya (owner tak pernah dibatasi).
+    const id = izinGambar === null ? kandidatId : kandidatId.filter((m) => izinGambar.has(`${provider}\u0000${m}`));
+    if (izinGambar !== null && id.length < kandidatId.length) {
+      catatan.push({
+        provider,
+        model: "-",
+        error: `ditolak: ${kandidatId.length - id.length} model tidak diizinkan owner untuk role ini`,
+      });
+    }
 
     for (const model of id) {
       // Reasoning diteruskan ke adapter; adapter yang tidak mendukung akan

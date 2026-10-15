@@ -30,7 +30,7 @@ export async function POST(request: Request) {
   if (user) {
     const { kode } = await terbitkanKode(db, tgId, "reset");
     try {
-      await kirimViaBot(tgId, `Kode reset password Simple-WMS: ${kode}\nBerlaku 10 menit. Jangan berikan ke siapa pun.`);
+      await kirimViaBot(tgId, `Kode reset password SuPrapto Online: ${kode}\nBerlaku 10 menit. Jangan berikan ke siapa pun.`);
     } catch (e) {
       return json({ ok: false, error: e instanceof Error ? e.message : "Gagal kirim via bot." }, 503);
     }

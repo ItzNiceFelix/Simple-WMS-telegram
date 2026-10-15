@@ -47,7 +47,7 @@ interface SumberDataValue {
 
 const Ctx = createContext<SumberDataValue | null>(null);
 
-const ROLE_VALID: Role[] = ["owner", "admin", "guest"];
+const ROLE_VALID: Role[] = ["owner", "high_admin", "admin", "designer", "guest"];
 
 function roleDariQuery(): Role | null {
   if (typeof window === "undefined") return null;
@@ -221,6 +221,7 @@ function dataKosong(): DataSource {
   return {
     getSession: tolak,
     getRingkasan: tolak,
+    getRingkasanIrisan: tolak,
     listStock: tolak,
     listStockHalaman: tolak,
     listKekurangan: tolak,

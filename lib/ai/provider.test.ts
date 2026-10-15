@@ -28,6 +28,14 @@ import { enkripsi } from "./kripto";
 
 const KUNCI = "Y2JjZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXoxMjM0NTY=";
 
+/**
+ * Role owner untuk konteks uji: `himpunanIzin` mengembalikan `null` (tanpa batas) sehingga
+ * uji rantai mengukur PERILAKU RANTAI, bukan allowlist per role (fitur terpisah, diuji di
+ * suite `hanyaModelDipilih`). Tanpa ini, setiap kandidat ditolak lebih dulu dan yang terukur
+ * hanyalah fail-closed-nya izin.
+ */
+const OWNER = "owner";
+
 type BarisKred = {
   id: number;
   provider: string;
@@ -42,7 +50,13 @@ type BarisKred = {
 type BarisModel = { id: number; provider: string; model_id: string; jenis: string; aktif: number };
 
 /** D1 palsu: cukup setia pada prepare/bind/first/all/run yang dipakai provider.ts + lib/d1. */
-function buatDb(opsi: { kredensial: BarisKred[]; model: BarisModel[]; settings?: Record<string, unknown> }) {
+function buatDb(opsi: {
+  kredensial: BarisKred[];
+  model: BarisModel[];
+  settings?: Record<string, unknown>;
+  /** Override izin per (role, jenis); default: SEMUA model katalog jenis itu diizinkan. */
+  izin?: { allowedUntuk?: (role: string, jenis: string) => boolean };
+}) {
   const pemakaian: unknown[][] = [];
   const settings = opsi.settings ?? {};
   const db = {
@@ -65,7 +79,25 @@ function buatDb(opsi: { kredensial: BarisKred[]; model: BarisModel[]; settings?:
         },
         async all() {
           const results: unknown[] = [];
-          if (sql.includes("FROM ai_model")) {
+          if (sql.includes("FROM ai_model_izin")) {
+            // Tabel izin per role (migrasi 0035). Tanpa pemodelan ini `himpunanIzin`
+            // fail-closed dan SELURUH uji rantai gagal karena satu baris kueri mock —
+            // bukan karena produksi. `_args` = [role, jenis]; mock memaksakan aturan
+            // produksi: baris SELALU ada untuk setiap pasangan role+jenis, `allowed`
+            // ditentukan `opsi.izin` (default 1 = diizinkan) supaya uji izin bisa
+            // memaksa penolakan tanpa mengubah mock.
+            const role = String(st._args[0] ?? "");
+            const jenis = String(st._args[1] ?? "");
+            // Kueri produksi memuat `AND allowed = 1`, jadi baris yang ditolak TIDAK ikut
+            // terpilih. Default izin = diizinkan (tabel terisi), `allowedUntuk` dipakai uji
+            // yang memang perlu membuktikan penolakan.
+            const allowed = opsi.izin?.allowedUntuk?.(role, jenis) ?? true;
+            if (allowed) {
+              for (const m of opsi.model.filter((x) => x.jenis === jenis)) {
+                results.push({ provider: m.provider, model_id: m.model_id, allowed: 1 });
+              }
+            }
+          } else if (sql.includes("FROM ai_model")) {
             const p = String(st._args[0] ?? "").toLowerCase();
             for (const m of opsi.model.filter((x) => x.provider === p)) results.push(m);
           }
@@ -214,7 +246,7 @@ describe("rantai kandidat teks", () => {
       }) as unknown as typeof fetch;
 
       const hasil = await panggilTeks(
-        { db, kunci: KUNCI },
+        { db, kunci: KUNCI, role: OWNER },
         { pesan: [{ role: "user", teks: "halo" }], reasoning: "high", maksToken: 16000 }
       );
 
@@ -250,7 +282,7 @@ describe("rantai kandidat teks", () => {
         throw new Error("jaringan mati");
       }) as unknown as typeof fetch;
 
-      const hasil = await panggilTeks({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }] });
+      const hasil = await panggilTeks({ db, kunci: KUNCI, role: OWNER }, { pesan: [{ role: "user", teks: "halo" }] });
       assert.equal(hasil.ok, false);
       const modelUnik = [...new Set(log.map((p) => p.model))];
       assert.equal(modelUnik.length, MAKS_MODEL_PER_PROVIDER, `hanya ${MAKS_MODEL_PER_PROVIDER} model yang boleh dicoba`);
@@ -287,7 +319,7 @@ describe("rantai kandidat teks", () => {
         majuMs: ANGGARAN_PROVIDER_MS,
       }) as unknown as typeof fetch;
 
-      const hasil = await panggilTeks({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }] });
+      const hasil = await panggilTeks({ db, kunci: KUNCI, role: OWNER }, { pesan: [{ role: "user", teks: "halo" }] });
       assert.equal(hasil.ok, true, `gemini harus tetap dicoba: ${hasil.ok ? "" : hasil.error}`);
       if (!hasil.ok) return;
       assert.equal(hasil.provider, "gemini");
@@ -316,7 +348,7 @@ describe("rantai kandidat teks", () => {
         throw new Error("jaringan mati");
       }) as unknown as typeof fetch;
 
-      const hasil = await panggilTeks({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }] });
+      const hasil = await panggilTeks({ db, kunci: KUNCI, role: OWNER }, { pesan: [{ role: "user", teks: "halo" }] });
       assert.equal(hasil.ok, false);
       const pesan = hasil.ok ? "" : hasil.error;
       assert.match(pesan, /tidak ada kredensial aktif/, "kenari/groq tanpa kredensial");
@@ -369,7 +401,7 @@ describe("panggilTeksStream", () => {
     globalThis.fetch = (async () =>
       ({ ok: true, status: 200, body: badanSSE(["Ha", "lo", " dunia"], { usage: true }) }) as unknown as Response) as unknown as typeof fetch;
 
-    const hasil = await panggilTeksStream({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }] });
+    const hasil = await panggilTeksStream({ db, kunci: KUNCI, role: OWNER }, { pesan: [{ role: "user", teks: "halo" }] });
     assert.equal(hasil.ok, true, `harus ok: ${hasil.ok ? "" : hasil.error}`);
     if (!hasil.ok) return;
     assert.equal(hasil.provider, "kenari");
@@ -402,7 +434,7 @@ describe("panggilTeksStream", () => {
       return { ok: true, status: 200, body: badanSSE(["dari groq"]) } as unknown as Response;
     }) as unknown as typeof fetch;
 
-    const hasil = await panggilTeksStream({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }] });
+    const hasil = await panggilTeksStream({ db, kunci: KUNCI, role: OWNER }, { pesan: [{ role: "user", teks: "halo" }] });
     assert.equal(hasil.ok, true, `harus pindah ke groq: ${hasil.ok ? "" : hasil.error}`);
     if (!hasil.ok) return;
     assert.equal(hasil.provider, "groq");
@@ -427,7 +459,7 @@ describe("panggilTeksStream", () => {
       throw new Error("jaringan mati");
     }) as unknown as typeof fetch;
 
-    const hasil = await panggilTeksStream({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }] });
+    const hasil = await panggilTeksStream({ db, kunci: KUNCI, role: OWNER }, { pesan: [{ role: "user", teks: "halo" }] });
     assert.equal(hasil.ok, false);
     const pesan = hasil.ok ? "" : hasil.error;
     assert.match(pesan, /kenari\/kenari-model-1/);
@@ -473,7 +505,7 @@ describe("panggilTeksStream — aturan tidak pindah provider setelah potongan pe
       } as unknown as Response;
     }) as unknown as typeof fetch;
 
-    const hasil = await panggilTeksStream({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }] });
+    const hasil = await panggilTeksStream({ db, kunci: KUNCI, role: OWNER }, { pesan: [{ role: "user", teks: "halo" }] });
     assert.equal(hasil.ok, true, "stream kenari sudah terpilih saat potongan pertama terkirim");
     if (!hasil.ok) return;
     assert.equal(hasil.provider, "kenari");
@@ -524,7 +556,7 @@ describe("panggilTeksStream — gemini ikut dicoba", () => {
       return { ok: true, status: 200, body: badanSSEGemini(["dari ", "gemini"]) } as unknown as Response;
     }) as unknown as typeof fetch;
 
-    const hasil = await panggilTeksStream({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }], reasoning: "high" });
+    const hasil = await panggilTeksStream({ db, kunci: KUNCI, role: OWNER }, { pesan: [{ role: "user", teks: "halo" }], reasoning: "high" });
     assert.equal(hasil.ok, true, `gemini harus dipakai, bukan dilewati: ${hasil.ok ? "" : hasil.error}`);
     if (!hasil.ok) return;
     assert.equal(hasil.provider, "gemini");
@@ -590,7 +622,7 @@ describe("panggilTeksStream — potongan pertama menentukan kandidat", () => {
         return { ok: true, status: 200, body: badanSSE(["dari groq"]) } as unknown as Response;
       }) as unknown as typeof fetch;
 
-      const hasil = await panggilTeksStream({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }] });
+      const hasil = await panggilTeksStream({ db, kunci: KUNCI, role: OWNER }, { pesan: [{ role: "user", teks: "halo" }] });
 
       assert.equal(hasil.ok, true, `timeout sebelum potongan pertama harus difallback: ${hasil.ok ? "" : hasil.error}`);
       if (!hasil.ok) return;
@@ -625,7 +657,7 @@ describe("panggilTeksStream — potongan pertama menentukan kandidat", () => {
       return { ok: true, status: 200, body: badanSSE(["dari groq"]) } as unknown as Response;
     }) as unknown as typeof fetch;
 
-    const hasil = await panggilTeksStream({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }] });
+    const hasil = await panggilTeksStream({ db, kunci: KUNCI, role: OWNER }, { pesan: [{ role: "user", teks: "halo" }] });
     assert.equal(hasil.ok, true, `stream kosong harus difallback: ${hasil.ok ? "" : hasil.error}`);
     if (!hasil.ok) return;
     assert.equal(hasil.provider, "groq");
@@ -685,7 +717,7 @@ describe("panggilTeksStream — potongan pertama menentukan kandidat", () => {
         } as unknown as Response;
       }) as unknown as typeof fetch;
 
-      const hasil = await panggilTeksStream({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }], reasoning: "high" });
+      const hasil = await panggilTeksStream({ db, kunci: KUNCI, role: OWNER }, { pesan: [{ role: "user", teks: "halo" }], reasoning: "high" });
 
       assert.equal(hasil.ok, false, "semua kandidat diam, jadi rantai memang gagal");
       // Jumlah percobaan TIDAK dipatok: dengan MAKS_MODEL_PER_PROVIDER kandidat per provider,
@@ -762,7 +794,7 @@ describe("anggaran percobaan: timeout tidak diulang, provider berikutnya selalu 
     await denganJamPalsu(async (maju) => {
       globalThis.fetch = fetchHitung(log, maju, TIMEOUT_TEKS_MS) as unknown as typeof fetch;
 
-      const hasil = await panggilTeks({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }] });
+      const hasil = await panggilTeks({ db, kunci: KUNCI, role: OWNER }, { pesan: [{ role: "user", teks: "halo" }] });
 
       assert.equal(hasil.ok, false);
       assert.equal(log.length, 1, `timeout tidak boleh diulang: ${log.length} panggilan untuk satu kandidat`);
@@ -791,7 +823,7 @@ describe("anggaran percobaan: timeout tidak diulang, provider berikutnya selalu 
         } as unknown as Response;
       }) as unknown as typeof fetch;
 
-      const hasil = await panggilTeks({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }] });
+      const hasil = await panggilTeks({ db, kunci: KUNCI, role: OWNER }, { pesan: [{ role: "user", teks: "halo" }] });
 
       assert.equal(hasil.ok, true, `5xx harus tetap diulang: ${hasil.ok ? "" : hasil.error}`);
       assert.equal(panggilan, 2, "500 diulang sekali, lalu 200 dipakai");
@@ -819,7 +851,7 @@ describe("anggaran percobaan: timeout tidak diulang, provider berikutnya selalu 
       // penuh untuk gemini.
       globalThis.fetch = fetchPalsu({ lambat: ["kenari", "gemini"], sukses: [], log, majuSekaliPerModel: maju, majuMs: TIMEOUT_TEKS_REASONING_MS }) as unknown as typeof fetch;
 
-      const hasil = await panggilTeks({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }], reasoning: "high" });
+      const hasil = await panggilTeks({ db, kunci: KUNCI, role: OWNER }, { pesan: [{ role: "user", teks: "halo" }], reasoning: "high" });
 
       assert.equal(hasil.ok, false);
       assert.ok(log.some((p) => p.provider === "gemini"), "gemini HARUS benar-benar dipanggil, bukan dilewati");
@@ -843,7 +875,7 @@ describe("anggaran percobaan: timeout tidak diulang, provider berikutnya selalu 
       // Tiap percobaan menggantung dan menghabiskan TIMEOUT_TEKS_REASONING_MS jam palsu.
       globalThis.fetch = fetchHitung(log, maju, TIMEOUT_TEKS_REASONING_MS) as unknown as typeof fetch;
 
-      const hasil = await panggilTeks({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }], reasoning: "high" });
+      const hasil = await panggilTeks({ db, kunci: KUNCI, role: OWNER }, { pesan: [{ role: "user", teks: "halo" }], reasoning: "high" });
 
       assert.equal(hasil.ok, false);
       const upaya = hasil.ok ? [] : hasil.upaya ?? [];
@@ -895,7 +927,7 @@ describe("urutan kandidat: model :free di belakang model berbayar", () => {
         log.push({ provider: Object.entries(NAMA_PER_FRAGMEN).find(([frag]) => u.includes(frag))?.[1] ?? "lain", model: namaModelDariBody(init?.body) });
         throw new Error("jaringan mati");
       }) as unknown as typeof fetch;
-      await panggilTeks({ db, kunci: KUNCI }, { pesan: [{ role: "user", teks: "halo" }] });
+      await panggilTeks({ db, kunci: KUNCI, role: OWNER }, { pesan: [{ role: "user", teks: "halo" }] });
     });
     return [...new Set(log.map((p) => p.model))];
   }
@@ -925,7 +957,7 @@ describe("hanyaModelDipilih: analisa tidak boleh memakai model yang tidak dipili
     settings: Record<string, unknown>,
     kredensial: BarisKred[],
     katalog: BarisModel[],
-    minta: { modelDiminta?: string; hanyaModelDipilih?: boolean } = {}
+    minta: { modelDiminta?: string; hanyaModelDipilih?: boolean; roleAktif?: string } = {}
   ): Promise<{ model: string[]; provider: string[]; pesan: string }> {
     const db = buatDb({ kredensial, model: katalog, settings });
     const log: Panggilan[] = [];
@@ -939,9 +971,10 @@ describe("hanyaModelDipilih: analisa tidak boleh memakai model yang tidak dipili
         });
         throw new Error("jaringan mati");
       }) as unknown as typeof fetch;
+      const { roleAktif, ...mintaApi } = minta;
       const hasil = await panggilTeks(
-        { db, kunci: KUNCI },
-        { pesan: [{ role: "user", teks: "halo" }], ...minta }
+        { db, kunci: KUNCI, role: roleAktif },
+        { pesan: [{ role: "user", teks: "halo" }], ...mintaApi }
       );
       pesan = hasil.ok ? "" : hasil.error;
     });
@@ -978,13 +1011,16 @@ describe("hanyaModelDipilih: analisa tidak boleh memakai model yang tidak dipili
   });
 
   it("tanpa opsi (bot/vision/gambar): perilaku LAMA tetap — model aktif pertama katalog dipakai", async () => {
+    // `role: "owner"` = jalur bot/vision: tidak ada allowlist per role yang berlaku
+    // (himpunanIzin → null), jadi katalog tetap dipakai seperti dulu.
     const { model: dicoba } = await urutanDipanggil(
       { textProvider: "kenari", chainTeks: ["kenari"], modelTeks: {}, modelVision: {}, modelGambar: {} },
       [await kred("kenari", "key-kenari", 1)],
       [
         { id: 1, provider: "kenari", model_id: "model-a", jenis: "teks", aktif: 1 },
         { id: 2, provider: "kenari", model_id: "model-b", jenis: "teks", aktif: 1 },
-      ]
+      ],
+      { roleAktif: "owner" }
     );
     assert.ok(dicoba.length > 0, "tanpa opsi, katalog tetap dipakai seperti sebelumnya");
     assert.equal(dicoba[0], "model-a", "model aktif pertama katalog (urut id) tetap kandidat pertama");
@@ -992,12 +1028,89 @@ describe("hanyaModelDipilih: analisa tidak boleh memakai model yang tidak dipili
   });
 
   it("modelDiminta tetap menang atas modelTeks walau hanyaModelDipilih menyala", async () => {
+    // model-d DIIZINKAN untuk role: yang diuji di sini urutan kandidat (`modelDiminta`
+    // harus mengalahkan `modelTeks`), bukan penegakan izin.
     const { model: dicoba } = await urutanDipanggil(
       { textProvider: "kenari", chainTeks: ["kenari"], modelTeks: { kenari: "model-c" }, modelVision: {}, modelGambar: {} },
       [await kred("kenari", "key-kenari", 1)],
-      [{ id: 1, provider: "kenari", model_id: "model-a", jenis: "teks", aktif: 1 }],
+      [{ id: 1, provider: "kenari", model_id: "model-d", jenis: "teks", aktif: 1 }],
       { modelDiminta: "model-d", hanyaModelDipilih: true }
     );
     assert.deepEqual(dicoba, ["model-d"], "model yang diminta eksplisit tetap nomor satu");
+  });
+});
+
+/**
+ * `providerDiminta` — model pilihan SENDIRI untuk editor (migrasi 0037). Disimpan sebagai
+ * kunci izin (`provider\u0000model_id`), jadi provider pembawanya diketahui, bukan ditebak
+ * dari urutan rantai. Tanpa ini, pilihan user di provider NON-pertama tidak pernah masuk
+ * kandidat (`modelDiminta` lama hanya dibaca untuk provider pertama) — user memilih model,
+ * menyimpan, lalu tetap memakai model global tanpa pesan apa pun.
+ *
+ * Konteks memakai `role: "owner"`: yang diuji di sini URUTAN provider, bukan allowlist izin
+ * (`himpunanIzin` → null untuk owner). Pengujian penolakan izin ada di suite `hanyaModelDipilih`.
+ */
+describe("providerDiminta: model pilihan user dipakai di provider yang benar", () => {
+  /** Urutan (provider, model) yang benar-benar dicoba, dibaca dari `upaya` saat kredensial kosong. */
+  async function urutanUpaya(
+    settings: Record<string, unknown>,
+    kredensial: BarisKred[],
+    katalog: BarisModel[],
+    minta: { modelDiminta?: string; providerDiminta?: string; hanyaModelDipilih?: boolean }
+  ): Promise<{ provider: string; model: string }[]> {
+    const db = buatDb({ kredensial, model: katalog, settings });
+    const hasil = await panggilTeks(
+      { db, kunci: KUNCI, role: "owner" },
+      { pesan: [{ role: "user", teks: "halo" }], ...minta }
+    );
+    return hasil.ok ? [] : (hasil.upaya ?? []).map((u) => ({ provider: String(u.provider), model: String(u.model) }));
+  }
+
+  it("provider pembawa model dipindah ke depan rantai: pilihan user dibahas lebih dulu", async () => {
+    const upaya = await urutanUpaya(
+      { textProvider: "kenari", chainTeks: ["kenari", "gemini"], modelTeks: { kenari: "kenari-default" }, modelVision: {}, modelGambar: {} },
+      [await kred("kenari", "key-kenari", 1), await kred("gemini", "key-gemini", 2)],
+      [...model("kenari", 2, 1), ...model("gemini", 2, 50)],
+      { modelDiminta: "gemini-model-1", providerDiminta: "gemini", hanyaModelDipilih: true }
+    );
+    assert.deepEqual(
+      upaya[0],
+      { provider: "gemini", model: "gemini-model-1" },
+      "provider pembawa model yang diminta harus dibahas paling awal"
+    );
+  });
+
+  it("tanpa providerDiminta perilaku LAMA tetap: provider pertama tetap di depan", async () => {
+    const upaya = await urutanUpaya(
+      { textProvider: "kenari", chainTeks: ["kenari", "gemini"], modelTeks: { kenari: "kenari-default" }, modelVision: {}, modelGambar: {} },
+      [await kred("kenari", "key-kenari", 1), await kred("gemini", "key-gemini", 2)],
+      [...model("kenari", 2, 1), ...model("gemini", 2, 50)],
+      { modelDiminta: "gemini-model-1" }
+    );
+    assert.equal(upaya[0]?.provider, "kenari", "tanpa providerDiminta, urutan rantai tidak boleh berubah");
+  });
+
+  it("model terlarang ditolak SEBELUM jaringan — providerDiminta tidak membuka jalan", async () => {
+    const db = buatDb({
+      kredensial: [await kred("gemini", "key-gemini", 2)],
+      // Model ADA di katalog (jadi tidak ditolak karena "model tidak ada"), tetapi
+      // `allowed` baris izinnya 0 untuk role ini — inilah yang harus menahan.
+      model: [{ id: 1, provider: "gemini", model_id: "gemini-terlarang", jenis: "teks", aktif: 1 }],
+      settings: { textProvider: "gemini", chainTeks: ["gemini"], modelTeks: {}, modelVision: {}, modelGambar: {} },
+      izin: { allowedUntuk: () => false },
+    });
+    let jaringan = 0;
+    globalThis.fetch = (async () => {
+      jaringan += 1;
+      throw new Error("jaringan mati");
+    }) as unknown as typeof fetch;
+    const hasil = await panggilTeks(
+      { db, kunci: KUNCI, role: "admin" },
+      { pesan: [{ role: "user", teks: "halo" }], modelDiminta: "gemini-terlarang", providerDiminta: "gemini", hanyaModelDipilih: true }
+    );
+    assert.equal(jaringan, 0, "model di luar izin TIDAK boleh sampai ke provider");
+    assert.equal(hasil.ok, false);
+    // Non-owner tanpa satu pun model terizinkan → 403 dengan arahan ke owner, bukan 502.
+    assert.match(hasil.ok ? "" : hasil.error, /tidak diizinkan owner|Belum ada model teks yang diizinkan/, "penolakan harus menyebut alasannya");
   });
 });

@@ -27,7 +27,6 @@ import { bangunPaketSkenario } from "@/lib/analisa/skenarioIklan";
 import { panggilTeksStream } from "@/lib/ai/provider";
 import { ambilPengaturanAI } from "@/lib/d1/pengaturan";
 import { ambilKredensial } from "@/lib/d1/aiKredensial";
-import { modelAktif } from "@/lib/d1/aiModel";
 import type { HasilAnalisa } from "@/lib/analisa/tipe";
 import {
   analisaCepat, janganDiiklankan, urutSaranIklan,
@@ -76,7 +75,19 @@ export async function GET(request: Request) {
       // provider itu pasti dilewati analisa (lib/ai/provider.ts `kandidatHanyaDipilih`), dan
       // mendekripsi kredensial provider yang tidak akan dipakai cuma membuang kerja.
       const kred = modelDipilih && kunci ? await ambilKredensial(db, provider, kunci) : null;
-      const siap = !!modelDipilih && !!kred?.plaintext && !!(await modelAktif(db, provider, "teks"));
+      // Yang diuji adalah model YANG DIPILIH USER ada dan aktif — BUKAN "provider punya model
+      // berjenis teks". Katalog menandai banyak model yang sah untuk teks sebagai `vision`
+      // (mis. `deepseek-v4-1-flash`, dan muse-spark), jadi menuntut `jenis='teks'` membuat
+      // analisa MUSTAHIL dijalankan walau pilihan user benar. Analisa sendiri tidak menyaring
+      // jenis (`kandidatHanyaDipilih` memakai pilihan user apa adanya), jadi gate di sini harus
+      // memakai ukuran yang sama — kalau tidak, tombolnya mati sementara backendnya siap.
+      const adaDipilih = modelDipilih
+        ? !!(await db
+            .prepare("SELECT 1 AS ada FROM ai_model WHERE provider = ? AND model_id = ? AND aktif = 1")
+            .bind(provider, modelDipilih)
+            .first<{ ada: number }>())
+        : false;
+      const siap = !!modelDipilih && !!kred?.plaintext && adaDipilih;
       chain.push({ provider, modelDipilih, siap });
     }
     return json({ ok: true, chain, siapTotal: chain.some((c) => c.siap) });
@@ -258,13 +269,13 @@ export async function POST(request: Request) {
   if (aksi === "mendalam-stream") {
     // Dijalankan lewat alirMendalam: seluruh validasi yang gagal SEBELUM stream dimulai
     // pun tetap dibalas sebagai event error (lihat komentar di fungsinya).
-    return alirMendalam(db, oleh, body);
+    return alirMendalam(db, oleh, body, sesi.user.role);
   }
 
   if (aksi === "saran-iklan-stream") {
     // Jalur TERPISAH, bukan pengalihan ke alirMendalam. Lihat komentar alirSaranIklan:
     // pertanyaan "langkah iklan bertahap" butuh prompt skenario, bukan prompt analisa umum.
-    return alirSaranIklan(db, oleh, body);
+    return alirSaranIklan(db, oleh, body, sesi.user.role);
   }
 
   // Rakit ulang masukan yang SAMA dengan endpoint cepat, supaya AI menerima angka
@@ -312,7 +323,7 @@ export async function POST(request: Request) {
   const setting = await ambilSettingAnalisa(db, oleh);
   const kedalaman = bacaKedalaman(setting.kedalaman);
   const hasilAi = await analisaMendalam(
-    { db, kunci: getKunciEnkripsi(), env: getEnvAi() },
+    { db, kunci: getKunciEnkripsi(), env: getEnvAi(), role: sesi.user.role },
     hasil,
     {
       reasoning: setting.reasoning,
@@ -413,7 +424,8 @@ async function siapkanAnalisa(
 async function alirMendalam(
   db: D1Database,
   oleh: string,
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
+  role: string
 ): Promise<Response> {
   const presetId = Number(body.presetId);
   const tanggal = String(body.tanggal ?? "").trim();
@@ -434,7 +446,7 @@ async function alirMendalam(
       // Alasan stream berakhir; kosong = provider tidak melaporkannya.
       let selesaiAlasan: string | undefined;
       const aliran = await panggilTeksStream(
-        { db, kunci: getKunciEnkripsi(), env: getEnvAi() },
+        { db, kunci: getKunciEnkripsi(), env: getEnvAi(), role },
         {
           pesan: susunPesanMendalam(susunBahan(siap.hasil), kedalaman),
           reasoning: setting.reasoning,
@@ -487,7 +499,8 @@ async function alirMendalam(
 async function alirSaranIklan(
   db: D1Database,
   oleh: string,
-  body: Record<string, unknown>
+  body: Record<string, unknown>,
+  role: string
 ): Promise<Response> {
   const presetId = Number(body.presetId);
   const tanggal = String(body.tanggal ?? "").trim();
@@ -522,7 +535,7 @@ async function alirSaranIklan(
       // Alasan stream berakhir; kosong = provider tidak melaporkannya.
       let selesaiAlasan: string | undefined;
       const aliran = await panggilTeksStream(
-        { db, kunci: getKunciEnkripsi(), env: getEnvAi() },
+        { db, kunci: getKunciEnkripsi(), env: getEnvAi(), role },
         {
           pesan: susunPesanSkenario(paket, hariKe),
           reasoning: setting.reasoning,

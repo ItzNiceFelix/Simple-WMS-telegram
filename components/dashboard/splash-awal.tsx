@@ -24,7 +24,7 @@ export function SplashAwal({
         <ShieldCheck aria-hidden className="size-7 text-secondary-foreground" />
       </div>
       <div className="space-y-1 text-center">
-        <h1 className="text-lg font-semibold">Admin Toko</h1>
+        <h1 className="text-lg font-semibold">SuPrapto Online</h1>
         <p className="text-sm text-muted-foreground">
           {pesan ?? "Menyiapkan dashboard…"}
         </p>

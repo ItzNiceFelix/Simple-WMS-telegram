@@ -88,9 +88,44 @@ export interface ProdukDetail {
   stok: { kode_barang: string; stok_gudang_online: number | null; reorder_point: number | null } | null;
 }
 
+/**
+ * Irisan sempit untuk beranda `/` — satu irisan per blok yang dirender.
+ * Bentuknya menyimpang dari `StockRow`/`MovementDoc` penuh dengan sengaja: scope
+ * `ringkasan` TERBUKA untuk guest, jadi yang lewat hanya kolom yang benar-benar tampil
+ * (tanpa hpp/kategori/qty per gudang, tanpa qty_sistem/selisih/catatan pada movement).
+ * Memaksa bentuk penuh di sini akan memaksa server mengirim kolom biaya ke guest.
+ */
+export interface RingkasanIrisan {
+  minus: RingkasanBarisMinus[];
+  menipis: RingkasanBarisMenipis[];
+  movements: MovementDoc[];
+}
+
+/** Baris minus untuk beranda: angka + identitas saja, tanpa kolom biaya. */
+export interface RingkasanBarisMinus {
+  kode_barang: string;
+  nama_accurate: string | null;
+  stok_gudang_online: number;
+  kekurangan: number;
+}
+
+/** Baris menipis untuk beranda: qty + reorder point (keduanya memang dirender). */
+export interface RingkasanBarisMenipis {
+  kode_barang: string;
+  nama_accurate: string | null;
+  stok_gudang_online: number;
+  reorder_point: number | null;
+}
+
 export interface DataSource {
   getSession(): Promise<SessionInfo>;
   getRingkasan(): Promise<RingkasanData>;
+  /**
+   * Irisan ringkasan beranda (minus + menipis + pergerakan terakhir) dari scope `ringkasan`.
+   * Dipakai HANYA oleh `/`; halaman lain memakai `listStockHalaman`/`listMovements` yang
+   * butuh enumerasi penuh. Dipisah supaya guest tetap punya jalur baca sendiri.
+   */
+  getRingkasanIrisan(): Promise<RingkasanIrisan>;
   /** v5 (F9): filter opsional (gudang + online). Tanpa argumen = produk online (paritas lama). */
   listStock(filter?: import("../types").StockFilter): Promise<import("../types").StockRow[]>;
   /**

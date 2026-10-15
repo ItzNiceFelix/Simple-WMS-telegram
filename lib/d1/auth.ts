@@ -39,7 +39,9 @@ export async function requireSession(
     .prepare("SELECT warehouse_id FROM user_warehouses WHERE user_id = ?")
     .bind(baris.id)
     .all<{ warehouse_id: string }>();
-  const role = ["owner", "admin", "guest"].includes(baris.role) ? baris.role : "guest";
+  // Fail closed: role tak dikenal (mis. 'staff' sisa baris lama) diperlakukan guest —
+  // bukan error, supaya user tetap bisa login dan lihat ringkasan.
+  const role = ["owner", "high_admin", "admin", "designer", "guest"].includes(baris.role) ? baris.role : "guest";
   return {
     ok: true,
     user: {
@@ -48,7 +50,9 @@ export async function requireSession(
       role,
       scope_gudang: results.map((r) => r.warehouse_id),
       is_owner: role === "owner",
-      is_admin: role === "owner" || role === "admin",
+      // high_admin SEDARAJAT admin untuk guard tulis/scope (semua halaman kecuali
+      // pengaturan AI); designer/guest hanya boleh baca halaman publik mereka.
+      is_admin: role === "owner" || role === "high_admin" || role === "admin",
     },
   };
 }

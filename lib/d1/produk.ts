@@ -23,6 +23,34 @@ export async function ambilProduk(db: D1Database, sku: string): Promise<Produk |
     .first<Produk>();
 }
 
+/**
+ * Ambil BANYAK produk sekaligus dalam SATU kueri (`IN (...)`).
+ *
+ * Kenapa ada: Worker Free dibatasi 50 kueri per invokasi, dan tiap `ambilProduk` adalah satu
+ * kueri. Impor potongan berisi ratusan baris dengan ratusan SKU akan menghabiskan anggaran itu
+ * hanya untuk membaca master. Satu `IN` menggantikan N kueri dengan 1.
+ *
+ * Daftar kosong mengembalikan Map kosong TANPA menyentuh DB: `IN ()` bukan SQL yang sah, dan
+ * pemanggil yang tidak punya SKU tidak perlu kueri sama sekali.
+ *
+ * Potong per 100 karena D1 membatasi ~100 parameter terikat per kueri; pemanggil boleh
+ * mengirim lebih banyak dan fungsi ini yang memecahnya.
+ */
+export async function ambilProdukBanyak(db: D1Database, skuList: string[]): Promise<Map<string, Produk>> {
+  const hasil = new Map<string, Produk>();
+  const unik = [...new Set(skuList.filter(Boolean))];
+  for (let i = 0; i < unik.length; i += 100) {
+    const potong = unik.slice(i, i + 100);
+    const tanda = potong.map(() => "?").join(",");
+    const { results } = await db
+      .prepare(`SELECT sku, nama_accurate, hpp, hpp_baru, is_online_product, stok_min FROM products WHERE sku IN (${tanda})`)
+      .bind(...potong)
+      .all<Produk>();
+    for (const p of results) hasil.set(p.sku, p);
+  }
+  return hasil;
+}
+
 export async function tambahProduk(
   db: D1Database,
   sku: string,

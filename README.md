@@ -1,4 +1,4 @@
-# Bot Admin Toko
+# Bot SuPrapto Online
 
 Bot Telegram untuk admin toko online: cek stok gudang online, HPP, dan info produk; mencatat pemakaian stok dari screenshot picking list; stok opname; sinkronisasi stok dengan Google Sheets; serta menjawab pertanyaan bebas lewat AI (Gemini/Groq) berbasis tool-calling ke Firestore. Berjalan sebagai Vercel Serverless Function (Node.js CommonJS) dengan Firestore sebagai database dan Google Sheets sebagai sumber master data produk.
 

@@ -2,6 +2,8 @@
 // PEMINTA (Fase D). Tidak menyimpan apa pun ke D1: kirim lalu selesai.
 import { getCloudflareContext } from "@opennextjs/cloudflare";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
+import { ROLE_GAMBAR } from "@/lib/d1/akses-halaman";
+import type { Role } from "@/lib/d1/peran";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -22,6 +24,12 @@ function teks(v: unknown): string {
 export async function POST(request: Request) {
   const sesi = await sesiRoute(request, 10);
   if (!sesi.ok) return json({ ok: false, error: sesi.error }, sesi.status);
+  // Studio Gambar: owner, high_admin, admin, designer. Guest tak punya halamannya,
+  // jadi tak boleh memakai jalur kirimnya (bot token + kuota Telegram).
+  if (!ROLE_GAMBAR.includes(sesi.user.role as Role)) {
+    return json({ ok: false, error: "Akses ditolak." }, 403);
+  }
+  if (!sesi.user.is_admin) return json({ ok: false, error: "Akses ditolak." }, 403);
 
   const body = await bacaBody(request);
   const mentah = teks(body.base64);

@@ -1,6 +1,6 @@
 // app/api/baca/route.ts — GET baca server D1 untuk dashboard (Fase 1 cutover).
 // Menggantikan baca Firestore client SDK (real.ts). Scope: ?scope=stok|
-// produk|gudang|opname|transfer|daily|admin|akses|histori|ai|ringkasan.
+// produk|gudang|opname|transfer|daily|admin|akses|histori|ai|ringkasan|model-terpakai.
 // Auth: cookie swt_sesi (D1). Filter gudang ditegakkan di server (RBAC scope).
 import { getDb, getEnvAi } from "@/lib/d1/db";
 import { bacaQtyPerGudang } from "@/lib/d1/stok";
@@ -12,10 +12,19 @@ import { listAdmins } from "@/lib/d1/admin";
 import { listAkses } from "@/lib/d1/akses";
 import { listMovements } from "@/lib/d1/ledger";
 import { ambilPengaturanAI } from "@/lib/d1/pengaturan";
+import { daftarModel } from "@/lib/d1/aiModel";
+import { himpunanIzin, JENIS_IZIN, type JenisIzin } from "@/lib/d1/aiIzinModel";
 import { json, sesiRoute } from "@/lib/d1/route";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
+
+// Batas irisan scope `ringkasan` (terbuka untuk guest). Angka ini SENGAJA kecil: beranda
+// hanya merender 5 baris minus, 10 menipis, dan 10 pergerakan. Klien boleh memperkecil,
+// tidak pernah memperbesar — `limit` dari query string tidak pernah dibaca di scope ini.
+const MAKS_MINUS_RINGKASAN = 20;
+const MAKS_MENIPIS_RINGKASAN = 10;
+const MAKS_GERAK_RINGKASAN = 10;
 
 function keIso(epoch: number | null): string | null {
   if (epoch == null) return null;
@@ -31,6 +40,10 @@ export async function GET(request: Request) {
   const scope = url.searchParams.get("scope");
 
   if (scope === "stok") {
+    // Guest TIDAK boleh melihat stok sama sekali: /stok di balik ButuhAkses, dan
+    // /api/produk/[kode] memakai scope ini juga. Ringkasan punya jalur sendiri
+    // (scope=ringkasan + scope=produk?kode=), lihat catatan di scope tersebut.
+    if (user.role === "guest") return json({ ok: false, error: "Akses ditolak." }, 403);
     const gudangFilter = url.searchParams.get("gudang_id");
     // is_online harus OPT-IN: hanya menyaring bila caller benar-benar minta "true".
     // Sebelumnya `!== "false"` membuat param yang TIDAK dikirim dianggap true, sehingga
@@ -139,6 +152,7 @@ export async function GET(request: Request) {
   // sendiri: stok berubah tiap hari, dan tabel simpanan akan basi tanpa ada yang
   // menyadarinya. Hitung ulang selalu benar terhadap keadaan sekarang.
   if (scope === "kekurangan") {
+    if (user.role === "guest") return json({ ok: false, error: "Akses ditolak." }, 403);
     const { results } = await db
       .prepare(
         `SELECT oi.sku AS sku, SUM(oi.qty) AS butuh, p.nama_accurate AS nama,
@@ -173,6 +187,10 @@ export async function GET(request: Request) {
 
   if (scope === "produk") {
     const kode = url.searchParams.get("kode");
+    // Produk TUNGGAL tetap terbuka untuk guest: dipakai halaman Ringkasan (`/`, menu
+    // guest "Stok" -> /produk/[kode]) untuk detail satu SKU. DAFTAR seluruh katalog
+    // (tanpa `kode`) adalah enumerasi — khusus staff.
+    if (!kode && user.role === "guest") return json({ ok: false, error: "Akses ditolak." }, 403);
     if (kode) {
       const p = await db.prepare("SELECT * FROM products WHERE sku = ?").bind(kode).first<Record<string, unknown>>();
       if (!p) return json({ ok: false, error: "Produk tidak ditemukan." }, 404);
@@ -200,6 +218,7 @@ export async function GET(request: Request) {
   }
 
   if (scope === "gudang") {
+    if (user.role === "guest") return json({ ok: false, error: "Akses ditolak." }, 403);
     const semua = url.searchParams.get("semua") === "true";
     if (semua && !user.is_owner) return json({ ok: false, error: "Hanya owner." }, 403);
     const daftar = await listGudang(db, semua);
@@ -210,6 +229,7 @@ export async function GET(request: Request) {
   }
 
   if (scope === "opname") {
+    if (user.role === "guest") return json({ ok: false, error: "Akses ditolak." }, 403);
     const daftar = await listOpname(db, url.searchParams.get("status") ?? undefined, url.searchParams.get("gudang_id") ?? undefined);
     return json({
       ok: true,
@@ -222,6 +242,7 @@ export async function GET(request: Request) {
   }
 
   if (scope === "transfer") {
+    if (user.role === "guest") return json({ ok: false, error: "Akses ditolak." }, 403);
     const daftar = await listTransfer(db, {
       status: url.searchParams.get("status") ?? undefined,
       dari_gudang_id: url.searchParams.get("dari_gudang_id") ?? undefined,
@@ -243,6 +264,7 @@ export async function GET(request: Request) {
   }
 
   if (scope === "daily") {
+    if (user.role === "guest") return json({ ok: false, error: "Akses ditolak." }, 403);
     const tanggal = url.searchParams.get("tanggal") ?? tanggalHariIni();
     const doc = await ambilDaily(db, tanggal);
     if (!doc) return json({ ok: true, rows: [] });
@@ -285,6 +307,7 @@ export async function GET(request: Request) {
   }
 
   if (scope === "histori") {
+    if (user.role === "guest") return json({ ok: false, error: "Akses ditolak." }, 403);
     const daftar = await listMovements(db, {
       sku: url.searchParams.get("kode") ?? undefined,
       jenis: url.searchParams.get("type") ?? undefined,
@@ -309,12 +332,49 @@ export async function GET(request: Request) {
   }
 
   if (scope === "ai") {
+    if (user.role === "guest") return json({ ok: false, error: "Akses ditolak." }, 403);
     // Vars dari binding Worker (wrangler.jsonc) — lihat getEnvAi di lib/d1/db.ts.
     const s = await ambilPengaturanAI(db, getEnvAi());
     return json({ ok: true, settings: { textProvider: s.textProvider, updatedAt: null, updatedBy: null } });
   }
 
+  if (scope === "model-terpakai") {
+    // Model yang BOLEH dipakai pemanggil untuk satu tujuan — sumber daftar dropdown
+    // untuk SEMUA role (termasuk owner, supaya UI-nya seragam satu jalur baca).
+    //
+    // KENAPA endpoint terpisah, bukan memakai `?scope=ai` atau /api/pengaturan/ai?aksi=model:
+    //   keduanya owner-only. Menu dropdown tetap harus tahu daftar model yang sah untuk
+    //   role-nya; kalau ia membaca katalog penuh lalu menyaring di klien, itu hanya
+    //   menyembunyikan model, bukan melarangnya — dan setiap role bisa mengintip model
+    //   yang tidak diizinkan hanya dengan membuka devtools.
+    //
+    // Owner pindai seluruh katalog; role lain dipotong oleh himpunan izin (fail closed:
+    // tabel izin kosong = daftar kosong, lihat lib/d1/aiIzinModel.ts).
+    const jenis = (url.searchParams.get("jenis") ?? "").trim();
+    if (!(JENIS_IZIN as readonly string[]).includes(jenis)) {
+      return json({ ok: false, error: `Tujuan harus salah satu dari: ${JENIS_IZIN.join(", ")}.` }, 400);
+    }
+    const katalog = await daftarModel(db, url.searchParams.get("provider") ?? undefined, jenis);
+    const izin = await himpunanIzin(db, user.role, jenis as JenisIzin);
+    const terpakai =
+      izin === null
+        ? katalog
+        : katalog.filter((m) => izin.has(`${m.provider}\u0000${m.model_id}`));
+    // `dibatasi` dipakai UI untuk membedakan "katalog memang kosong" dari "kamu tidak
+    // diizinkan memakai apa pun" — dua keadaan itu butuh pesan yang berbeda.
+    return json({ ok: true, model: terpakai, dibatasi: izin !== null });
+  }
+
   if (scope === "ringkasan") {
+    // TETAP terbuka untuk guest: halaman `/` (Ringkasan) adalah menu guest dan satu-satunya
+    // sumber angkanya. Sejak guest ditutup dari scope `stok`/`histori`, beranda TIDAK BOLEH
+    // lagi menumpang dua scope enumerasi itu (dulu 200 baris stok + 10 movement mentah demi
+    // tiga angka dan satu daftar pendek) — Promise.all-nya pecah pada 403 pertama dan guest
+    // cuma melihat kartu error di satu-satunya halaman yang dia punya.
+    //
+    // Karena scope ini TERBUKA untuk guest, isinya WAJIB agregat + irisan TERBATAS, bukan
+    // enumerasi: tanpa hpp, tanpa qty per gudang, tanpa katalog penuh. Yang dikirim hanya
+    // kolom yang benar-benar dirender beranda.
     // B7-A: agregat di SQL (1 baris), bukan tarik 2000 baris lalu hitung di JS.
     const agg = await db.prepare(
       `SELECT COUNT(*) AS total,
@@ -323,7 +383,72 @@ export async function GET(request: Request) {
        FROM products p JOIN stock_by_bin b ON b.sku = p.sku
        WHERE p.is_online_product = 1 AND b.warehouse_id = 'ONLINE'`
     ).bind().first<{ total: number; minus: number | null; menipis: number | null }>();
-    return json({ ok: true, ringkasan: { totalProdukOnline: agg?.total ?? 0, itemMenipis: agg?.menipis ?? 0, itemMinus: agg?.minus ?? 0 } });
+
+    // Daftar minus: dibatasi LIMIT di SQL (bukan ditarik 200 lalu dipotong di klien).
+    // `kurang` = |qty| dan `tanda` dipakai klien untuk memformat — kolom lain sengaja tidak
+    // diikutkan supaya scope ini tidak berubah jadi jalur baca stok.
+    const minus = await db
+      .prepare(
+        `SELECT p.sku, p.nama_accurate, b.qty
+         FROM products p JOIN stock_by_bin b ON b.sku = p.sku
+         WHERE p.is_online_product = 1 AND b.warehouse_id = 'ONLINE' AND b.qty < 0
+         ORDER BY b.qty ASC
+         LIMIT ?`
+      )
+      .bind(MAKS_MINUS_RINGKASAN)
+      .all<{ sku: string; nama_accurate: string | null; qty: number }>();
+
+    // Menipis: kolom qty + stok_min saja. `stok_min` bukan rahasia biaya — ia reorder point
+    // yang memang ditampilkan beranda ("Reorder N").
+    const menipis = await db
+      .prepare(
+        `SELECT p.sku, p.nama_accurate, b.qty, p.stok_min
+         FROM products p JOIN stock_by_bin b ON b.sku = p.sku
+         WHERE p.is_online_product = 1 AND b.warehouse_id = 'ONLINE'
+           AND b.qty >= 0 AND p.stok_min IS NOT NULL AND b.qty < p.stok_min
+         ORDER BY (p.stok_min - b.qty) DESC
+         LIMIT ?`
+      )
+      .bind(MAKS_MENIPIS_RINGKASAN)
+      .all<{ sku: string; nama_accurate: string | null; qty: number; stok_min: number | null }>();
+
+    // Pergerakan terakhir: projection sempit ke kolom yang dirender beranda. `qty_sistem`,
+    // `qty_fisik`, `selisih`, `catatan`, dan `created_by` (id internal) SENGAJA tidak
+    // dikirim — scope ini terbuka untuk guest.
+    const { results: moves } = await db
+      .prepare(
+        `SELECT id, sku, nama_terbaca, qty, jenis, status, at
+         FROM stock_moves
+         ORDER BY at DESC, id DESC
+         LIMIT ?`
+      )
+      .bind(MAKS_GERAK_RINGKASAN)
+      .all<{ id: number; sku: string; nama_terbaca: string | null; qty: number | null; jenis: string; status: string; at: number }>();
+
+    return json({
+      ok: true,
+      ringkasan: { totalProdukOnline: agg?.total ?? 0, itemMenipis: agg?.menipis ?? 0, itemMinus: agg?.minus ?? 0 },
+      minus: minus.results.map((r) => ({
+        kode_barang: r.sku,
+        nama_accurate: r.nama_accurate,
+        stok_gudang_online: r.qty,
+        kekurangan: Math.abs(r.qty),
+      })),
+      menipis: menipis.results.map((r) => ({
+        kode_barang: r.sku,
+        nama_accurate: r.nama_accurate,
+        stok_gudang_online: r.qty,
+        reorder_point: r.stok_min,
+      })),
+      movements: moves.map((m) => ({
+        id: String(m.id), kode_barang: m.sku, nama_terbaca: m.nama_terbaca, variasi: null,
+        qty: m.qty, type: m.jenis, action_type: null, qty_sistem: null, qty_fisik: null,
+        selisih: null, catatan: null, source: null, status: m.status, created_at: keIso(m.at),
+        created_by: null, created_by_username: null, created_by_name: null,
+        requested_by: null, requested_by_username: null, requested_by_name: null,
+        confirmed_by: null, resolved_by: null, penanda: null,
+      })),
+    });
   }
 
   return json({ ok: false, error: "Scope tidak dikenal." }, 400);

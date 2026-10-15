@@ -5,6 +5,8 @@
 import { getDb } from "@/lib/d1/db";
 import { ambilSettingGambar, simpanSettingGambar } from "@/lib/d1/aiGambarSetting";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
+import { ROLE_GAMBAR } from "@/lib/d1/akses-halaman";
+import type { Role } from "@/lib/d1/peran";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -35,6 +37,11 @@ async function pilihanReasoning(db: D1Database, provider: string, modelId: strin
 export async function GET(request: Request) {
   const sesi = await sesiRoute(request, 30);
   if (!sesi.ok) return json({ ok: false, error: sesi.error }, sesi.status);
+  // Setting ini milik halaman /ai-gambar; hanya role di ROLE_GAMBAR yang boleh.
+  // Guest sudah tertolak oleh gate di atas (fail closed), tak perlu cek terpisah.
+  if (!ROLE_GAMBAR.includes(sesi.user.role as Role)) {
+    return json({ ok: false, error: "Akses ditolak." }, 403);
+  }
   const db = getDb();
   const setting = await ambilSettingGambar(db, sesi.user.tg_id);
   const url = new URL(request.url);
@@ -47,6 +54,10 @@ export async function GET(request: Request) {
 export async function POST(request: Request) {
   const sesi = await sesiRoute(request, 30);
   if (!sesi.ok) return json({ ok: false, error: sesi.error }, sesi.status);
+  // Sama seperti GET: hanya role di ROLE_GAMBAR (guest sudah tertolak di atas).
+  if (!ROLE_GAMBAR.includes(sesi.user.role as Role)) {
+    return json({ ok: false, error: "Akses ditolak." }, 403);
+  }
   const body = await bacaBody(request);
   const db = getDb();
   const lama = await ambilSettingGambar(db, sesi.user.tg_id);

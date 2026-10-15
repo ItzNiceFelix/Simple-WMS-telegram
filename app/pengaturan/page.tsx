@@ -11,6 +11,7 @@ import { ButuhAkses } from "@/components/dashboard/butuh-akses";
 import { AiFallback } from "@/components/dashboard/ai-fallback";
 import { AiKredensial } from "@/components/dashboard/ai-kredensial";
 import { AiModel } from "@/components/dashboard/ai-model";
+import { AiIzinModel } from "@/components/dashboard/ai-izin-model";
 import { AiModelDefault } from "@/components/dashboard/ai-model-default";
 import { AiPrompt } from "@/components/dashboard/ai-prompt";
 import { AiTool } from "@/components/dashboard/ai-tool";
@@ -49,7 +50,10 @@ function Pengaturan() {
   const data = useData();
   const role = useRole();
   const bolehUbah = role === "owner";
-  const adalahStaff = role === "owner" || role === "admin";
+  const adalahStaff = role === "owner" || role === "high_admin" || role === "admin";
+  // high_admin boleh membuka /pengaturan (pengaturan toko, preset, status) tetapi TIDAK
+  // untuk blok konfigurasi AI — server juga hanya mengizinkan owner di /api/pengaturan/ai.
+  const bolehAi = role === "owner" || role === "admin";
 
   const [pengaturan, setPengaturan] = useState<AiSettingsDoc | null>(null);
   const [superAdmin, setSuperAdmin] = useState<boolean | null>(null);
@@ -86,8 +90,10 @@ function Pengaturan() {
   }, [data]);
 
   useEffect(() => {
+    // high_admin/designer tidak melihat blok AI → jangan menembak /api/baca?scope=ai.
+    if (!bolehAi) return;
     void muat();
-  }, [muat]);
+  }, [muat, bolehAi]);
 
   const berubah = pengaturan !== null && pilihan !== pengaturan.textProvider;
 
@@ -114,7 +120,7 @@ function Pengaturan() {
       <PageHeader judul="Pengaturan" deskripsi="Konfigurasi provider AI." />
 
       <div className="flex flex-col gap-4" data-testid="h8-pengaturan">
-        {error ? (
+        {!bolehAi ? null : error ? (
           <Alert variant="destructive" data-testid="error-pengaturan">
             <TriangleAlert aria-hidden />
             <AlertTitle>Gagal memuat pengaturan.</AlertTitle>
@@ -239,10 +245,14 @@ function Pengaturan() {
         {bolehUbah ? <KelolaAdmin /> : null}
         {bolehUbah ? <KledoIntegrasi bolehUbah={bolehUbah} onBerubah={() => void muat()} /> : null}
 
-        {adalahStaff ? (
+        {bolehAi ? (
           <>
             <AiKredensial bolehUbah={bolehUbah} onBerubah={() => void muat()} />
             <AiModel bolehUbah={bolehUbah} onBerubah={() => void muat()} />
+            {/* Izin model ditaruh TEPAT setelah katalog: owner memilih model lebih dulu,
+                baru menentukan role mana yang boleh memakainya. Urutan lain memaksa
+                scroll bolak-balik antara daftar model dan layar izin. */}
+            <AiIzinModel bolehUbah={bolehUbah} onBerubah={() => void muat()} />
             <AiModelDefault bolehUbah={bolehUbah} onBerubah={() => void muat()} />
             <AiPrompt bolehUbah={bolehUbah} onBerubah={() => void muat()} />
             <AiFallback bolehUbah={bolehUbah} onBerubah={() => void muat()} />

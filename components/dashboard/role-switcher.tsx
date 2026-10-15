@@ -15,7 +15,7 @@ import { labelRole } from "@/lib/dashboard/format";
 import { useSumberData } from "@/lib/dashboard/sumber-data";
 import type { Role } from "@/lib/dashboard/types";
 
-const PILIHAN: Role[] = ["owner", "admin", "guest"];
+const PILIHAN: Role[] = ["owner", "high_admin", "admin", "designer", "guest"];
 
 export function RoleSwitcher() {
   const { role, setRole, mode } = useSumberData();

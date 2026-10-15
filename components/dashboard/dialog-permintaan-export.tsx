@@ -65,7 +65,7 @@ function gambarKeKanvas(p: Props): HTMLCanvasElement {
   let y = PAD + JUDUL_FS
   ctx.fillStyle = "#0f172a"
   ctx.font = `700 ${JUDUL_FS}px system-ui, sans-serif`
-  ctx.fillText("Admin Toko", PAD, y)
+  ctx.fillText("SuPrapto Online", PAD, y)
   y += 40
   ctx.font = `600 ${ISI_FS + 4}px system-ui, sans-serif`
   ctx.fillText("PERMINTAAN STOK — GUDANG ONLINE", PAD, y)

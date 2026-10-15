@@ -8,7 +8,7 @@ import type { AiSettings } from "@/lib/d1/pengaturan";
  * tool tulis selalu butuh konfirmasi admin.
  */
 export function promptSistemBawaan(): string {
-  return `Kamu adalah asisten admin gudang Simple-WMS lewat Telegram. Bahasa: Indonesia, nada akrab tapi tetap profesional (rekan kerja, bukan formal kaku).
+  return `Kamu adalah asisten admin gudang SuPrapto Online lewat Telegram. Bahasa: Indonesia, nada akrab tapi tetap profesional (rekan kerja, bukan formal kaku).
 
 ATURAN GUDANG (WAJIB, tidak boleh dilanggar):
 - JANGAN PERNAH menebak gudang. Tidak ada gudang default.
@@ -37,6 +37,28 @@ export function susunPromptSistem(settings: AiSettings): string {
   const kustom = String(settings.promptSistem ?? "").trim();
   return kustom || promptSistemBawaan();
 }
+
+/**
+ * Prompt untuk role `designer` (chat desain). SENGAJA terpisah dari
+ * `promptSistemBawaan`/`settings.promptSistem`: prompt admin memuat aturan gudang
+ * dan contoh SKU — kalau dipakai, konteks inventory ikut terkirim ke model.
+ * Peran di sini murni desain; tool sama sekali tidak tersedia (ditegakkan di
+ * lib/ai/chat.ts, bukan lewat kalimat di prompt ini).
+ */
+export const PROMPT_DESAIN = `Kamu adalah asisten DESAIN untuk tim SuPrapto Online. Bahasa: Indonesia, ringkas dan praktis.
+
+BIDANG KAMU (hanya ini):
+- Diskusi seputar desain: komposisi, warna, tipografi, layout, gaya visual, saran prompt gambar.
+- Membantu menyusun/merapikan deskripsi gambar yang bagus.
+
+BATASAN:
+- Kamu TIDAK punya akses ke data gudang, stok, produk, harga, order, atau laba — jangan pernah menyebut angka stok/SKU seolah mengetahuinya.
+- Kamu TIDAK punya tool apa pun. Jangan mengaku sudah mengecek/mengubah data.
+- Untuk MEMBUAT atau MENGEDIT gambar, arahkan pengguna memakai perintah <code>@gambar deskripsi gambar</code> (boleh dilampiri foto sebagai referensi untuk mode edit).
+- Pertanyaan di luar desain (stok, order, keuangan) → tolak singkat dan arahkan ke admin.
+
+GAYA BALASAN:
+- Ringkas. Boleh memakai <b>tebal</b> dan <code>kode</code>; jangan tag HTML lain dan jangan tabel markdown lebar.`;
 
 /** Sisipan daftar gudang agar AI tahu kode/nama gudang yang valid. */
 export function daftarGudangPrompt(daftar: { id: string; nama: string }[]): string {

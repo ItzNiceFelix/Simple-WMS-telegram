@@ -38,18 +38,35 @@ export type SettingGambar = {
   jumlah: number
 }
 
-/** Ambil model gambar + setting milik user. Dipakai studio supaya tidak query dua kali. */
-export async function muatSettingGambar(): Promise<{ setting: SettingGambar; model: ModelGambar[] }> {
+/**
+ * Ambil model gambar + setting milik user. Dipakai studio supaya tidak query dua kali.
+ *
+ * Sumber model = `?scope=model-terpakai`, BUKAN `/api/pengaturan/ai?aksi=model`.
+ * Yang terakhir itu owner-only (403 untuk role lain) DAN mengembalikan katalog penuh:
+ * menyaringnya di klien hanya menyembunyikan model, bukan melarangnya — model terlarang
+ * tetap terlihat di devtools dan tetap bisa dikirim ke API. `model-terpakai` sudah
+ * dipotong server untuk role pemanggil, jadi yang sampai ke dropdown memang yang boleh.
+ * (Penegakan sebenarnya tetap di server; ini hanya supaya UI tidak menampilkan janji palsu.)
+ */
+export async function muatSettingGambar(): Promise<{ setting: SettingGambar; model: ModelGambar[]; dibatasi: boolean }> {
   const [rModel, rSetting] = await Promise.all([
-    fetch("/api/pengaturan/ai?aksi=model&jenis=gambar", { credentials: "include" }),
+    fetch("/api/baca?scope=model-terpakai&jenis=gambar", { credentials: "include" }),
     fetch("/api/ai/gambar/setting", { credentials: "include" }),
   ])
-  const dModel = (await rModel.json().catch(() => null)) as { ok?: boolean; model?: ModelGambar[] } | null
+  const dModel = (await rModel.json().catch(() => null)) as
+    | { ok?: boolean; model?: ModelGambar[]; dibatasi?: boolean }
+    | null
   const dSetting = (await rSetting.json().catch(() => null)) as { ok?: boolean; setting?: SettingGambar; error?: string } | null
   if (!rSetting.ok || !dSetting?.ok || !dSetting.setting) {
     throw new Error(dSetting?.error ?? `Gagal memuat setting gambar (${rSetting.status}).`)
   }
-  return { setting: dSetting.setting, model: (dModel?.model ?? []).filter((m) => m.aktif === 1) }
+  return {
+    setting: dSetting.setting,
+    model: (dModel?.model ?? []).filter((m) => m.aktif === 1),
+    // Dibatasi = owner sudah mengunci role ini ke daftar tertentu; dipakai UI untuk
+    // membedakan "katalog memang kosong" dari "kamu tidak diizinkan pakai apa pun".
+    dibatasi: dModel?.dibatasi === true,
+  }
 }
 
 /** Ambil daftar reasoning sah untuk model terpilih (kosong = model tanpa reasoning). */
@@ -161,6 +178,15 @@ export function AiGambarSetting({ awal, onBerubah }: Props) {
           <p className="text-sm text-muted-foreground">Memuat…</p>
         ) : (
           <>
+            {model.length === 0 && (
+              // Owner belum mengizinkan satu model gambar pun untuk role ini. Dikatakan
+              // apa adanya + ke siapa harus minta: dropdown kosong tanpa penjelasan
+              // terlihat seperti aplikasi rusak, padahal ini keputusan konfigurasi.
+              <p className="text-sm text-amber-700 dark:text-amber-500" data-testid="gambar-tanpa-izin">
+                Belum ada model gambar yang diizinkan owner untuk role Anda. Hubungi owner untuk
+                mengaktifkannya di Pengaturan AI → Izin Model per Role.
+              </p>
+            )}
             <Field>
               <FieldLabel htmlFor="pilih-model-gambar">Model gambar</FieldLabel>
               <Select

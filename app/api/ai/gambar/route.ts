@@ -4,6 +4,8 @@
 import { getDb, getEnvAi, getKunciEnkripsi } from "@/lib/d1/db";
 import { ambilSettingGambar } from "@/lib/d1/aiGambarSetting";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
+import { ROLE_GAMBAR } from "@/lib/d1/akses-halaman";
+import type { Role } from "@/lib/d1/peran";
 import { panggilGambar, panggilTeks, type Konteks } from "@/lib/ai/provider";
 import { kalimatIdentifikasi, promptInpainting, uraikanArea, type AreaGambar } from "@/lib/ai/areaGambar";
 import type { BagianChat, JawabanChat } from "@/lib/ai/http";
@@ -79,6 +81,11 @@ async function labelArea(ctx: Konteks, area: AreaGambar, gambarAcuan: { mime: st
 export async function POST(request: Request) {
   const sesi = await sesiRoute(request, 10);
   if (!sesi.ok) return json({ ok: false, error: sesi.error }, sesi.status);
+  // /ai-gambar = owner, high_admin, admin, designer. Guest DITOLAK: tiap panggilan
+  // membakar kredit provider gambar, dan guest tak punya halaman studio sama sekali.
+  if (!ROLE_GAMBAR.includes(sesi.user.role as Role)) {
+    return json({ ok: false, error: "Akses ditolak." }, 403);
+  }
 
   const body = await bacaBody(request);
   const prompt = teks(body.prompt);
@@ -101,7 +108,7 @@ export async function POST(request: Request) {
 
   const kunci = getKunciEnkripsi();
   if (!kunci) return json({ ok: false, error: "Kunci enkripsi AI belum diset." }, 500);
-  const ctx: Konteks = { db: getDb(), kunci, env: getEnvAi() };
+  const ctx: Konteks = { db: getDb(), kunci, env: getEnvAi(), role: sesi.user.role };
 
   // Setting per user (halaman /ai-gambar) jadi DEFAULT; body boleh menimpanya.
   const setting = await ambilSettingGambar(ctx.db, sesi.user.tg_id);

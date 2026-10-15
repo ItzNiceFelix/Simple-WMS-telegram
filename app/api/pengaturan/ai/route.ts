@@ -1,10 +1,15 @@
 // app/api/pengaturan/ai/route.ts — Kelola sistem AI (Fase A).
-// GET  ?aksi=ringkas|kredensial|model|preset|tool  → baca (owner)
+// GET  ?aksi=ringkas|kredensial|model|preset|tool|izin  → baca (owner)
 // POST { aksi } → tulis (owner). Aksi:
 //   provider | pengaturan | kredensial-simpan | kredensial-aktif | kredensial-hapus
 //   model-tambah | model-impor | model-aktif | model-label | model-hapus
+//   izin-simpan | izin-hapus   ← izin model per role+tujuan (cost control)
 //   preset-tambah | preset-ubah | preset-hapus
 //   tool-simpan | tool-aktif | tool-kata | tool-hapus | tool-seed | preset-seed
+//
+// SELURUH route ini owner-only (`is_owner`). Izin model pun hanya owner yang boleh
+// mengubah — role lain TIDAK bisa memberi izin ke dirinya sendiri, dan tidak ada
+// endpoint alternatif untuk membacanya selain `model-terpakai` di bawah.
 //
 // Kredensial TIDAK PERNAH dikembalikan sebagai plaintext. Hanya mask (••••3f2a).
 import { getDb, getEnvAi, getKunciEnkripsi } from "@/lib/d1/db";
@@ -22,6 +27,7 @@ import {
   ubahLabelModel,
 } from "@/lib/d1/aiModel";
 import { daftarPreset, hapusPreset, seedPreset, tambahPreset, ubahPreset } from "@/lib/d1/aiPreset";
+import { daftarIzin, hapusIzin, ringkasIzin, simpanIzin } from "@/lib/d1/aiIzinModel";
 import { daftarTool, hapusTool, seedTool, setAktifTool, setKataTool, simpanTool } from "@/lib/d1/aiTool";
 import { ambilPengaturanAI, PROVIDER_VALID, simpanPengaturanAI, simpanProviderAI, type EnvAi } from "@/lib/d1/pengaturan";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
@@ -99,6 +105,11 @@ export async function GET(request: Request) {
   // Cakupan data kapabilitas: berapa model yang tahu modality/reasoning-nya.
   if (aksi === "ringkas-kapabilitas") {
     return json({ ok: true, ringkas: await ringkasKapabilitas(db, url.searchParams.get("provider") ?? undefined) });
+  }
+  // Daftar izin model per role+tujuan, untuk editor owner. Ikut `ringkas` supaya UI bisa
+  // memperingatkan "role ini belum punya satu model pun" (fail closed terlihat, bukan tebak-tebakan).
+  if (aksi === "izin") {
+    return json({ ok: true, izin: await daftarIzin(db), ringkas: await ringkasIzin(db) });
   }
   if (aksi === "tool") {
     return json({ ok: true, tool: await daftarTool(db) });
@@ -238,6 +249,19 @@ export async function POST(request: Request) {
     const h = await hapusModel(db, angkaOpsional(body.id) ?? 0);
     if (!h.ok) return json({ ok: false, error: h.error }, h.status);
     return json({ ok: true });
+  }
+  // ── Izin model per role (cost control) ──
+  // Hanya owner yang sampai ke sini (gate `is_owner` di awal POST), dan `simpanIzin`/
+  // `hapusIzin` menolak role `owner` sebagai sasaran — owner tak pernah dibatasi.
+  if (aksi === "izin-simpan") {
+    const h = await simpanIzin(db, { role: body.role, provider: body.provider, model_id: body.model_id, jenis: body.jenis, allowed: body.allowed }, uid);
+    if (!h.ok) return json({ ok: false, error: h.error }, 400);
+    return json({ ok: true, izin: h.izin, ringkas: await ringkasIzin(db) });
+  }
+  if (aksi === "izin-hapus") {
+    const h = await hapusIzin(db, { role: body.role, provider: body.provider, model_id: body.model_id, jenis: body.jenis });
+    if (!h.ok) return json({ ok: false, error: h.error }, 400);
+    return json({ ok: true, ringkas: await ringkasIzin(db) });
   }
   // Koreksi manual kapabilitas: modality + skema reasoning. Sumber jadi 'manual'
   // supaya tarik-model berikutnya tidak menimpa koreksi user.
