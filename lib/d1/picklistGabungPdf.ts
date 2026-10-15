@@ -123,8 +123,10 @@ export async function bangunPdfPicklistGabung(
   // Waktu cetak tepat di bawah judul (kebiasaan lapangan: subheader berisi tanggal & jam).
   hal.drawText(`Dicetak ${waktuJakarta()}`, { x: MARGIN, y, size: ISI_FS, font: biasa });
   y -= 13;
+  const ringkas =
+    `${gabung.length} SKU - ${totalUnit} unit - ${jmlOrder} baris order, ${jmlAdvance} baris advance`;
   hal.drawText(
-    `${opsi.gudangDefault ?? "-"} - ${gabung.length} SKU - ${totalUnit} unit - ${jmlOrder} baris order, ${jmlAdvance} baris advance`,
+    opsi.gudangDefault ? `${opsi.gudangDefault} - ${ringkas}` : ringkas,
     { x: MARGIN, y, size: ISI_FS, font: biasa }
   );
   y -= 22;
