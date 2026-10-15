@@ -98,6 +98,16 @@ const MODE_PICKLIST = [
 
 type ModePicklist = (typeof MODE_PICKLIST)[number]["mode"];
 
+// Label tag ekspor pendek (kolom paling kanan). Beda dari label dropdown: "gabung-order" di
+// dropdown menyebut "advance" supaya jelas apa yang ikut tercetak; badge cukup "Order + Advance".
+const LABEL_EKSPOR: Record<string, string> = {
+  per_paket: "Per Paket",
+  pisah: "Pisah",
+  gabung: "Gabung",
+  "gabung-order": "Order + Advance",
+};
+const URUTAN_EKSPOR = ["per_paket", "pisah", "gabung", "gabung-order"];
+
 export default function HalamanOrder() {
   return (
     <ButuhAkses href="/order">
@@ -134,6 +144,9 @@ function TabsOrder() {
 
 function DaftarOrder() {
   const [orders, setOrders] = useState<RincianOrder[] | null>(null);
+  // Mode picklist yang sudah pernah dicetak per order, kunci `${mp}|${no}` (lihat kunciOrder).
+  // Datang satu paket dengan daftar order supaya tag tidak perlu kueri kedua dari browser.
+  const [ekspor, setEkspor] = useState<Record<string, string[]>>({});
   const [importOpen, setImportOpen] = useState(false);
   const [importOrderOpen, setImportOrderOpen] = useState(false);
   const [modePicklist, setModePicklist] = useState<ModePicklist>("per_paket");
@@ -243,7 +256,15 @@ function DaftarOrder() {
     const q = new URLSearchParams({ aksi: "picklist-pdf", targets: JSON.stringify(targets), mode: modePicklist });
     // Mode gabung-order juga menyisir rak untuk booking advance aktif.
     if (modePicklist === "gabung-order") q.set("status", "menunggu");
+    // `inline=1` = PDF tampil di viewer tab baru (pratinjau cetak), bukan langsung terunduh.
+    // Dari viewer user memilih print/simpan sendiri.
+    q.set("inline", "1");
     window.open(`/api/order?${q}`, "_blank");
+    // `window.open` tidak memberi tahu kapan server selesai menyusun PDF (apalagi kapan
+    // pencatatan ekspor ikut tersimpan), jadi tag tidak bisa di-await seperti fetch biasa.
+    // Jeda pendek lalu muat ulang daftar: tag "sudah dicetak" muncul tanpa refresh manual,
+    // dan bila user menutup tab sebelum jeda habis, muat ulang itu tetap tidak merusak apa pun.
+    window.setTimeout(() => void muat(), 1500);
   }
 
   const muat = useCallback(async () => {
@@ -258,9 +279,11 @@ function DaftarOrder() {
         ok?: boolean;
         error?: string;
         orders?: RincianOrder[];
+        ekspor?: Record<string, string[]>;
       } | null;
       if (!res.ok || !data?.ok) throw new Error(data?.error ?? `Gagal (${res.status}).`);
       setOrders(data.orders ?? []);
+      setEkspor(data.ekspor ?? {});
     } catch (e) {
       setError(e instanceof Error ? e.message : "Gagal memuat order.");
     }
@@ -473,7 +496,9 @@ function DaftarOrder() {
                   <TableHead>Status</TableHead>
                   <TableHead className="text-right">Item</TableHead>
                   <TableHead className="text-right">Total</TableHead>
+                  <TableHead>Pengiriman</TableHead>
                   <TableHead>Aksi</TableHead>
+                  <TableHead>Tag</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -502,6 +527,11 @@ function DaftarOrder() {
                     </TableCell>
                     <TableCell className="text-right tabular-nums">{o.items.reduce((a, i) => a + i.qty, 0)}</TableCell>
                     <TableCell className="text-right tabular-nums">{formatRupiah(o.items.reduce((a, i) => a + i.subtotal, 0))}</TableCell>
+                    <TableCell data-testid={`pengiriman-${o.no_pesanan}`}>
+                      {/* Jasa kirim + tipe layanan digabung " · "; yang kosong dilewati supaya
+                          tidak muncul pemisah menggantung saat file impor hanya menyebut salah satu. */}
+                      {[o.jasa_kirim, o.tipe_layanan].filter((s) => s && s.trim()).join(" · ") || <span className="text-muted-foreground">—</span>}
+                    </TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1.5">
                         {o.items.length > 1 && (
@@ -540,6 +570,29 @@ function DaftarOrder() {
                           Hapus
                         </Button>
                       </div>
+                    </TableCell>
+                    <TableCell data-testid={`tag-ekspor-${o.no_pesanan}`}>
+                      {/* Satu badge per mode yang sudah pernah dicetak; urutan tetap sama seperti
+                          URUTAN_EKSPOR supaya posisi badge tidak berpindah-pindah antar baris/turn. */}
+                      {(() => {
+                        const sudah = ekspor[kunciOrder(o)] ?? [];
+                        const urut = URUTAN_EKSPOR.filter((m) => sudah.includes(m));
+                        if (urut.length === 0) return <span className="text-muted-foreground">—</span>;
+                        return (
+                          <div className="flex flex-wrap gap-1.5">
+                            {urut.map((m) => (
+                              <Badge
+                                key={m}
+                                variant="secondary"
+                                data-testid={`tag-${m}-${o.no_pesanan}`}
+                                title={`Picklist mode ${LABEL_EKSPOR[m]} sudah pernah dicetak`}
+                              >
+                                {LABEL_EKSPOR[m]}
+                              </Badge>
+                            ))}
+                          </div>
+                        );
+                      })()}
                     </TableCell>
                   </TableRow>
                 ))}

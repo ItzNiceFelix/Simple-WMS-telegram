@@ -42,7 +42,11 @@ function buatDbOrder() {
             const o = orders[kunciOrder(String(a[0]), String(a[1]))];
             return o ? { status_fulfill: o["status_fulfill"] } : null;
           }
-          if (sql.startsWith("SELECT marketplace, no_pesanan, tanggal, buyer, no_resi, status_fulfill, pajak_pph")) {
+          if (sql.startsWith("SELECT marketplace, no_pesanan, tanggal, buyer, no_resi,")) {
+            // Pencocokan sengaja hanya pada AWAL daftar kolom, bukan seluruh daftar. Kolom
+            // baru (mis. jasa_kirim/tipe_layanan) menambah isi SELECT tanpa mengubah maksud
+            // query; mencocokkan seluruh daftar membuat uji ini pecah setiap kali ada kolom
+            // baru, padahal produksinya benar.
             return orders[kunciOrder(String(a[0]), String(a[1]))] ?? null;
           }
           return null;

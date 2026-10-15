@@ -77,6 +77,8 @@ export { transisiFulfill, transisiFulfillBatch, type KeFulfill, type TargetFulfi
 export type OrderDetail = {
   marketplace: string; no_pesanan: string; tanggal: number; buyer: string;
   no_resi: string;
+  /** Diisi saat impor Shopee; "" bila file tidak memuatnya. Ditampilkan di kolom Pengiriman. */
+  jasa_kirim: string; tipe_layanan: string;
   status_fulfill: string; pajak_pph: boolean; pajak_ppn_persen: number;
   items: (OrderItem & { subtotal: number })[];
   fees: (OrderFee & { amount: number })[];
@@ -84,7 +86,7 @@ export type OrderDetail = {
 
 /** Header + item + fee satu pesanan; null bila tak ada. */
 export async function ambilOrder(db: D1Database, mp: string, no: string): Promise<OrderDetail | null> {
-  const h = await db.prepare("SELECT marketplace, no_pesanan, tanggal, buyer, no_resi, status_fulfill, pajak_pph, pajak_ppn_persen FROM orders WHERE marketplace = ? AND no_pesanan = ?").bind(mp, no).first<{ marketplace: string; no_pesanan: string; tanggal: number; buyer: string; no_resi: string; status_fulfill: string; pajak_pph: number; pajak_ppn_persen: number }>();
+  const h = await db.prepare("SELECT marketplace, no_pesanan, tanggal, buyer, no_resi, jasa_kirim, tipe_layanan, status_fulfill, pajak_pph, pajak_ppn_persen FROM orders WHERE marketplace = ? AND no_pesanan = ?").bind(mp, no).first<{ marketplace: string; no_pesanan: string; tanggal: number; buyer: string; no_resi: string; jasa_kirim: string | null; tipe_layanan: string | null; status_fulfill: string; pajak_pph: number; pajak_ppn_persen: number }>();
   if (!h) return null;
   // `perlu_sku`/`sku_asal` ikut dibaca supaya halaman order bisa memperingatkan sebelum
   // mencetak picklist yang isinya belum lengkap. Tipe hasil query ditulis sendiri (bukan
@@ -109,7 +111,7 @@ export async function ambilOrder(db: D1Database, mp: string, no: string): Promis
     sku_asal: it.sku_asal ?? "",
   }));
   const { results: fees } = await db.prepare("SELECT jenis, basis, nilai, amount FROM order_fees WHERE marketplace = ? AND no_pesanan = ?").bind(mp, no).all<OrderFee & { amount: number }>();
-  return { marketplace: h.marketplace, no_pesanan: h.no_pesanan, tanggal: h.tanggal, buyer: h.buyer, no_resi: h.no_resi ?? "", status_fulfill: h.status_fulfill, pajak_pph: h.pajak_pph === 1, pajak_ppn_persen: h.pajak_ppn_persen, items, fees };
+  return { marketplace: h.marketplace, no_pesanan: h.no_pesanan, tanggal: h.tanggal, buyer: h.buyer, no_resi: h.no_resi ?? "", jasa_kirim: h.jasa_kirim ?? "", tipe_layanan: h.tipe_layanan ?? "", status_fulfill: h.status_fulfill, pajak_pph: h.pajak_pph === 1, pajak_ppn_persen: h.pajak_ppn_persen, items, fees };
 }
 
 export type FilterOrder = { mp?: string; status?: string; dari?: number; sampai?: number; limit?: number };

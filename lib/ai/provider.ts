@@ -30,8 +30,11 @@ const PROVIDER_OPENAI: ProviderNama[] = ["groq", "kenari", "openai", "openrouter
  * Model penalaran (reasoning `high`/`xhigh`/`max`, apalagi varian `:free` yang mengantre
  * di sisi penyedia) memang lambat: 30 detik terlalu pendek dan membuat request yang
  * sebenarnya akan berhasil di-DROP lebih dulu, sehingga user hanya melihat kegagalan.
+ * Tapi 60 detik juga terlalu lama: satu model lambat bisa menghabiskan hampir seluruh
+ * anggaran rantai sebelum provider lain (yang kredensialnya sehat) sempat dicoba.
+ * 35 detik = batas terburuk yang masih menyisakan jatah adil untuk provider berikutnya.
  */
-export const TIMEOUT_TEKS_MS = 60000;
+export const TIMEOUT_TEKS_MS = 35000;
 
 /**
  * Batas waktu SATU percobaan vision (model gambar biasa yang membaca gambar). Tidak dinaikkan.
@@ -39,12 +42,32 @@ export const TIMEOUT_TEKS_MS = 60000;
 export const TIMEOUT_VISION_MS = 60000;
 
 /**
- * Anggaran TOTAL rantai teks (semua kandidat dijumlahkan).
- * Per-kandidat 60 detik × 3 provider = 180 detik: terlalu lama untuk user web yang
- * menunggu di depan layar. Rantai dihentikan begitu anggaran ini terlampaui, dan
- * sisa kandidat TIDAK dicoba lagi — user lebih baik tahu sekarang daripada menunggu.
+ * Anggaran SATU provider di rantai teks (semua model provider itu dijumlahkan).
+ * MASALAH YANG DIPERBAIKI: dulu hanya ada anggaran TOTAL, jadi provider pertama yang
+ * lambat membakar seluruh jatah (satu model 60 detik + model berikutnya) dan provider
+ * di belakangnya selalu "dilewati: anggaran total habis" — praktisnya tidak pernah
+ * dicoba, padahal kredensialnya sehat. Batas per-provider membuat tiap provider dapat
+ * giliran nyata: 35 detik × 3 provider ≈ 105 detik, pas dengan ANGGARAN_TEKS_MS.
  */
-export const ANGGARAN_TEKS_MS = 100000;
+export const ANGGARAN_PROVIDER_MS = 35000;
+
+/**
+ * Anggaran TOTAL rantai teks (semua provider dijumlahkan) — pagar terakhir.
+ * Dinaikkan dari 100000 ke 105000 supaya tiga provider × ANGGARAN_PROVIDER_MS
+ * benar-benar kebagian; dengan 100000 provider ketiga selalu terpotong.
+ */
+export const ANGGARAN_TEKS_MS = 105000;
+
+/**
+ * Jumlah model yang dicoba per provider: 1 model yang diminta user + 2 cadangan.
+ * MASALAH YANG DIPERBAIKI: dulu SEMUA model aktif provider ikut masuk kandidat —
+ * pada katalog nyata itu 23 model kenari dijejer berurutan sebelum provider
+ * berikutnya (gemini) sempat dicoba. Itu bukan fallback, itu penjelajahan katalog:
+ * satu provider yang sedang bermasalah menghabiskan seluruh anggaran waktu.
+ * Batas kecil ini menjaga arti "cadangan" tetap: kalau 3 model berturut-turut gagal,
+ * masalahnya provider/kredensial, jadi lebih baik segera pindah provider.
+ */
+export const MAKS_MODEL_PER_PROVIDER = 3;
 
 /**
  * Base URL efektif untuk provider: alamat dari kredensial menang atas bawaan.
@@ -88,19 +111,43 @@ export async function catatPemakaian(
 /** Riwayat percobaan untuk pesan error akhir — user harus tahu provider+model apa saja yang dicoba. */
 type Catatan = { provider: string; model: string; error: string };
 
-function ringkasGagal(catatan: Catatan[]): string {
+/**
+ * Ringkasan kegagalan. `rantai` = urutan provider di `chainTeks`; dipakai untuk
+ * menutup pesan dengan kalimat yang menyebut provider BELUM dicoba karena
+ * kredensialnya kosong. Tanpa itu user mengira sistemnya mati, padahal masalahnya
+ * konfigurasi: provider sehat cuma tidak pernah kebagian giliran.
+ */
+function ringkasGagal(catatan: Catatan[], rantai: string[] = []): string {
   if (catatan.length === 0) return "Tidak ada provider dengan kredensial aktif dan model tersedia.";
-  return `Semua percobaan gagal: ${catatan.map((c) => `${c.provider}/${c.model}: ${c.error}`).join(" | ")}`;
+  const badan = `Semua percobaan gagal: ${catatan.map((c) => `${c.provider}/${c.model}: ${c.error}`).join(" | ")}`;
+  const tanpaKred = [...new Set(catatan.filter((c) => c.error === "tidak ada kredensial aktif").map((c) => c.provider))];
+  const belumDicoba = rantai.filter((p) => !catatan.some((c) => c.provider === p) && !tanpaKred.includes(p));
+  const saran: string[] = [];
+  if (tanpaKred.length > 0) saran.push(`tanpa kredensial aktif: ${tanpaKred.join(", ")} (isi API key-nya di Pengaturan → Kredensial Provider)`);
+  if (belumDicoba.length > 0) saran.push(`belum dicoba: ${belumDicoba.join(", ")}`);
+  // Kalau SEMUA provider di rantai sudah dicoba dan semuanya bergagal, jangan tambahkan
+  // kalimat penutup: tidak ada provider lain yang bisa ditawarkan ke user.
+  if (saran.length === 0) return badan;
+  return `${badan} — Masih ada provider yang bisa dicoba: ${saran.join("; ")}.`;
 }
 
 type Kandidat = { provider: ProviderNama; model: string; apiKey: string; /** Alamat dasar dari kredensial; "" = pakai bawaan provider. */ baseUrl: string };
 
 /**
- * Kumpulkan kandidat berurutan: untuk tiap provider di `chain`, kredensial aktif
- * diperlukan; model diambil dari pilihan user (`modelTeks[provider]`) bila ada,
- * lalu sisanya dari katalog aktif urut `id` sebagai cadangan di provider sama.
+ * Batas kandidat per provider: model yang diminta user SELALU nomor satu (kalau ada),
+ * lalu maksimal `MAKS_MODEL_PER_PROVIDER - 1` model aktif lain urut `id` sebagai cadangan.
+ *
+ * KENAPA TIDAK SEMUA MODEL: mencoba 23 model satu provider satu per satu bukan fallback.
+ * Bila tiga model berturut-turut gagal (model mati, kuota, atau provider sedang down),
+ * model keempat..keduapuluh tiga hampir pasti gagal juga — yang terjadi hanyalah user
+ * menunggu sampai anggaran habis tanpa provider sehat di belakangnya pernah dicoba.
  */
-async function kandidatTeks(ctx: Konteks, jenis: "teks" | "vision", catatan: Catatan[], modelDiminta?: string): Promise<Kandidat[]> {
+async function kandidatTeks(
+  ctx: Konteks,
+  jenis: "teks" | "vision",
+  catatan: Catatan[],
+  modelDiminta?: string
+): Promise<{ kandidat: Kandidat[]; rantai: string[] }> {
   const set = await ambilPengaturanAI(ctx.db, ctx.env);
   const rantaiTeks = (set.chainTeks.length > 0 ? set.chainTeks : [set.textProvider || "groq"]).filter(
     (p): p is ProviderNama => (PROVIDER_OPENAI as string[]).concat("gemini").includes(p)
@@ -119,9 +166,21 @@ async function kandidatTeks(ctx: Konteks, jenis: "teks" | "vision", catatan: Cat
     const pilih = (provider === rantaiTeks[0] ? modelDiminta : undefined) ?? peta[provider];
     if (pilih) id.push(pilih);
     for (const m of aktif) if (!id.includes(m.model_id)) id.push(m.model_id);
-    for (const model of id) hasil.push({ provider, model, apiKey: kred.plaintext, baseUrl: kred.base_url ?? "" });
+    // Sisanya memang sengaja TIDAK dicoba — dicatat supaya tidak ada yang menyangka
+    // katalog provider ini sudah dicoba habis lalu menyimpulkan modelnya memang mati.
+    const sisa = Math.max(0, id.length - MAKS_MODEL_PER_PROVIDER);
+    if (sisa > 0) {
+      catatan.push({
+        provider,
+        model: "-",
+        error: `dilewati: hanya ${MAKS_MODEL_PER_PROVIDER} model pertama provider ini yang dicoba, ${sisa} model lain tidak dicoba`,
+      });
+    }
+    for (const model of id.slice(0, MAKS_MODEL_PER_PROVIDER)) {
+      hasil.push({ provider, model, apiKey: kred.plaintext, baseUrl: kred.base_url ?? "" });
+    }
   }
-  return hasil;
+  return { kandidat: hasil, rantai: rantaiTeks };
 }
 
 /** Satu percobaan ke satu provider+model; semua error berasal dari adapter (asli dari provider). */
@@ -175,17 +234,34 @@ export async function panggilTeks(
 > {
   const catatan: Catatan[] = [];
   if (!ctx.kunci && !ctx.env?.AI_KEY_ENCRYPTION_KEY) return gagal(500, "AI_KEY_ENCRYPTION_KEY belum diset.");
-  const kandidat = await kandidatTeks(ctx, jenis, catatan, minta.modelDiminta);
-  if (kandidat.length === 0) return gagal(502, ringkasGagal(catatan), catatan);
+  const { kandidat, rantai } = await kandidatTeks(ctx, jenis, catatan, minta.modelDiminta);
+  if (kandidat.length === 0) return gagal(502, ringkasGagal(catatan, rantai), catatan);
 
   // Anggaran hanya berlaku untuk "teks" — vision sudah dibatasi satu panggilan pendek.
   const mulai = Date.now();
+  // Jam per-provider: direset tiap kali provider berganti, bukan digabung seluruh rantai.
+  let providerKini = kandidat[0]!.provider;
+  let mulaiProvider = mulai;
   for (const k of kandidat) {
+    if (k.provider !== providerKini) {
+      providerKini = k.provider;
+      mulaiProvider = Date.now();
+    }
     if (jenis === "teks" && Date.now() - mulai >= ANGGARAN_TEKS_MS) {
       catatan.push({
         provider: k.provider,
         model: k.model,
         error: `dilewati: anggaran total ${ANGGARAN_TEKS_MS}ms habis`,
+      });
+      continue;
+    }
+    // Provider ini sudah kebanyakan makan waktu: sisa model provider ITU dilewati,
+    // tapi rantai LANJUT ke provider berikutnya — ini inti perbaikannya.
+    if (jenis === "teks" && Date.now() - mulaiProvider >= ANGGARAN_PROVIDER_MS) {
+      catatan.push({
+        provider: k.provider,
+        model: k.model,
+        error: `dilewati: anggaran provider ${k.provider} habis, lanjut provider berikutnya`,
       });
       continue;
     }
@@ -209,7 +285,7 @@ export async function panggilTeks(
     });
     return { ok: true, teks: h.jawaban.teks, provider: k.provider, model: k.model, tokenMasuk: masuk, tokenKeluar: keluar, toolCall: h.jawaban.toolCall };
   }
-  return gagal(502, ringkasGagal(catatan), catatan);
+  return gagal(502, ringkasGagal(catatan, rantai), catatan);
 }
 
 /** Panggil image gen: coba provider tepat satu model (pilihan user/peta modelGambar, lalu katalog gambar). */

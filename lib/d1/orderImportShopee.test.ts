@@ -299,3 +299,116 @@ describe("konsistensi: TIDAK ada baris yang dibuang karena masalah SKU", () => {
     assert.deepEqual(sumber, ["advance", "order"], "keduanya ada di satu daftar");
   });
 });
+
+/**
+ * Fixture bentuk berkas NYATA yang dulu 500 di endpoint /api/order (preview-shopee).
+ *
+ * Aslinya: `Order.toship.20260915_20261015.xlsx`
+ *   73 baris orders, 98 baris advance, 33 SKU unik, 3 baris tanpa SKU  → 39.919 byte.
+ * Pembanding yang SUKSES: 6 baris orders, 0 advance, 5 SKU unik      → 10.882 byte.
+ *
+ * Bedanya cuma VOLUME, jadi fixture di bawah mereproduksi angkanya persis. Kalau
+ * normalisasi ini sendiri yang lambat, uji waktu di blok ini yang memberi tahu; kalau
+ * normalisasi cepat, penyebab 500 ada di lapisan kueri DB (bukan di sini).
+ */
+const FIKS = (() => {
+  const ORDERS = 73, ADVANCE = 98, SKU_UNIK = 33, TANPA_SKU = 3;
+  // 52 item = 49 item ber-SKU + 3 baris tanpa SKU (33 SKU unik, sisanya SKU terulang).
+  const ITEM_BERSKU = ORDERS - TANPA_SKU;
+  const orders: Record<string, unknown>[] = [];
+  const advance: Record<string, unknown>[] = [];
+  for (let i = 0; i < ITEM_BERSKU; i++) {
+    orders.push({
+      ...HDR,
+      "No. Pesanan": `O-${String(i).padStart(3, "0")}`,
+      "Nomor Referensi SKU": `SKU-${String(i % SKU_UNIK).padStart(2, "0")}`,
+      "Nama Produk": `Produk ${i % SKU_UNIK}`,
+      "Nama Variasi": i % 2 === 0 ? "MERAH" : "BIRU",
+      Jumlah: String(1 + (i % 3)),
+      "Harga Setelah Diskon": "11.999",
+      "Subtotal Pesanan": "11.999",
+    });
+  }
+  for (let i = 0; i < TANPA_SKU; i++) {
+    orders.push({ ...HDR, "No. Pesanan": `O-KOSONG-${i}`, "Nama Produk": `Tanpa SKU ${i}`, "Nama Variasi": "", Jumlah: "1" });
+  }
+  for (let i = 0; i < ADVANCE; i++) {
+    advance.push({
+      ...HDR,
+      "Booking SN": `BK-${String(i).padStart(3, "0")}`,
+      "Nomor Referensi SKU": `SKU-${String(i % SKU_UNIK).padStart(2, "0")}`,
+      "Nama Produk": `Produk ${i % SKU_UNIK}`,
+      "Nama Variasi": i % 2 === 0 ? "MERAH" : "BIRU",
+      Jumlah: "1",
+      "No. Resi": `RESI-${i}`,
+    });
+  }
+  const skuMaster = new Set(Array.from({ length: SKU_UNIK }, (_, i) => `SKU-${String(i).padStart(2, "0")}`));
+  return { ORDERS, ADVANCE, SKU_UNIK, TANPA_SKU, orders, advance, skuMaster, total: ORDERS + ADVANCE };
+})();
+
+describe("normalisasiSheetShopee — bentuk berkas besar (Order.toship 73/98)", () => {
+  it("171 baris (73 orders + 98 advance) tidak melempar, orders TETAP 73", () => {
+    // Item tanpa SKU tidak lagi membuang ordernya, jadi orders keluar 73 baris penuh.
+    const r = normalisasiSheetShopee(FIKS.orders, FIKS.advance, (sku) => FIKS.skuMaster.has(sku));
+    assert.equal(FIKS.total, 171, "fixture harus 171 baris total");
+    assert.equal(r.orders.length, FIKS.ORDERS, "73 order, termasuk 3 yang barisnya tanpa SKU");
+    assert.equal(r.advance.length, FIKS.ADVANCE, "98 baris advance; tiap baris booking_sn unik → 98 booking");
+    assert.equal(r.gagal.length, 0, "bentuk ini bukan kegagalan data");
+    assert.equal(r.belumSku.length, FIKS.TANPA_SKU, "3 produk tanpa SKU, nama beda → 3 baris preview");
+    r.belumSku.forEach((b) => assert.deepEqual(b.order_refs, [`O-KOSONG-${r.belumSku.indexOf(b)}`]));
+  });
+
+  it("belumSku dikelompokkan per (nama+variasi), bukan satu grup per baris", () => {
+    // Kalau pengelompokan rusak, 73 baris → 73 grup dan endpoint menembak ratusan kueri DB.
+    const r = normalisasiSheetShopee(FIKS.orders, FIKS.advance, (sku) => FIKS.skuMaster.has(sku));
+    assert.equal(r.belumSku.length, FIKS.TANPA_SKU, "hanya 3 grup, bukan 73");
+    assert.ok(r.belumSku.length < FIKS.ORDERS, "jauh di bawah jumlah baris orders");
+    assert.equal(r.belumSku.reduce((s, b) => s + b.jumlah_order, 0), FIKS.TANPA_SKU);
+  });
+
+  it("produk sama di banyak order besar tetap 1 grup dengan order_refs lengkap", () => {
+    const rows = Array.from({ length: 40 }, (_, i) => ({ ...HDR, "No. Pesanan": `B-${i}`, "Nama Produk": "Ember Besar", "Nama Variasi": "MERAH", Jumlah: "2" }));
+    const r = normalisasiSheetShopee(rows, []);
+    assert.equal(r.belumSku.length, 1, "40 baris satu produk = 1 grup");
+    assert.equal(r.belumSku[0].jumlah_order, 40);
+    assert.equal(r.belumSku[0].qty_total, 80);
+  });
+
+  it("input aneh dalam jumlah besar: Jumlah kosong, SKU ganda, banyak variasi — tanpa NaN", () => {
+    const rows: Record<string, unknown>[] = [];
+    // 20 baris Jumlah kosong → gagal, order tetap dicatat gagal (bukan NaN).
+    for (let i = 0; i < 20; i++) rows.push({ ...HDR, "No. Pesanan": `J-${i}`, "Nomor Referensi SKU": "SKU-01", Jumlah: "" });
+    // SKU ganda dalam satu order (baris berulang) → satu item, qty dijumlah.
+    for (let i = 0; i < 20; i++) rows.push({ ...HDR, "No. Pesanan": "G-1", "Nomor Referensi SKU": "SKU-02", "Nama Variasi": "MERAH", Jumlah: "2" });
+    // Satu order dengan 30 variasi berbeda → 30 item.
+    for (let i = 0; i < 30; i++) rows.push({ ...HDR, "No. Pesanan": "V-1", "Nomor Referensi SKU": "SKU-03", "Nama Variasi": `VAR-${i}`, Jumlah: "1" });
+    const r = normalisasiSheetShopee(rows, [], (sku) => FIKS.skuMaster.has(sku));
+    // 40 = 20 pesan "Jumlah 0 tidak valid" (satu per baris) + 20 pesan "Tak ada baris barang
+    // pada pesanan ini" (satu per order J-* yang jadi kosong). Dua jenis pesan, bukan dobel
+    // dari baris yang sama — angkanya dikunci supaya perubahan perilaku ini terlihat.
+    assert.equal(r.gagal.filter((g) => /Jumlah 0 tidak valid/.test(g.pesan)).length, 20);
+    assert.equal(r.gagal.filter((g) => /Tak ada baris barang/.test(g.pesan)).length, 20);
+    assert.equal(r.gagal.length, 40);
+    assert.equal(r.orders.length, 2, "order G-1 dan V-1 tetap dibuat");
+    const g = r.orders.find((o) => o.no_pesanan === "G-1")!;
+    assert.equal(g.items.length, 1, "SKU+variasi sama digabung");
+    assert.equal(g.items[0].qty, 40, "20 baris × 2");
+    assert.equal(r.orders.find((o) => o.no_pesanan === "V-1")!.items.length, 30, "30 variasi = 30 item");
+    for (const o of r.orders) for (const it of o.items) {
+      assert.ok(Number.isFinite(it.qty) && Number.isFinite(it.harga_satuan) && Number.isFinite(it.subtotal), `${o.no_pesanan}/${it.sku}: angka harus finit`);
+    }
+  });
+
+  it("normalisasi 171 baris selesai jauh di bawah anggaran CPU Worker (angka nyata dicetak)", () => {
+    // Ambang longgar sengaja: yang dijaga adalah ORDE BESAR, bukan angka detik mesin ini.
+    // Normalisasi murni (tanpa I/O) harus selesai dalam puluhan milidetik; lapisan DB
+    // yang >450 kueri berurutan itulah pemakan waktu di endpoint preview.
+    const t0 = performance.now();
+    const r = normalisasiSheetShopee(FIKS.orders, FIKS.advance, (sku) => FIKS.skuMaster.has(sku));
+    const ms = performance.now() - t0;
+    console.log(`normalisasiSheetShopee: 171 baris dalam ${ms.toFixed(3)} ms (total ${FIKS.total} baris)`);
+    assert.equal(r.orders.length + r.belumSku.length > 0, true);
+    assert.ok(ms < 1000, `normalisasi tidak boleh lambat: ${ms.toFixed(1)} ms`);
+  });
+});

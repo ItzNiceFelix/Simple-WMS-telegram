@@ -9,7 +9,9 @@
 // Analisa cepat langsung tampil tanpa tombol dan tanpa AI — angka benar harus selalu
 // bisa didapat tanpa menunggu model dan tanpa biaya token.
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ChartNoAxesCombined, Info, Megaphone, SlidersHorizontal, Sparkles, TriangleAlert } from "lucide-react";
+import {
+  ChartNoAxesCombined, ChevronRight, Info, Lightbulb, Megaphone, SlidersHorizontal, Sparkles, TriangleAlert,
+} from "lucide-react";
 import { toast } from "sonner";
 
 import { PageHeader } from "@/components/dashboard/page-header";
@@ -18,6 +20,7 @@ import { AnalisaPetaSku } from "@/components/dashboard/analisa-peta-sku";
 import { tampilkanGagalTulis } from "@/components/dashboard/umpan-tulis";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
@@ -35,6 +38,9 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AnalisaSettingAi } from "@/components/dashboard/analisa-setting-ai";
 import { formatAngka, formatRupiah } from "@/lib/dashboard/format";
 import { keputusanIklan, organikCr, type KeputusanIklan } from "@/lib/analisa/hitung";
+import {
+  NYATA_TAMPIL, ringkasGagal, saranGagal, type RingkasanGagal,
+} from "@/lib/analisa/ringkas-gagal";
 import type { BarisSku, RingkasanAnalisa, Temuan } from "@/lib/analisa/tipe";
 
 // ── Bentuk data dari server (app/api/analisa) ──
@@ -128,6 +134,9 @@ function Analisa() {
   const [hasil, setHasil] = useState<Hasil | null>(null);
   const [iklan, setIklan] = useState<SaranIklan | null>(null);
   const [mendalam, setMendalam] = useState<{ narasi: string; model: string; reasoning: string } | null>(null);
+  /** Kegagalan analisa mendalam + rincian percobaan; disimpan sebagai state karena daftarnya
+   *  panjang dan tidak terbaca di dalam toast. Toast hanya menunjukkan sebab utamanya. */
+  const [mendalamGagal, setMendalamGagal] = useState<{ pesan: string; ringkas: RingkasanGagal } | null>(null);
   const [memuatMendalam, setMemuatMendalam] = useState(false);
   const berkasIklanRef = useRef<HTMLInputElement>(null);
   const [memuat, setMemuat] = useState(true);
@@ -221,6 +230,7 @@ function Analisa() {
   async function jalankanMendalam() {
     if (memuatMendalam || !presetId || !tanggal) return;
     setMemuatMendalam(true);
+    setMendalamGagal(null);
     try {
       const res = await fetch("/api/analisa", {
         method: "POST",
@@ -233,10 +243,18 @@ function Analisa() {
         upaya?: { provider: string; model: string; error: string }[];
       } | null;
       if (!res.ok || !d?.ok || !d.narasi) {
-        // Rincian percobaan ikut ditampilkan: user perlu tahu model mana yang gagal dan
-        // kenapa (timeout/status), supaya bisa membedakan antrean penyedia dari kredensial salah.
-        const rincian = (d?.upaya ?? []).map((u) => `${u.provider}/${u.model}: ${u.error}`).join("\n");
-        throw new Error(`${d?.error ?? `Gagal (${res.status}).`}${rincian ? `\n\nPercobaan:\n${rincian}` : ""}`);
+        // Rincian percobaan TIDAK ditempel ke pesan: rantai 23 model menghasilkan puluhan baris
+        // yang isinya sama, dan penyebab sebenarnya tenggelam di dalamnya. Yang naik ke toast
+        // hanya sebab utamanya; rincian lengkap dirender sebagai kartu di bawah tombol.
+        const ringkas = ringkasGagal(d?.upaya ?? []);
+        const rincian = (d?.upaya ?? []).length;
+        const utama = ringkas.tanpaKredensial.length
+          ? `Tidak ada API key aktif untuk provider: ${ringkas.tanpaKredensial.join(", ")}.`
+          : d?.error ?? `Analisa mendalam gagal (${res.status}).`;
+        const pesan = `${utama}${rincian > 0 ? ` (${rincian} percobaan) — rincian di bawah tombol Analisa Mendalam.` : ""}`;
+        setMendalamGagal({ pesan: utama, ringkas });
+        tampilkanGagalTulis(pesan);
+        return;
       }
       setMendalam({ narasi: d.narasi, model: d.model ?? "—", reasoning: d.reasoning ?? "—" });
     } catch (e) {
@@ -435,6 +453,8 @@ function Analisa() {
                       </p>
                     </div>
                   ) : null}
+
+                  {mendalamGagal ? <KartuGagalMendalam pesan={mendalamGagal.pesan} ringkas={mendalamGagal.ringkas} /> : null}
                 </CardContent>
               </Card>
 
@@ -855,5 +875,113 @@ function KelompokKeputusan({ baris }: { baris: BarisSku[] }) {
         ))}
       </CardContent>
     </Card>
+  );
+}
+
+/**
+ * Rincian kegagalan analisa mendalam.
+ *
+ * Kenapa tidak sekadar menempel daftar ke pesan error: satu provider bisa punya puluhan model
+ * aktif, dan saat anggaran waktu habis SETIAP model sisa menulis baris "dilewati" yang isinya
+ * sama. Daftar seperti itu menenggelamkan dua hal yang benar-benar penting — provider tanpa
+ * kredensial dan model pertama yang timeout. Di sini: yang informatif tampil di depan, sisanya
+ * dikelompokkan per provider, dan daftar mentahnya dibuka atas permintaan user.
+ */
+function KartuGagalMendalam({ pesan, ringkas }: { pesan: string; ringkas: RingkasanGagal }) {
+  const [buka, setBuka] = useState(false);
+  const saran = saranGagal(ringkas);
+  const nyataTampil = ringkas.nyata.slice(0, NYATA_TAMPIL);
+  const sisaNyata = ringkas.nyata.length - nyataTampil.length;
+  const total = ringkas.nyata.length + ringkas.jumlahDilewati + ringkas.tanpaKredensial.length;
+
+  return (
+    <div
+      className="flex flex-col gap-3 rounded-lg border border-l-4 border-border border-l-red-500 bg-muted/40 p-3"
+      data-testid="gagal-mendalam"
+    >
+      <div className="flex items-start gap-2">
+        <TriangleAlert className="mt-0.5 size-4 shrink-0 text-red-600" aria-hidden />
+        <div>
+          <p className="text-sm font-medium">Analisa mendalam tidak dapat dijalankan</p>
+          <p className="text-sm text-muted-foreground">{pesan}</p>
+        </div>
+      </div>
+
+      {ringkas.nyata.length > 0 ? (
+        <div data-testid="percobaan-nyata">
+          <p className="text-xs font-medium text-muted-foreground">
+            Yang benar-benar dicoba{ringkas.nyata.length > nyataTampil.length ? ` (${nyataTampil.length} pertama)` : ""}
+          </p>
+          <ul className="mt-1 flex flex-col gap-0.5">
+            {nyataTampil.map((n, i) => (
+              <li key={`${n.provider}-${n.model}-${i}`} className="text-xs">
+                <span className="font-mono">{n.provider}/{n.model}</span> — {n.error}
+              </li>
+            ))}
+          </ul>
+          {sisaNyata > 0 ? (
+            <p className="mt-1 text-[11px] text-muted-foreground">
+              +{sisaNyata} percobaan lain dengan pola sama — buka daftar lengkap di bawah.
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
+      {ringkas.dilewati.length > 0 ? (
+        <div data-testid="percobaan-dilewati">
+          <p className="text-xs font-medium text-muted-foreground">Dilewati (tidak pernah dicoba)</p>
+          <ul className="mt-1 flex flex-col gap-0.5">
+            {ringkas.dilewati.map((g) => (
+              <li key={g.provider} className="text-xs">
+                <span className="font-mono">{g.provider}</span>: {g.jumlah} model dilewati ({g.alasan})
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {saran.length > 0 ? (
+        <div className="rounded-md border border-border bg-background p-2" data-testid="saran-gagal">
+          <p className="flex items-center gap-1 text-xs font-medium">
+            <Lightbulb className="size-3.5" aria-hidden />
+            Yang bisa dilakukan
+          </p>
+          <ul className="mt-1 list-disc pl-4">
+            {saran.map((s, i) => <li key={i} className="text-xs text-muted-foreground">{s}</li>)}
+          </ul>
+        </div>
+      ) : null}
+
+      {total > 0 ? (
+        <Collapsible open={buka} onOpenChange={setBuka}>
+          <CollapsibleTrigger
+            className="flex w-full items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+            data-testid="toggle-daftar-penuh"
+          >
+            <ChevronRight className={`size-3.5 transition-transform ${buka ? "rotate-90" : ""}`} aria-hidden />
+            {buka ? "Sembunyikan daftar lengkap" : `Lihat daftar lengkap (${total} baris)`}
+          </CollapsibleTrigger>
+          <CollapsibleContent keepMounted className="mt-2 max-h-64 overflow-y-auto rounded-md border border-border bg-background p-2">
+            <ul className="flex flex-col gap-0.5">
+              {ringkas.tanpaKredensial.map((p) => (
+                <li key={`kred-${p}`} className="text-[11px]">
+                  <span className="font-mono">{p}</span>: tidak ada kredensial aktif
+                </li>
+              ))}
+              {ringkas.nyata.map((n, i) => (
+                <li key={`nyata-${n.provider}-${n.model}-${i}`} className="text-[11px]">
+                  <span className="font-mono">{n.provider}/{n.model}</span>: {n.error}
+                </li>
+              ))}
+              {ringkas.dilewati.map((g) => (
+                <li key={`dilewati-${g.provider}`} className="text-[11px]">
+                  <span className="font-mono">{g.provider}</span>: {g.jumlah} model dilewati ({g.alasan})
+                </li>
+              ))}
+            </ul>
+          </CollapsibleContent>
+        </Collapsible>
+      ) : null}
+    </div>
   );
 }

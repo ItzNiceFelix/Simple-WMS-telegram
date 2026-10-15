@@ -165,12 +165,22 @@ export function AnalisaSettingAi({ open, onOpenChange }: Props) {
               </FieldDescription>
               {/* Peringatan nyata dari keluhan "high effort, lama banget": model `:free`
                   mengantre di sisi penyedia, dan reasoning tinggi memperpanjang antrean itu.
-                  Pilihan TIDAK dicabut — hanya konsekuensinya yang dinyatakan di depan. */}
+                  Pilihan TIDAK dicabut — hanya konsekuensinya yang dinyatakan di depan.
+                  Ambangnya disebut (60 detik/percobaan, 100 detik seluruh rantai) supaya user
+                  bisa memperkirakan sendiri, bukan sekadar diberi tahu "bisa lambat". */}
               <p className="text-xs text-muted-foreground">
                 Peringatan: pada model gratis (nama berakhiran <code>:free</code>), pilihan{" "}
                 <b>high</b>, <b>xhigh</b>, atau <b>max</b> membuat analisa menunggu lama karena
                 model antre di sisi penyedia. Bila terlalu lama, permintaan bisa gagal sebelum
                 dijawab. Untuk pemakaian sehari-hari, <b>sedang</b> atau <b>low</b> jauh lebih cepat.
+              </p>
+              <p className="text-xs text-muted-foreground" data-testid="peringatan-reasoning-tinggi">
+                Peringatan tegas: dengan plafon token besar, model penalaran bisa memakai{" "}
+                <b>seluruh 60 detik</b> batas satu percobaan lalu tetap gagal. Karena anggaran
+                seluruh rantai hanya <b>100 detik</b>, model penyedia cadangan ikut dilewati — Anda
+                menunggu sampai rantai habis, lalu tetap tidak mendapat narasi. Bila itu terjadi,
+                turunkan <b>reasoning lebih dulu</b> (bukan mencabut pilihan lain), baru naikkan lagi
+                ketika sudah berhasil. Pilihan Anda tidak dibatasi di sini.
               </p>
             </Field>
 

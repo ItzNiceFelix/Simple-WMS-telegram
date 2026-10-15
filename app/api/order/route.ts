@@ -15,12 +15,14 @@ import { bangunPdfPicklistPaket } from "@/lib/d1/picklistPaketPdf";
 import { bangunPdfPicklistGabung, type BarisPickGabung } from "@/lib/d1/picklistGabungPdf";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
 import { potongOnlineUntukOrder } from "@/lib/d1/stokOnline";
+import { catatEksporPicklist } from "@/lib/d1/picklistEkspor";
 import { listBooking } from "@/lib/d1/advanceBelumSku";
 import { normalisasiSheetShopee, normalisasiStatus, type GabunganOrder, type ShopeeAdvanceRow, type ShopeeOrderRow, type ShopeeBooking, type BarisBelumSku } from "@/lib/d1/orderImportShopee";
 import { hitungFingerprint, cekFileSudahAda, catatImportFile } from "@/lib/d1/importFingerprint";
 import { klasifikasikanImport, type OrderBaru } from "@/lib/d1/orderKlasifikasi";
 import { simpanBooking, tebakSku, tandaiBelumMp, compareNama, type TebakanSku } from "@/lib/d1/advanceBelumSku";
 import { isiResiGrup } from "@/lib/d1/resiGrup";
+import { petaEkspor } from "@/lib/d1/picklistEkspor";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,8 +33,43 @@ const HEADER_PESANAN = ["NoPesanan*", "Marketplace*", "Tanggal*", "SKU*", "Qty*"
 const KE_VALID = ["pack", "kirim", "selesai", "batal"];
 // B5-A: cap 500 baris (konsisten excel produk); konfirmasi batch 50 tetap.
 const MAKS_BARIS = 500;
+// Ukuran potongan untuk kueri SKU. 20 kueri serentak: cukup untuk menyembunyikan latensi
+// jaringan, tapi jauh di bawah batas kueri bersamaan D1/Worker — Promise.all atas ratusan
+// kueri sekaligus justru di-throttle dan lebih lambat daripada potongan.
+const UKURAN_BATCH_SKU = 20;
+// Anggaran tebak SKU per preview. Satu grup = 4 kueri; tanpa batas ini berkas ekspor lebar
+// (ratusan grup) menghabiskan anggaran CPU Worker dan request mati sebagai 500 buta.
+const MAKS_GRUP_TEBAK = 40;
+/**
+ * Ambang cepat-tolak: baris (order + advance) yang masih aman diproses sekali preview.
+ *
+ * Dinaikkan dari 150 ke 600 setelah diukur: berkas nyata pemilik repo berisi 73 orders +
+ * 98 advance = 171 baris, dan angka 150 membuat berkas itu DITOLAK — padahal justru berkas
+ * itulah yang harus bisa diimpor. Penolakan cepat hanya berguna untuk berkas yang benar-benar
+ * di luar jangkauan, bukan untuk berkas yang cuma sedikit di atas perkiraan awal.
+ *
+ * 600 dipilih karena: setelah kueri dipotong-potong (UKURAN_BATCH_SKU) dan tebakan dibatasi
+ * MAKS_GRUP_TEBAK, jumlah kueri untuk 600 baris masih di bawah anggaran; sementara ekspor
+ * Shopee dengan rentang tanggal sangat lebar (ribuan baris) tetap ditolak cepat dengan
+ * penjelasan, bukan mati sebagai 500.
+ */
+const MAKS_BARIS_SHOPEE = 600;
 const MODE_PICKLIST = ["per_paket", "pisah", "gabung", "gabung-order"] as const;
 type ModePicklist = (typeof MODE_PICKLIST)[number];
+
+/**
+ * Petakan tiap item lewat `fn` dengan maksimum `ukuran` tugas serentak, hasil URUT sesuai input.
+ * Dipakai jalur preview: sebelumnya loop `for ... await` menumpuk latensi linier per SKU/grup
+ * (ratusan kueri berurutan) sampai anggaran CPU Worker habis. Semua sekaligus juga salah —
+ * D1/Worker membatasi kueri bersamaan. Potongan tetap = cepat tapi tidak membanjiri.
+ */
+async function mapPotong<T, R>(item: T[], ukuran: number, fn: (x: T, i: number) => Promise<R>): Promise<R[]> {
+  const hasil: R[] = [];
+  for (let i = 0; i < item.length; i += ukuran) {
+    hasil.push(...(await Promise.all(item.slice(i, i + ukuran).map(fn))));
+  }
+  return hasil;
+}
 
 /** Ada resi gabungan (jumlah_order > 1) di antara targets → default picklist per paket (D3). */
 async function pakaiPerPaket(db: D1Database, targets: { mp: string; no: string }[]): Promise<boolean> {
@@ -233,6 +270,19 @@ export async function GET(request: Request) {
     } catch {
       return json({ ok: false, error: "Parameter targets tidak valid." }, 400);
     }
+    // Unduh (attachment) itu default lama; `inline=1` membuat browser menampilkan PDF di viewer
+    // tab baru, dari situ user memilih print/simpan sendiri. Satu bendera dibaca sekali di sini
+    // supaya SEMUA mode (termasuk gabung-order) berperilaku sama.
+    // ponytail: baca parameter per titik balik respons; angkat ke satu variabel bila logika
+    // makin panjang.
+    const disp = (file: string) => (url.searchParams.get("inline") === "1" ? `inline; filename="${file}"` : `attachment; filename="${file}"`);
+    // PDF jadi → baru dicatat. Dipanggil dari SEMUA cabang mode supaya tag "sudah dicetak"
+    // tidak bisa lupa di satu jalur, tapi TIDAK menyentuh header/isi PDF yang sudah disusun
+    // pemanggil (header bisa berubah sewaktu-waktu, mis. inline vs attachment).
+    const kirimPdf = async (bytes: Uint8Array<ArrayBuffer>, mode: string, init: ResponseInit) => {
+      await catatEksporPicklist(db, targets, mode, String(sesi.user.id));
+      return new Response(bytes as BodyInit, init);
+    };
     // D7-T7: per_paket = 1 lembar per no_resi (default utk resi gabungan); pisah = agregat per SKU (mode lama).
     const modeMinta = (url.searchParams.get("mode") ?? "").trim();
     if (modeMinta === "review") {
@@ -306,11 +356,11 @@ export async function GET(request: Request) {
       ];
       if (barisGabung.length === 0) return json({ ok: false, error: "Tak ada item untuk dicetak." }, 400);
       const bytes = await bangunPdfPicklistGabung(barisGabung, { gudangDefault: "Gudang ONLINE" });
-      return new Response(new Uint8Array(bytes), {
+      return kirimPdf(new Uint8Array(bytes), "gabung-order", {
         status: 200,
         headers: {
           "content-type": "application/pdf",
-          "content-disposition": `attachment; filename="picklist-order-advance.pdf"`,
+          "content-disposition": disp("picklist-order-advance.pdf"),
           "cache-control": "no-store",
         },
       });
@@ -324,7 +374,7 @@ export async function GET(request: Request) {
       status: 200,
       headers: {
         "content-type": "application/pdf",
-        "content-disposition": `attachment; filename="${namaFile}"`,
+        "content-disposition": disp(namaFile),
         // Kekurangan ikut di header supaya halaman order bisa memunculkan dialog permintaan
         // TANPA panggilan kedua. Header HTTP aman untuk teks pendek ber-ASCII.
         "x-kurang-online": String(potong.kurang.length),
@@ -337,18 +387,18 @@ export async function GET(request: Request) {
       const semua = pick.paket.flatMap((p) => p.rows.map((r) => ({ sku: r.sku, nama: r.nama, qty: r.qty, variasi: r.variasi ?? "", no_resi: p.no_resi })));
       if (semua.length === 0) return json({ ok: false, error: "Tak ada item untuk dicetak." }, 400);
       const bytes = await bangunPdfPicklistPaket(semua, { mode: "gabung", judul: "PICKLIST ORDER — GABUNG PER PAKET", subjudul: `${pick.paket.length} paket`, gudang: "Gudang ONLINE" });
-      return new Response(new Uint8Array(bytes), header);
+      return kirimPdf(new Uint8Array(bytes), "gabung", header);
     }
     if (mode === "per_paket") {
       const pick = await buatPicklistPaket(db, targets);
       if (!pick.ok) return json({ ok: false, error: pick.error }, pick.status);
       const bytes = await bangunPdfPicklistPaket(pick.paket, { mode: "per_paket", judul: "PICKLIST ORDER — PER PAKET", subjudul: "", gudang: "Gudang ONLINE" });
-      return new Response(new Uint8Array(bytes), header);
+      return kirimPdf(new Uint8Array(bytes), "per_paket", header);
     }
     const pick = await buatPicklist(db, targets);
     if (!pick.ok) return json({ ok: false, error: pick.error }, pick.status);
     const bytes = await bangunPdfPicklist(pick.rows, pick.orders);
-    return new Response(new Uint8Array(bytes), header);
+    return kirimPdf(new Uint8Array(bytes), "pisah", header);
   }
   if (aksi !== "daftar") return json({ ok: true, header: HEADER_PESANAN });
   const f = filterDariQuery(url);
@@ -362,7 +412,10 @@ export async function GET(request: Request) {
     if (f.filter.sku && !d.items.some((i) => i.sku === f.filter.sku)) continue;
     orders.push(d);
   }
-  return json({ ok: true, orders });
+  // Tag "sudah diekspor" per mode: satu gelombang kueri untuk SEMUA order di daftar, bukan
+  // satu kueri per baris. Kunci `${mp}|${no}` sama dengan kunci `kunciOrder` di halaman order.
+  const ekspor = Object.fromEntries(await petaEkspor(db, daftar.map((h) => ({ mp: h.marketplace, no: h.no_pesanan }))));
+  return json({ ok: true, orders, ekspor });
 }
 
 export async function POST(request: Request) {
@@ -407,72 +460,111 @@ export async function POST(request: Request) {
     const advanceRows = Array.isArray(body.advanceRows) ? (body.advanceRows as ShopeeAdvanceRow[]) : [];
     if (orderRows.length === 0 && advanceRows.length === 0) return json({ ok: false, error: "Sheet orders/Advance Fulfilment kosong." }, 400);
     const file = typeof body.file === "string" ? body.file.trim().slice(0, 120) : "orders.xlsx";
-    // T2: fingerprint + 3a tolak file sama.
-    const hash = await hitungFingerprint([...orderRows, ...advanceRows], file);
-    const sudah = await cekFileSudahAda(db, "orders_toship", hash);
-    if (sudah && sudah.batch_id !== null) {
-      return json({ ok: false, error: `File ini sudah pernah diimpor (batch #${sudah.batch_id}, ${sudah.file}).` }, 409);
+    // Tolak cepat SEBELUM kerja berat (fingerprint + ratusan kueri). Lebih baik user tahu
+    // dalam 1 detik daripada menunggu 30 detik lalu dapat 500 tanpa penjelasan.
+    if (orderRows.length + advanceRows.length > MAKS_BARIS_SHOPEE) {
+      return json(
+        {
+          ok: false,
+          error:
+            `Berkas terlalu besar untuk diproses sekaligus: ${orderRows.length} baris orders + ${advanceRows.length} baris Advance Fulfilment ` +
+            `= ${orderRows.length + advanceRows.length} baris (batas ${MAKS_BARIS_SHOPEE}). ` +
+            "Pilih rentang tanggal lebih pendek di ekspor Shopee lalu unggah beberapa berkas terpisah.",
+        },
+        413,
+      );
     }
-    const cekSku = new Map<string, boolean>();
-    const adaSku = async (sku: string): Promise<boolean> => {
-      const lama = cekSku.get(sku);
-      if (lama !== undefined) return lama;
-      const ada = Boolean(await ambilProduk(db, sku));
-      cekSku.set(sku, ada);
-      return ada;
-    };
-    const skuAda = new Set<string>();
-    for (const r of [...orderRows, ...advanceRows]) {
-      const sku = String(r["Nomor Referensi SKU"] ?? r["SKU Induk"] ?? "").trim().toUpperCase();
-      if (sku) skuAda.add(sku);
+    try {
+      // T2: fingerprint + 3a tolak file sama.
+      const hash = await hitungFingerprint([...orderRows, ...advanceRows], file);
+      const sudah = await cekFileSudahAda(db, "orders_toship", hash);
+      if (sudah && sudah.batch_id !== null) {
+        return json({ ok: false, error: `File ini sudah pernah diimpor (batch #${sudah.batch_id}, ${sudah.file}).` }, 409);
+      }
+      const cekSku = new Map<string, boolean>();
+      const adaSku = async (sku: string): Promise<boolean> => {
+        const lama = cekSku.get(sku);
+        if (lama !== undefined) return lama;
+        const ada = Boolean(await ambilProduk(db, sku));
+        cekSku.set(sku, ada);
+        return ada;
+      };
+      const skuAda = new Set<string>();
+      for (const r of [...orderRows, ...advanceRows]) {
+        const sku = String(r["Nomor Referensi SKU"] ?? r["SKU Induk"] ?? "").trim().toUpperCase();
+        if (sku) skuAda.add(sku);
+      }
+      // Dulu `for (const sku of skuAda) await adaSku(sku)` — 33 SKU di berkas besar = 33
+      // round-trip berurutan; waktu menumpuk linier dan anggaran CPU Worker habis.
+      await mapPotong([...skuAda], UKURAN_BATCH_SKU, (sku) => adaSku(sku));
+      const normal = normalisasiSheetShopee(orderRows, advanceRows, (sku) => cekSku.get(sku) === true);
+      // Tebak SKU per GRUP (nama+variasi identik), bukan per baris: satu grup = satu tebakan.
+      // Grup di atas MAKS_GRUP_TEBAK tidak ditebak (4 kueri/grup — anggaran waktu request)
+      // TAPI jumlahnya dilaporkan lewat tebakan_dilewati, tidak diam-diam disembunyikan.
+      const grupTebak = normal.belumSku.slice(0, MAKS_GRUP_TEBAK);
+      const grupLewat = normal.belumSku.slice(MAKS_GRUP_TEBAK);
+      const tebakan = await mapPotong(grupTebak, UKURAN_BATCH_SKU, (b) => tebakSku(db, b.nama_shopee, b.variasi));
+      const belumSku: (BarisBelumSku & { tebakan: TebakanSku })[] = [
+        ...grupTebak.map((b, i) => ({ ...b, tebakan: tebakan[i] })),
+        ...grupLewat.map((b) => ({ ...b, tebakan: { sku: "", perlu_pilih_manual: true, kandidat: [] } })),
+      ];
+      // Klasifikasi T3/T3b (blokir/peringatan sebelum tulis).
+      const orderBaru: OrderBaru[] = normal.orders.map((o) => ({
+        no_pesanan: o.no_pesanan,
+        no_resi: o.noResi,
+        statusFile: o.statusFile,
+        jasaKirim: o.jasaKirim,
+        tipeLayanan: o.tipeLayanan,
+        cod: o.cod,
+        preorder: o.preorder,
+      }));
+      const klasifikasi = await klasifikasikanImport(db, orderBaru, normal.advance.map((a) => ({ booking_sn: a.booking_sn, no_resi: a.no_resi })));
+      // D3: compare nama (peringatan saja).
+      const pasangan = normal.orders.flatMap((o) => o.items.map((i) => ({ sku: i.sku, nama_shopee: i.nama_shopee })));
+      const compare = await compareNama(db, pasangan);
+      const payload = { orders: normal.orders, advance: normal.advance, hash, file };
+      const ins = await db
+        .prepare("INSERT INTO import_batches (tipe, file, total, sukses, gagal, gudang_id, payload_json, status, at, by) VALUES ('pesanan_shopee', ?, ?, ?, ?, 'ONLINE', ?, 'preview', ?, ?)")
+        .bind(file, orderRows.length + advanceRows.length, normal.orders.length, normal.gagal.length, JSON.stringify(payload), Math.floor(Date.now() / 1000), user.tg_id)
+        .run();
+      return json({
+        ok: true,
+        batch_id: Number(ins.meta.last_row_id),
+        hash,
+        file,
+        orders: normal.orders,
+        advance: normal.advance,
+        belumSku,
+        tebakan_dilewati: grupLewat.length,
+        gagal: normal.gagal,
+        klasifikasi: {
+          baru: klasifikasi.baru.length,
+          update: klasifikasi.update.length,
+          skip: klasifikasi.skip.length,
+          mundur: klasifikasi.mundur,
+          resiMultiOrder: klasifikasi.resiMultiOrder,
+          gandaDalamFile: klasifikasi.gandaDalamFile,
+          kriteriaGabungan: klasifikasi.kriteriaGabungan,
+          advanceSkip: klasifikasi.advanceSkip,
+        },
+        compareNama: compare,
+      });
+    } catch (e) {
+      // Tanpa ini, timeout/kegagalan DB keluar sebagai 500 kosong dan user tidak tahu apa yang salah.
+      const pesan = e instanceof Error ? e.message : "kesalahan tak dikenal";
+      return json(
+        {
+          ok: false,
+          error:
+            `Preview berkas ini gagal: ${pesan}. Kemungkinan besar berkasnya terlalu besar untuk diproses sekaligus ` +
+            `(${orderRows.length} baris orders + ${advanceRows.length} baris Advance Fulfilment). ` +
+            "Pilih rentang tanggal lebih pendek di ekspor Shopee lalu unggah beberapa berkas terpisah.",
+          orders: orderRows.length,
+          advance: advanceRows.length,
+        },
+        503,
+      );
     }
-    for (const sku of skuAda) await adaSku(sku);
-    const normal = normalisasiSheetShopee(orderRows, advanceRows, (sku) => cekSku.get(sku) === true);
-    // Tebak SKU per GRUP (nama+variasi identik), bukan per baris: satu grup = satu tebakan.
-    // Sebelum pengelompokan ini, 176 baris = 176 query (dipotong 100); kini ~20 grup = 20 query.
-    const belumSku: (BarisBelumSku & { tebakan: TebakanSku })[] = [];
-    for (const b of normal.belumSku.slice(0, 100)) belumSku.push({ ...b, tebakan: await tebakSku(db, b.nama_shopee, b.variasi) });
-    for (const b of normal.belumSku.slice(100)) belumSku.push({ ...b, tebakan: { sku: "", perlu_pilih_manual: true, kandidat: [] } });
-    // Klasifikasi T3/T3b (blokir/peringatan sebelum tulis).
-    const orderBaru: OrderBaru[] = normal.orders.map((o) => ({
-      no_pesanan: o.no_pesanan,
-      no_resi: o.noResi,
-      statusFile: o.statusFile,
-      jasaKirim: o.jasaKirim,
-      tipeLayanan: o.tipeLayanan,
-      cod: o.cod,
-      preorder: o.preorder,
-    }));
-    const klasifikasi = await klasifikasikanImport(db, orderBaru, normal.advance.map((a) => ({ booking_sn: a.booking_sn, no_resi: a.no_resi })));
-    // D3: compare nama (peringatan saja).
-    const pasangan = normal.orders.flatMap((o) => o.items.map((i) => ({ sku: i.sku, nama_shopee: i.nama_shopee })));
-    const compare = await compareNama(db, pasangan);
-    const payload = { orders: normal.orders, advance: normal.advance, hash, file };
-    const ins = await db
-      .prepare("INSERT INTO import_batches (tipe, file, total, sukses, gagal, gudang_id, payload_json, status, at, by) VALUES ('pesanan_shopee', ?, ?, ?, ?, 'ONLINE', ?, 'preview', ?, ?)")
-      .bind(file, orderRows.length + advanceRows.length, normal.orders.length, normal.gagal.length, JSON.stringify(payload), Math.floor(Date.now() / 1000), user.tg_id)
-      .run();
-    return json({
-      ok: true,
-      batch_id: Number(ins.meta.last_row_id),
-      hash,
-      file,
-      orders: normal.orders,
-      advance: normal.advance,
-      belumSku,
-      gagal: normal.gagal,
-      klasifikasi: {
-        baru: klasifikasi.baru.length,
-        update: klasifikasi.update.length,
-        skip: klasifikasi.skip.length,
-        mundur: klasifikasi.mundur,
-        resiMultiOrder: klasifikasi.resiMultiOrder,
-        gandaDalamFile: klasifikasi.gandaDalamFile,
-        kriteriaGabungan: klasifikasi.kriteriaGabungan,
-        advanceSkip: klasifikasi.advanceSkip,
-      },
-      compareNama: compare,
-    });
   }
   if (aksi === "preview") {
     const rows = body.rows;

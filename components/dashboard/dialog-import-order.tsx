@@ -76,6 +76,8 @@ type Preview = {
     advanceSkip: string[]
   }
   compareNama: Compare[]
+  /** Grup yang tidak sempat ditebak server (batas anggaran waktu) — perlu dipilih manual. */
+  tebakan_dilewati: number
 }
 
 /** Satu baris "Perlu SKU" + asal berkasnya; indeks file dipakai supaya kunci tetap unik antar berkas. */
@@ -96,6 +98,7 @@ type HasilBerkas =
       belumSku: BarisBelumSku[]
       compareNama: Compare[]
       gagalBaris: Gagal[]
+      tebakanDilewati: number
     }
 
 interface Props {
@@ -186,6 +189,7 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
               belumSku: raw.belumSku,
               compareNama: raw.compareNama ?? [],
               gagalBaris: raw.gagal,
+              tebakanDilewati: raw.tebakan_dilewati ?? 0,
             })
           }
         } catch (e) {
@@ -335,8 +339,9 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
       update: t.update + h.ringkas.update,
       skip: t.skip + h.ringkas.skip,
       advanceSkip: t.advanceSkip + h.ringkas.advanceSkip.length,
+      dilewati: t.dilewati + h.tebakanDilewati,
     }),
-    { baris: 0, order: 0, advance: 0, gagal: 0, baru: 0, update: 0, skip: 0, advanceSkip: 0 }
+    { baris: 0, order: 0, advance: 0, gagal: 0, baru: 0, update: 0, skip: 0, advanceSkip: 0, dilewati: 0 }
   )
   // Peringatan digabung lintas berkas — tiap baris menyebut nama berkas agar bisa dilacak.
   const peringatan = <T,>(jenis: "mundur" | "resiMultiOrder" | "kriteriaGabungan" | "gandaDalamFile") =>
@@ -470,6 +475,11 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
                   <b>Belum di MP</b> bila barang ini memang belum terdaftar di marketplace — order tetap
                   diimpor, dan baris ini dicatat sebagai daftar tunggu supaya kamu bisa urus SKU-nya nanti.
                 </p>
+                {total.dilewati > 0 && (
+                  <p className="text-xs text-amber-700" data-testid="tebakan-dilewati">
+                    {total.dilewati} produk lain perlu dipilih manual (sistem tidak sempat menebak).
+                  </p>
+                )}
                 <div className="rounded-lg border border-border">
                   {/* Kepala kolom: hanya di layar lebar (md+). Di mobile tiap baris jadi kartu. */}
                   <div className="hidden border-b border-border bg-muted/40 px-3 py-2 text-xs font-medium text-muted-foreground md:grid md:grid-cols-[9rem_minmax(0,1fr)_7rem_4rem_minmax(0,20rem)_5rem] md:items-center md:gap-3">
