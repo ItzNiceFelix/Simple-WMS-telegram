@@ -49,7 +49,7 @@ type RingkasImpor = {
 /** Berapa baris yang ditampilkan sekaligus — kartu harus tetap bisa dibaca. */
 const MAKS_TAMPIL = 50;
 
-export function AnalisaPetaSku() {
+export function AnalisaPetaSku({ presetId }: { presetId: number }) {
   const [pertanyaan, setPertanyaan] = useState<PertanyaanPeta[]>([]);
   const [jawaban, setJawaban] = useState<Record<string, string>>({});
   const [memuat, setMemuat] = useState(true);
@@ -96,7 +96,7 @@ export function AnalisaPetaSku() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ aksi: "impor-performa", file: base64 }),
+        body: JSON.stringify({ aksi: "impor-performa", file: base64, presetId }),
       });
       const d = (await res.json().catch(() => null)) as {
         ok?: boolean; ringkas?: RingkasImpor; jumlahPertanyaan?: number; error?: string;
@@ -120,13 +120,15 @@ export function AnalisaPetaSku() {
     }
   }
 
-  async function simpan() {
+  /**
+   * Kirim jawaban ke server. `sku: ""` SAH dan disengaja: artinya "sudah diputuskan —
+   * bukan produk kita" dan menyembunyikan pertanyaan itu selamanya (diputuskan_at terisi).
+   * Ini beda dari "belum dijawab" (diputuskan_at IS NULL) yang tetap ditanyakan.
+   */
+  async function kirimJawaban(daftar: { jenis: PertanyaanPeta["jenis"]; acuan: string; sku: string }[]) {
     if (sibuk) return;
-    const daftar = pertanyaan
-      .map((p) => ({ jenis: p.jenis, acuan: p.acuan, sku: (jawaban[kunci(p)] ?? "").trim() }))
-      .filter((j) => j.sku !== "");
     if (daftar.length === 0) {
-      toast.error("Belum ada SKU yang diisi.");
+      toast.error("Tidak ada baris yang bisa dikirim.");
       return;
     }
     setSibuk(true);
@@ -154,8 +156,35 @@ export function AnalisaPetaSku() {
     }
   }
 
+  /** Simpan hanya baris YANG TERISI (perilaku lama — jangan ubah jadi menolak bila kosong). */
+  async function simpan() {
+    const daftar = pertanyaan
+      .map((p) => ({ jenis: p.jenis, acuan: p.acuan, sku: (jawaban[kunci(p)] ?? "").trim() }))
+      .filter((j) => j.sku !== "");
+    if (daftar.length === 0) {
+      toast.error("Belum ada SKU yang diisi. Tekan \"Abaikan yang belum diisi\" untuk menandai semuanya sudah diputuskan.");
+      return;
+    }
+    await kirimJawaban(daftar);
+  }
+
+  /** Satu pertanyaan ditandai "sudah diputuskan — bukan produk kita" (sku: ""). */
+  async function abaikan(p: PertanyaanPeta) {
+    await kirimJawaban([{ jenis: p.jenis, acuan: p.acuan, sku: "" }]);
+  }
+
+  /** Tandai SEMUA baris yang input-nya kosong sebagai sudah diputuskan sekaligus. */
+  async function abaikanSemuaKosong() {
+    const daftar = pertanyaan
+      .filter((p) => (jawaban[kunci(p)] ?? "").trim() === "")
+      .map((p) => ({ jenis: p.jenis, acuan: p.acuan, sku: "" }));
+    await kirimJawaban(daftar);
+  }
+
   const tampil = pertanyaan.slice(0, MAKS_TAMPIL);
   const terisi = pertanyaan.filter((p) => (jawaban[kunci(p)] ?? "").trim() !== "").length;
+  // Baris yang input-nya kosong = calon "sudah diputuskan — bukan produk kita".
+  const kosong = pertanyaan.length - terisi;
   const berpesanan = pertanyaan.filter((p) => p.pesanan > 0).length;
 
   return (
@@ -275,9 +304,10 @@ export function AnalisaPetaSku() {
             <CardHeader>
               <CardTitle className="text-base">Jawaban</CardTitle>
               <CardDescription>
-                Ketik SKU untuk tiap produk, atau tekan <b>Bukan produk kita</b> untuk menandai produk yang
-                memang tidak ada di sistem. Hanya baris yang terisi yang disimpan — sisanya tetap menunggu
-                dan bisa dijawab nanti.
+                Ketik SKU untuk tiap produk, atau tekan <b>Abaikan</b> untuk menandai produk yang memang tidak
+                ada di sistem (&quot;bukan produk kita&quot;). Hanya baris yang terisi yang dikirim oleh
+                <b> Simpan</b> — sisanya tetap menunggu dan bisa dijawab nanti, atau diabaikan sekaligus
+                dengan <b>Abaikan yang belum diisi</b>.
               </CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-4">
@@ -289,6 +319,7 @@ export function AnalisaPetaSku() {
                       <TableHead>Produk Shopee</TableHead>
                       <TableHead className="w-[220px]">SKU</TableHead>
                       <TableHead>Kandidat terdekat</TableHead>
+                      <TableHead className="w-[110px]">Aksi</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -328,6 +359,19 @@ export function AnalisaPetaSku() {
                               </div>
                             )}
                           </TableCell>
+                          <TableCell>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              className="h-11 text-xs md:h-8"
+                              disabled={sibuk}
+                              onClick={() => void abaikan(p)}
+                              data-testid={`abaikan-${p.acuan}`}
+                              title="Tandai sudah diputuskan — tidak akan ditanya lagi"
+                            >
+                              Abaikan
+                            </Button>
+                          </TableCell>
                         </TableRow>
                       );
                     })}
@@ -345,10 +389,26 @@ export function AnalisaPetaSku() {
                   {sibuk ? <Spinner data-icon="inline-start" /> : <Save className="size-4" aria-hidden />}
                   {sibuk ? "Menyimpan…" : `Simpan ${terisi} jawaban`}
                 </Button>
+                <Button
+                  variant="outline"
+                  className="h-11 md:h-8"
+                  disabled={sibuk || kosong === 0}
+                  onClick={() => void abaikanSemuaKosong()}
+                  data-testid="abaikan-semua-kosong"
+                  title="Tandai semua baris yang kosong sudah diputuskan — tidak akan ditanya lagi"
+                >
+                  Abaikan yang belum diisi ({kosong})
+                </Button>
                 <span className="text-xs text-muted-foreground">
                   {terisi} dari {tampil.length} baris terisi
                 </span>
               </div>
+
+              <p className="text-[11px] text-muted-foreground">
+                <b>Simpan</b> hanya mengirim baris YANG TERISI. Baris yang dikosongkan akan tetap ditanyakan
+                lain kali sampai kamu menekan <b>Abaikan</b> — menekan itu berarti &quot;sudah diputuskan,
+                bukan produk kita&quot; dan menghilangkannya dari daftar selamanya.
+              </p>
 
               <p className="text-[11px] text-muted-foreground">
                 SKU yang tidak ada di master produk akan ditolak saat disimpan — lebih baik ditolak daripada

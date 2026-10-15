@@ -78,14 +78,24 @@ export async function POST(request: Request) {
     }
     // Parse xlsx bisa melempar kalau berkasnya bukan Excel atau rusak. Ditangkap di sini
     // supaya user dapat pesan yang bisa ditindaklanjuti, bukan 500 tanpa keterangan.
+    // `presetId` = toko pemilik angka; tabel `performa_produk` berkunci (preset, periode, sku)
+    // sehingga tanpa ini angka dua toko saling menimpa. 0 = belum dipilih (tetap diteruskan
+    // apa adanya, bukan ditebak ke toko pertama).
+    const presetId = Number(body.presetId ?? 0);
     try {
-      const h = await imporPerforma(db, buf.buffer as ArrayBuffer, oleh);
+      const h = await imporPerforma(db, buf.buffer as ArrayBuffer, oleh, Number.isFinite(presetId) ? presetId : 0);
       return json(h, 200);
     } catch (e) {
       return json({ ok: false, error: `Berkas tidak bisa dibaca sebagai Excel: ${e instanceof Error ? e.message : "tidak diketahui"}.` }, 400);
     }
   }
   if (aksi === "jawab") {
+    // TIGA KEADAAN yang berbeda — jangan dicampur:
+    //   diputuskan_at IS NULL                    → belum dijawab, tetap tampil di daftar pertanyaan
+    //   diputuskan_sku = "" + diputuskan_at terisi → SENGAJA DIABAIKAN user ("bukan produk kita"), jangan tampil lagi
+    //   diputuskan_sku = "SKU-XYZ"               → dipetakan, jangan tampil lagi
+    // Karena itu `sku: ""` di sini SAH: ia menandai baris sudah diputuskan (diputuskan_at diisi),
+    // bukan dianggap "belum dijawab". Tanpa ini user dipaksa menjawab produk yang tidak ada di sistem.
     const mentah = Array.isArray(body.jawaban) ? body.jawaban : [];
     if (mentah.length === 0) return json({ ok: false, error: "Tidak ada jawaban yang dikirim." }, 400);
 

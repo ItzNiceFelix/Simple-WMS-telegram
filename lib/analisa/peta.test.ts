@@ -4,15 +4,16 @@
 // padahal di produksi salah.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { KOL, bangunPeta, bacaAngka, bersih, type SkorSku } from "./peta";
+import { KOL, bangunPeta, bacaAngka, bersih, deteksiKolom, type SkorSku } from "./peta";
 
-/** Bikin satu baris 17 kolom yang bentuknya sama seperti ekspor Shopee. */
+/** Bikin satu baris ekspor Shopee (kolom 0..34, sesuai KOL). */
 function baris(kolom: {
   kodeProduk?: string; produk?: string; kodeVariasiShopee?: string;
   namaVariasi?: string; skuVariasi?: string; skuInduk?: string;
   omzet?: string; pesanan?: string;
+  dilihat?: string; klik?: string; kunjungan?: string; keranjang?: string; tanpaBeli?: string;
 }): unknown[] {
-  const r: unknown[] = new Array(17).fill("");
+  const r: unknown[] = new Array(KOL.keranjang + 1).fill("");
   if (kolom.kodeProduk !== undefined) r[KOL.kodeProduk] = kolom.kodeProduk;
   if (kolom.produk !== undefined) r[KOL.produk] = kolom.produk;
   if (kolom.kodeVariasiShopee !== undefined) r[KOL.kodeVariasiShopee] = kolom.kodeVariasiShopee;
@@ -21,10 +22,34 @@ function baris(kolom: {
   if (kolom.skuInduk !== undefined) r[KOL.skuInduk] = kolom.skuInduk;
   if (kolom.omzet !== undefined) r[KOL.omzet] = kolom.omzet;
   if (kolom.pesanan !== undefined) r[KOL.pesanan] = kolom.pesanan;
+  if (kolom.dilihat !== undefined) r[KOL.dilihat] = kolom.dilihat;
+  if (kolom.klik !== undefined) r[KOL.klik] = kolom.klik;
+  if (kolom.kunjungan !== undefined) r[KOL.kunjungan] = kolom.kunjungan;
+  if (kolom.keranjang !== undefined) r[KOL.keranjang] = kolom.keranjang;
+  if (kolom.tanpaBeli !== undefined) r[KOL.tanpaBeli] = kolom.tanpaBeli;
   return r;
 }
 
-const HEADER = baris({ kodeProduk: "Kode Produk", produk: "Produk", kodeVariasiShopee: "Kode Variasi", namaVariasi: "Nama Variasi", skuVariasi: "Kode Variasi", skuInduk: "SKU Induk", omzet: "Total Penjualan", pesanan: "Pesanan Dibuat" });
+/** Header tiruan yang meniru judul nyata `parentskudetail*.xlsx` (40 kolom).
+ *  Dua kolom `Kode Variasi` (3 dan 6) dan `Total Penjualan (...)` sengaja apa adanya —
+ *  justru keduanya yang dulu merusak pembacaan per nama. */
+const HEADER: unknown[] = (() => {
+  const h: unknown[] = new Array(40).fill("");
+  h[0] = "Kode Produk"; h[1] = "Produk"; h[2] = "Status Produk Saat Ini";
+  h[3] = "Kode Variasi"; h[4] = "Nama Variasi"; h[5] = "Status Variasi Saat Ini";
+  h[6] = "Kode Variasi"; h[7] = "SKU Induk";
+  h[8] = "Total Penjualan (Pesanan Dibuat) (IDR)"; h[9] = "Penjualan (Pesanan Siap Dikirim) (IDR)";
+  h[10] = "Jumlah Produk Dilihat"; h[11] = "Produk Diklik"; h[12] = "Persentase Klik";
+  h[13] = "Tingkat Konversi Pesanan (Pesanan Dibuat)"; h[14] = "Tingkat Konversi Pesanan (Pesanan Siap Dikirim)";
+  h[15] = "Pesanan Dibuat"; h[16] = "Pesanan Siap Dikirim";
+  h[17] = "Produk (Pesanan Dibuat)"; h[18] = "Produk (Pesanan Siap Dikirim)";
+  h[19] = "Total Pembeli (Pesanan Dibuat)"; h[20] = "Total Pembeli (Pesanan Siap Dikirim)";
+  h[27] = "Pengunjung Produk (Kunjungan)"; h[29] = "Pengunjung Melihat Tanpa Membeli";
+  h[33] = "Pengunjung Produk (Menambahkan Produk ke Keranjang)";
+  h[34] = "Dimasukkan ke Keranjang (Produk)";
+  h[35] = "Tingkat Konversi Produk Dimasukkan ke Keranjang";
+  return h;
+})();
 
 describe("bacaAngka", () => {
   it("membuang titik ribuan Indonesia", () => {
@@ -308,5 +333,112 @@ describe("urutan prioritas pertanyaan", () => {
     ];
     const h = bangunPeta(rows, master);
     assert.deepEqual(h.pertanyaan.map((p) => p.kodeProduk), ["B", "A"]);
+  });
+});
+
+describe("deteksiKolom — header nyata parentskudetail", () => {
+  it("`Kode Variasi` diambil yang TERAKHIR (6), bukan yang pertama (3)", () => {
+    // Kolom 3 = kode variasi SHOPEE (`138333482525`), kolom 6 = SKU kita.
+    // Memilih yang pertama akan menandai SEMUA baris "SKU tak ada master".
+    const k = deteksiKolom(HEADER);
+    assert.equal(k.skuVariasi, 6);
+    assert.notEqual(k.skuVariasi, 3);
+    assert.equal(k.kodeProduk, 0);
+    assert.equal(k.skuInduk, 7);
+    assert.equal(k.namaVariasi, 4);
+  });
+
+  it("omzet/pesanan dari judul panjang, bukan dari nama pendek", () => {
+    const k = deteksiKolom(HEADER);
+    assert.equal(k.omzet, 8);
+    assert.equal(k.pesanan, 15, "`Pesanan Dibuat`, BUKAN `Produk (Pesanan Dibuat)` di 17");
+    assert.equal(k.dilihat, 10);
+    assert.equal(k.klik, 11);
+    assert.equal(k.kunjungan, 27);
+    assert.equal(k.tanpaBeli, 29);
+    assert.equal(k.keranjang, 34, "`Dimasukkan ke Keranjang`, bukan `Pengunjung ... keranjang` di 33");
+  });
+
+  it("header tak dikenal jatuh ke posisi KOL (file tetap terbaca)", () => {
+    const k = deteksiKolom(["a", "b", "c", "d", "e", "f", "g", "h"]);
+    assert.deepEqual(k, KOL);
+  });
+
+  it("header kosong pun jatuh ke posisi KOL", () => {
+    assert.deepEqual(deteksiKolom([]), KOL);
+    assert.deepEqual(deteksiKolom([null, null]), KOL);
+  });
+
+  it("cocok tanpa peduli huruf besar/kecil dan spasi", () => {
+    const k = deteksiKolom(["  KODE PRODUK  ", " produk ", "  "]);
+    assert.equal(k.kodeProduk, 0);
+    assert.equal(k.produk, 1);
+  });
+
+  it("judul dikenali walau posisinya bergeser (deteksi tidak bergantung nomor)", () => {
+    const h: unknown[] = new Array(40).fill("");
+    h[5] = "Kode Produk"; h[7] = "Produk";
+    h[11] = "Jumlah Produk Dilihat"; h[12] = "Produk Diklik";
+    h[20] = "Pengunjung Produk (Kunjungan)"; h[21] = "Pengunjung Melihat Tanpa Membeli";
+    h[25] = "Dimasukkan ke Keranjang (Produk)";
+    h[30] = "Pesanan Dibuat"; h[33] = "Total Penjualan (Pesanan Dibuat) (IDR)";
+    const k = deteksiKolom(h);
+    assert.equal(k.kodeProduk, 5);
+    assert.equal(k.produk, 7);
+    assert.equal(k.omzet, 33);
+    assert.equal(k.pesanan, 30);
+    assert.equal(k.keranjang, 25);
+    assert.equal(k.kunjungan, 20);
+  });
+});
+
+describe("bangunPeta pada header nyata", () => {
+  it("metrik dilihat/klik/kunjungan terbaca di baris induk", () => {
+    const rows = [
+      HEADER,
+      baris({ kodeProduk: "904", produk: "Jaket", kodeVariasiShopee: "-", skuVariasi: "001770", skuInduk: "-", omzet: "1.000.000", pesanan: "10", dilihat: "12.345", klik: "678", kunjungan: "999", keranjang: "111", tanpaBeli: "222" }),
+    ];
+    const h = bangunPeta(rows, new Set(["001770"]));
+    assert.equal(h.baris.length, 1);
+    assert.deepEqual(
+      { d: h.baris[0].dilihat, k: h.baris[0].klik, j: h.baris[0].kunjungan, r: h.baris[0].keranjang, t: h.baris[0].tanpaBeli },
+      { d: 12345, k: 678, j: 999, r: 111, t: 222 },
+    );
+  });
+
+  it("metrik TIDAK dijumlah dari baris variasi", () => {
+    const rows = [
+      HEADER,
+      // Baris INDUK: kode variasi Shopee kosong, SKU dari kolom SKU Induk.
+      baris({ kodeProduk: "904", produk: "Jaket", kodeVariasiShopee: "-", skuVariasi: "-", skuInduk: "001770", omzet: "1.000.000", pesanan: "10", dilihat: "1.000", klik: "100" }),
+      // Baris variasi mengulang angka yang sama -> metriknya tidak boleh terbaca.
+      baris({ kodeProduk: "904", produk: "Jaket", kodeVariasiShopee: "555", namaVariasi: "BIRU", skuVariasi: "001770", omzet: "1.000.000", pesanan: "10", dilihat: "999.999", klik: "999.999" }),
+    ];
+    const h = bangunPeta(rows, new Set(["001770"]));
+    const induk = h.baris.find((b) => b.tingkat === "induk");
+    const variasi = h.baris.find((b) => b.tingkat === "variasi");
+    assert.equal(induk?.dilihat, 1000);
+    assert.equal(induk?.klik, 100);
+    assert.equal(variasi?.dilihat, 0, "baris variasi tidak boleh membawa metrik");
+    assert.equal(variasi?.klik, 0);
+  });
+
+  it("pertanyaan memakai kolom yang DIDETEKSI, bukan posisi KOL yang dipakai di baris", () => {
+    // Judul dipindah ke posisi lain (8 dan 15 dikosongkan) lalu header menunjuk ke sana:
+    // pertanyaan HARUS ikut kolom terdeteksi — dulu ia membaca `KOL.omzet`/`KOL.pesanan`.
+    const h = HEADER.slice();
+    h[8] = "";
+    h[15] = "";
+    h[20] = "Total Penjualan (Pesanan Dibuat) (IDR)";
+    h[21] = "Pesanan Dibuat";
+    const r = baris({ kodeProduk: "920", produk: "Meja", kodeVariasiShopee: "-", skuVariasi: "-", skuInduk: "-" });
+    r[20] = "2.000.000";
+    r[21] = "7";
+    assert.equal(deteksiKolom(h).omzet, 20, "prasyarat uji: kolom omzet benar-benar bergeser");
+    const out = bangunPeta([h, r], new Set(["AAA"]));
+    assert.equal(out.pertanyaan.length, 1);
+    assert.equal(out.pertanyaan[0].jenis, "tanpa_sku");
+    assert.equal(out.pertanyaan[0].omzet, 2000000);
+    assert.equal(out.pertanyaan[0].pesanan, 7);
   });
 });

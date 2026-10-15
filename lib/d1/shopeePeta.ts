@@ -118,6 +118,14 @@ export async function simpanPetaProduk(db: D1Database, baris: BarisPeta[]): Prom
 
 /**
  * Jawab pertanyaan: simpan SKU yang dipilih manusia (`""` = bukan produk kita).
+ *
+ * TIGA KEADAAN yang berbeda — jangan dicampur:
+ *   diputuskan_at IS NULL                     → belum dijawab, `daftarPertanyaanBelum` tetap menampilkannya
+ *   diputuskan_sku = "" + diputuskan_at terisi → SENGAJA DIABAIKAN ("bukan produk kita"), tidak tampil lagi
+ *   diputuskan_sku = "SKU-XYZ"                → dipetakan, tidak tampil lagi
+ * Karena `""` ditulis bersama `diputuskan_at`, baris "diabaikan" otomatis hilang dari daftar pertanyaan
+ * (filternya `diputuskan_at IS NULL`). Tidak perlu migrasi: skema sudah punya kedua kolom + UNIQUE (jenis, acuan).
+ *
  * `diabaikan` = baris yang sudah tidak ada lagi (perubahan 0) — bukan error, karena
  * halaman bisa saja masih memegang daftar lama sementara impor berikutnya menghapusnya.
  */
@@ -193,4 +201,34 @@ export async function petaSkuDariKodeProduk(
     }
   }
   return peta;
+}
+
+/**
+ * Simpan metrik performa per SKU (upsert per preset+periode+sku) — impor ulang idempoten.
+ *
+ * KENAPA `sku` KOSONG DIBUANG DI SINI: `performa_produk` berkunci SKU, jadi baris yang
+ * belum terpetakan (pertanyaan yang menunggu jawaban manusia) TIDAK punya tempat di tabel
+ * ini. Membuangnya di sini bukan kehilangan data: baris itu tetap tercatat di `peta_putusan`
+ * dan `shopee_produk`. Menulisnya dengan sku = "" akan menabrak baris sah pada impor berikutnya.
+ */
+export async function simpanPerforma(
+  db: D1Database,
+  presetId: number,
+  periode: string,
+  baris: BarisPeta[],
+): Promise<void> {
+  const sah = baris.filter((b) => b.sku !== "");
+  if (sah.length === 0) return;
+  const at = sekarang();
+  const stmts = sah.map((b) =>
+    db
+      .prepare(
+        "INSERT INTO performa_produk (preset_id, periode, sku, dilihat, klik, kunjungan, keranjang, pesanan, omzet, melihat_tanpa_beli, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +
+          "ON CONFLICT(preset_id, periode, sku) DO UPDATE SET dilihat = excluded.dilihat, klik = excluded.klik, " +
+          "kunjungan = excluded.kunjungan, keranjang = excluded.keranjang, pesanan = excluded.pesanan, " +
+          "omzet = excluded.omzet, melihat_tanpa_beli = excluded.melihat_tanpa_beli, at = excluded.at",
+      )
+      .bind(presetId, periode, b.sku, b.dilihat, b.klik, b.kunjungan, b.keranjang, b.pesanan, b.omzet, b.tanpaBeli, at),
+  );
+  for (let i = 0; i < stmts.length; i += POTONG) await db.batch(stmts.slice(i, i + POTONG));
 }

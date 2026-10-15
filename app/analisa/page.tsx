@@ -740,7 +740,7 @@ function Analisa() {
 
             {/* ══ TAB PETA SKU (tool tanya SKU: dua kartu) ══ */}
             <TabsContent value="peta" className="flex flex-col gap-4">
-              <AnalisaPetaSku />
+              <AnalisaPetaSku presetId={presetId} />
             </TabsContent>
           </Tabs>
         )}

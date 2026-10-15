@@ -4,23 +4,86 @@
 // Salah di sini = seluruh laporan laba per produk salah, dan salahnya tidak kelihatan.
 // Karena itu masukannya eksplisit (baris mentah + master SKU) dan bisa diuji tanpa DB.
 //
-// KENAPA KOLOM DIBACA PER POSISI, BUKAN PER NAMA:
+// KENAPA KOLOM DIBACA PER POSISI, BUKAN PER NAMA: (dipertahankan sebagai CADANGAN)
 // File `parentskudetail*.xlsx` punya DUA kolom berjudul `Kode Variasi` (posisi 3 dan 6).
-// Membaca lewat nama kolom akan mengambil yang pertama ketemu — dan yang pertama itu
-// kode variasi SHOPEE (contoh `138333482525`), bukan SKU kita. Setiap baris lalu akan
-// dianggap "SKU tak ada di master". Posisi adalah satu-satunya penanda yang bisa dipercaya
-// pada file ini, jadi posisinya dibekukan di konstanta KOL dan diverifikasi oleh uji.
+// Membaca lewat nama kolom dengan "temu pertama" akan mengambil yang pertama — dan yang
+// pertama itu kode variasi SHOPEE (contoh `138333482525`), bukan SKU kita. Setiap baris
+// lalu akan dianggap "SKU tak ada di master".
 //
 // KENAPA [6] DIDAHULUKAN ATAS [7]:
 // [6] `Kode Variasi` (kedua) berisi SKU kita dan menutup 97,6% omzet.
 // [7] `SKU Induk` juga SKU kita, tapi hanya menutup 20,9% — kalau [7] dipakai lebih dulu,
 // ribuan baris variasi akan dipetakan lewat induknya dan variasi kehilangan SKU-nya.
+//
+// DETEKSI-HEADER DENGAN CADANGAN POSISI (perubahan 2026-10):
+// Ekspor `parentskudetail*.xlsx` — SATU-SATUNYA format performa PRODUK yang diimpor di sini
+// (performa IKLAN punya jalur sendiri, `lib/d1/adsProduk.ts`). 40 kolom:
+//   0 Kode Produk | 1 Produk | 3 Kode Variasi (Shopee) | 4 Nama Variasi |
+//   6 Kode Variasi (SKU kita, DUPLIKAT judul) | 7 SKU Induk |
+//   8 Total Penjualan (Pesanan Dibuat) (IDR) | 10 Jumlah Produk Dilihat | 11 Produk Diklik |
+//   15 Pesanan Dibuat | 27 Pengunjung Produk (Kunjungan) | 29 Pengunjung Melihat Tanpa Membeli |
+//   34 Dimasukkan ke Keranjang (Produk)
+//
+// Kolom dicari lewat NAMA (case-insensitive, trim), dan HANYA bila nama tidak ketemu
+// barulah posisi di `KOL` dipakai — supaya file yang sudah bekerja tidak pernah rusak.
+// Kekhususan yang WAJIB: `Kode Variasi` diambil yang TERAKHIR (kolom 3 = kode Shopee,
+// kolom 6 = SKU kita) dan `Total Penjualan (...)` dicocokkan dengan `includes` karena
+// judulnya panjang dan bisa berubah akhiran mata uangnya.
 
-/** Indeks kolom pada ekspor `parentskudetail*.xlsx`. Lihat catatan di atas file. */
-export const KOL = {
+/** Indeks kolom CADANGAN pada ekspor `parentskudetail*.xlsx`. Lihat catatan di atas. */
+export const KOL: KolomPeta = {
   kodeProduk: 0, produk: 1, kodeVariasiShopee: 3, namaVariasi: 4,
-  skuVariasi: 6, skuInduk: 7, omzet: 8, pesanan: 16,
-} as const;
+  skuVariasi: 6, skuInduk: 7, omzet: 8, pesanan: 15,
+  dilihat: 10, klik: 11, kunjungan: 27, tanpaBeli: 29, keranjang: 34,
+};
+
+/** Kolom peta yang sudah ditentukan. */
+export type KolomPeta = {
+  kodeProduk: number; produk: number; kodeVariasiShopee: number; namaVariasi: number;
+  skuVariasi: number; skuInduk: number; omzet: number; pesanan: number;
+  dilihat: number; klik: number; kunjungan: number; tanpaBeli: number; keranjang: number;
+};
+
+/** Judul header yang cocok dengan `cocok` (sudah lowercase), atau `-1`.
+ *  `terakhir` = ambil kemunculan TERAKHIR — dipakai `Kode Variasi` yang muncul dua kali. */
+function cariKolom(judul: string[], cocok: (h: string) => boolean, terakhir = false): number {
+  return terakhir ? judul.findLastIndex(cocok) : judul.findIndex(cocok);
+}
+
+/**
+ * Tentukan indeks kolom dari BARIS HEADER: cari lewat nama dulu, jatuh ke posisi `KOL`.
+ *
+ * Memakai nama saja tidak cukup (judul bisa bergeser) dan memakai posisi saja sudah
+ * terbukti salah (dua kolom `Kode Variasi`); gabungan keduanya membuat file tetap terbaca.
+ */
+export function deteksiKolom(header: unknown[]): KolomPeta {
+  const judul = Array.from(header ?? [], (v) => bersih(v).toLowerCase());
+  // Sebagian sel header bisa kosong -> jangan pernah menjadikan `null` sebagai judul cocok.
+  const ada = (nama: string) => judul.indexOf(nama);
+
+  const ambil = (kandidat: number[], posisi: number): number => {
+    for (const i of kandidat) if (i >= 0) return i;
+    return posisi;
+  };
+
+  const kodeProduk = ambil([ada("kode produk")], KOL.kodeProduk);
+  const produk = ambil([ada("produk")], KOL.produk);
+  // `Kode Variasi` muncul DUA KALI; yang benar yang TERAKHIR (SKU kita, kolom 6).
+  const skuVariasi = ambil([cariKolom(judul, (h) => h === "kode variasi", true)], KOL.skuVariasi);
+  const skuInduk = ambil([ada("sku induk")], KOL.skuInduk);
+  const namaVariasi = ambil([ada("nama variasi")], KOL.namaVariasi);
+  const omzet = ambil([cariKolom(judul, (h) => h.includes("total penjualan (pesanan dibuat)"))], KOL.omzet);
+  const pesanan = ambil([ada("pesanan dibuat")], KOL.pesanan);
+  const dilihat = ambil([ada("jumlah produk dilihat")], KOL.dilihat);
+  const klik = ambil([ada("produk diklik")], KOL.klik);
+  const kunjungan = ambil([ada("pengunjung produk (kunjungan)")], KOL.kunjungan);
+  const tanpaBeli = ambil([ada("pengunjung melihat tanpa membeli")], KOL.tanpaBeli);
+  const keranjang = ambil([ada("dimasukkan ke keranjang (produk)")], KOL.keranjang);
+  // Kode variasi SHOPEE tidak punya judul pembeda (judulnya sama dengan SKU kita), jadi posisi.
+  const kodeVariasiShopee = KOL.kodeVariasiShopee;
+
+  return { kodeProduk, produk, kodeVariasiShopee, namaVariasi, skuVariasi, skuInduk, omzet, pesanan, dilihat, klik, kunjungan, tanpaBeli, keranjang };
+}
 
 /** Satu kandidat SKU dari mesin pencocokan. HANYA tampilan — tidak pernah jadi keputusan. */
 export type SkorSku = { sku: string; nama: string | null; skor: number };
@@ -32,11 +95,19 @@ type KandidatMesin = { cari: (nama: string) => SkorSku[] };
 export type BarisPeta = {
   kodeProduk: string;
   sku: string;
-  /** Dari kolom [6] = "variasi"; dari kolom [7] = "induk". */
+  /** Dari kolom `skuVariasi` = "variasi"; dari kolom `skuInduk` = "induk". */
   tingkat: "variasi" | "induk";
   variasi: string | null;
   kodeVariasiShopee: string | null;
   namaShopee: string;
+  /** Metrik periode ini — HANYA dari baris induk, lihat aturan 4 di `bangunPeta`. */
+  dilihat: number;
+  klik: number;
+  kunjungan: number;
+  keranjang: number;
+  tanpaBeli: number;
+  pesanan: number;
+  omzet: number;
 };
 
 /** Pertanyaan yang menunggu jawaban manusia; di-dedup per (jenis, kodeProduk). */
@@ -109,12 +180,13 @@ export function bersih(v: unknown): string {
  * Bangun peta produk Shopee dari baris mentah ekspor.
  *
  * ATURAN YANG MENGIKAT (dilanggar = laporan omzet per SKU salah diam-diam):
- *   1. Baris 0 header — dilewati.
- *   2. SKU diambil dari kolom [KOL.skuVariasi] DULU, baru [KOL.skuInduk].
+ *   1. Baris 0 header — dilewati. Kolom ditentukan `deteksiKolom` dari header itu.
+ *   2. SKU diambil dari kolom `skuVariasi` DULU, baru `skuInduk`.
  *   3. Cocok PERSIS ke master (setelah trim). Nol depan dan awalan `SKU/` TIDAK dibuang —
  *      "1203" dan "001203" adalah dua SKU berbeda; menyamakannya = menempelkan omzet
  *      ke produk yang salah.
- *   4. Pesanan & omzet HANYA dibaca dari baris induk (kolom kode variasi Shopee kosong).
+ *   4. Pesanan, omzet, dan SELURUH metrik (dilihat/klik/kunjungan/keranjang/tanpaBeli)
+ *      HANYA dibaca dari baris induk (kolom kode variasi Shopee kosong).
  *      Baris variasi mengulang angka yang sama, jadi menjumlahkannya melipatgandakan omzet.
  *   5. Satu kodeProduk boleh muncul berkali-kali (model varian) — tidak di-dedup.
  *   6. Kandidat hanya untuk tampilan; hasil pemetaan tidak boleh bergantung padanya.
@@ -123,6 +195,7 @@ export function bangunPeta(rows: unknown[][], master: Set<string>, mesin?: Kandi
   const baris: BarisPeta[] = [];
   const pertanyaan: PertanyaanPeta[] = [];
   const petaPertanyaan = new Map<string, PertanyaanPeta>();
+  const kol = deteksiKolom(rows[0] ?? []);
 
   // Ringkasan dihitung dari baris induk: total = semua produk, terpetakan = yang punya SKU.
   const pesananPerProduk = new Map<string, number>();
@@ -138,10 +211,10 @@ export function bangunPeta(rows: unknown[][], master: Set<string>, mesin?: Kandi
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
     if (!row) continue;
-    const kodeProduk = bersih(row[KOL.kodeProduk]);
+    const kodeProduk = bersih(row[kol.kodeProduk]);
     if (kodeProduk === "") continue;
-    const sv = bersih(row[KOL.skuVariasi]);
-    const si = bersih(row[KOL.skuInduk]);
+    const sv = bersih(row[kol.skuVariasi]);
+    const si = bersih(row[kol.skuInduk]);
     const s = sv !== "" ? sv : si;
     if (s !== "" && master.has(s)) terpetakanAwal.add(kodeProduk);
   }
@@ -149,31 +222,40 @@ export function bangunPeta(rows: unknown[][], master: Set<string>, mesin?: Kandi
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
     if (!row) continue;
-    const kodeProduk = bersih(row[KOL.kodeProduk]);
+    const kodeProduk = bersih(row[kol.kodeProduk]);
     if (kodeProduk === "") continue;
 
-    const namaShopee = bersih(row[KOL.produk]);
-    const kodeVariasiShopee = bersih(row[KOL.kodeVariasiShopee]);
-    const variasi = bersih(row[KOL.namaVariasi]) || null;
+    const namaShopee = bersih(row[kol.produk]);
+    const kodeVariasiShopee = bersih(row[kol.kodeVariasiShopee]);
+    const variasi = bersih(row[kol.namaVariasi]) || null;
     const iniInduk = kodeVariasiShopee === "";
 
     // Angka hanya sah di baris induk — lihat aturan 4.
     if (iniInduk) {
-      const pesanan = bacaAngka(row[KOL.pesanan]);
-      const omzet = bacaAngka(row[KOL.omzet]);
+      const pesanan = bacaAngka(row[kol.pesanan]);
+      const omzet = bacaAngka(row[kol.omzet]);
       pesananPerProduk.set(kodeProduk, (pesananPerProduk.get(kodeProduk) ?? 0) + pesanan);
       omzetPerProduk.set(kodeProduk, (omzetPerProduk.get(kodeProduk) ?? 0) + omzet);
     }
 
     // Aturan 2: SKU variasi menang atas SKU induk.
-    const skuVariasi = bersih(row[KOL.skuVariasi]);
-    const skuInduk = bersih(row[KOL.skuInduk]);
+    const skuVariasi = bersih(row[kol.skuVariasi]);
+    const skuInduk = bersih(row[kol.skuInduk]);
     const sku = skuVariasi !== "" ? skuVariasi : skuInduk;
     const tingkat: "variasi" | "induk" = skuVariasi !== "" ? "variasi" : "induk";
 
     if (sku !== "" && master.has(sku)) {
       produkTerpetakan.add(kodeProduk);
-      baris.push({ kodeProduk, sku, tingkat, variasi, kodeVariasiShopee: kodeVariasiShopee || null, namaShopee });
+      baris.push({
+        kodeProduk, sku, tingkat, variasi, kodeVariasiShopee: kodeVariasiShopee || null, namaShopee,
+        dilihat: iniInduk ? bacaAngka(row[kol.dilihat]) : 0,
+        klik: iniInduk ? bacaAngka(row[kol.klik]) : 0,
+        kunjungan: iniInduk ? bacaAngka(row[kol.kunjungan]) : 0,
+        keranjang: iniInduk ? bacaAngka(row[kol.keranjang]) : 0,
+        tanpaBeli: iniInduk ? bacaAngka(row[kol.tanpaBeli]) : 0,
+        pesanan: iniInduk ? bacaAngka(row[kol.pesanan]) : 0,
+        omzet: iniInduk ? bacaAngka(row[kol.omzet]) : 0,
+      });
       continue;
     }
 
@@ -188,8 +270,8 @@ export function bangunPeta(rows: unknown[][], master: Set<string>, mesin?: Kandi
     if (terpetakanAwal.has(kodeProduk)) continue;
 
     const jenis: PertanyaanPeta["jenis"] = sku !== "" ? "sku_tak_ada_master" : "tanpa_sku";
-    const pesananBaris = iniInduk ? bacaAngka(row[KOL.pesanan]) : 0;
-    const omzetBaris = iniInduk ? bacaAngka(row[KOL.omzet]) : 0;
+    const pesananBaris = iniInduk ? bacaAngka(row[kol.pesanan]) : 0;
+    const omzetBaris = iniInduk ? bacaAngka(row[kol.omzet]) : 0;
     const kunci = `${jenis}|${kodeProduk}`;
     const ada = petaPertanyaan.get(kunci);
     if (ada) {
