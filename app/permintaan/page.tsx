@@ -69,9 +69,17 @@ function Permintaan() {
     setError(false);
     setSemua(null);
     try {
-      const [dokumen, stok] = await Promise.all([data.listDailyRequests(), data.listStock()]);
+      const [dokumen, kurang] = await Promise.all([
+        data.listDailyRequests(),
+        data.listKekurangan(),
+      ]);
       setSemua(dokumen);
-      setStokMap(new Map(stok.map((s) => [s.kode_barang, s.stok_gudang_online])));
+      // Dulu di sini ada `listStock()` TANPA limit: seluruh katalog (~2000 baris JOIN)
+      // ditarik hanya untuk mengisi kolom "Saran = kekurangan stok gudang online" di
+      // dialog Ubah Jumlah. Yang dipakai hanya `kekuranganStok(stok)` = `|stok|` saat stok
+      // minus; `scope=kekurangan` mengembalikan PERSIS baris minus (plus baris menipis yang
+      // `stok`-nya tetap >= 0), jadi hasilnya identik dengan satu request kecil.
+      setStokMap(new Map(kurang.map((k) => [k.sku, k.stok])));
     } catch {
       setError(true);
     }

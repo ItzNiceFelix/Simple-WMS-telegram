@@ -5,12 +5,14 @@
 // dan `status` penerimaan SENDIRI. Tiga seksi: Buat (dialog), Filter, Daftar.
 // Aturan perilaku acuan: lib/models/permintaanGudang.js + docs/plan-v5.1.md bagian 3 & 9.
 // Akses: guest ditolak lewat ButuhAkses (paritas app/draft/page.tsx).
-import { useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react"
+import { useSearchParams } from "next/navigation"
 import { toast } from "sonner"
-import { ArrowRightLeft, Plus, Trash2, TriangleAlert } from "lucide-react"
+import { ArrowRightLeft, FileDown, Plus, Trash2, TriangleAlert } from "lucide-react"
 
 import { PageHeader } from "@/components/dashboard/page-header"
 import { ButuhAkses } from "@/components/dashboard/butuh-akses"
+import { DialogPermintaanExport } from "@/components/dashboard/dialog-permintaan-export"
 import { tampilkanGagalTulis } from "@/components/dashboard/umpan-tulis"
 import {
   AlertDialog,
@@ -57,13 +59,13 @@ import { Skeleton } from "@/components/ui/skeleton"
 import { Spinner } from "@/components/ui/spinner"
 import { formatTanggal } from "@/lib/dashboard/format"
 import { useData, useRole } from "@/lib/dashboard/sumber-data"
+import { useCariProduk } from "@/lib/dashboard/useCariProduk"
 import type {
   GudangDoc,
   PermintaanGudangDoc,
   PermintaanItem,
   PermintaanStatus,
   StatusKirimTujuan,
-  StockRow,
   TujuanEntri,
   TujuanStatus,
 } from "@/lib/dashboard/types"
@@ -147,10 +149,48 @@ interface UserTujuan {
   gudang_id: string | null
 }
 
+/** Kunci sekali-pakai dari /stok: [{kode, qty}] untuk dialog Buat Permintaan. */
+const KUNCI_PREFILL = "wms:kekurangan-prefill"
+
+/** Gudang tujuan yang dipaksa pada jalur kekurangan (stok online). */
+const GUDANG_ONLINE = "ONLINE"
+
+/** Baca + hapus prefill dari sessionStorage; malformed → null (jangan bikin dialog rusak). */
+function ambilPrefill(): BarisItem[] | null {
+  let mentah: string | null = null
+  try {
+    mentah = sessionStorage.getItem(KUNCI_PREFILL)
+  } catch {
+    return null
+  }
+  if (!mentah) return null
+  try {
+    sessionStorage.removeItem(KUNCI_PREFILL)
+  } catch {
+    // abaikan: tetap pakai nilainya walau gagal hapus
+  }
+  try {
+    const parsed: unknown = JSON.parse(mentah)
+    if (!Array.isArray(parsed)) return null
+    const baris: BarisItem[] = []
+    for (const [i, r] of (parsed as Record<string, unknown>[]).entries()) {
+      const kode = typeof r.kode === "string" ? r.kode.trim() : ""
+      const qty = Number(r.qty)
+      if (!kode || !Number.isFinite(qty) || qty <= 0) continue
+      baris.push({ key: i + 1, kode, qty: String(Math.floor(qty)) })
+    }
+    return baris.length > 0 ? baris : null
+  } catch {
+    return null
+  }
+}
+
 export default function HalamanPermintaanGudang() {
   return (
     <ButuhAkses href="/permintaan-gudang">
-      <PermintaanGudang />
+      <Suspense fallback={<Memuat />}>
+        <PermintaanGudang />
+      </Suspense>
     </ButuhAkses>
   )
 }
@@ -158,32 +198,43 @@ export default function HalamanPermintaanGudang() {
 function PermintaanGudang() {
   const data = useData()
   const role = useRole()
+  const cari = useSearchParams()
+  // Jalur prefill dari /stok (kekurangan stok online). Dibaca SEKALI saat mount.
+  const lewatKekurangan = cari.get("dari") === "kekurangan"
+  const [prefill] = useState<BarisItem[] | null>(() => (lewatKekurangan ? ambilPrefill() : null))
+  const dariKekurangan = lewatKekurangan && prefill !== null
 
   const [gudang, setGudang] = useState<GudangDoc[] | null>(null)
-  const [produk, setProduk] = useState<StockRow[] | null>(null)
   const [users, setUsers] = useState<UserTujuan[] | null>(null)
   const [daftar, setDaftar] = useState<PermintaanGudangDoc[] | null>(null)
   const [uid, setUid] = useState<string | null>(null)
   const [error, setError] = useState(false)
   const [filterStatus, setFilterStatus] = useState<"semua" | PermintaanStatus>("semua")
   const [bukaBuat, setBukaBuat] = useState(false)
+  // Dokumen yang lahir dari jalur kekurangan → badge penanda (state lokal saja).
+  const [idDariKekurangan, setIdDariKekurangan] = useState<string | null>(null)
+
+  // Dialog langsung terbuka bila prefill dari /stok ada.
+  useEffect(() => {
+    if (dariKekurangan) setBukaBuat(true)
+  }, [dariKekurangan])
 
   const muat = useCallback(async () => {
     setError(false)
     setGudang(null)
-    setProduk(null)
     setUsers(null)
     setDaftar(null)
     try {
-      const [g, p, u, d, sesi] = await Promise.all([
+      // Dulu di sini ada `listStock({ is_online: "semua" })` TANPA limit: seluruh katalog
+      // (~2000 baris JOIN) ditarik hanya untuk mengisi pemilih produk di dialog. Sekarang
+      // pemilih memakai `useCariProduk` (pencarian di server, 50 baris per ketikan).
+      const [g, u, d, sesi] = await Promise.all([
         data.listGudang(),
-        data.listStock({ is_online: "semua" }),
         data.listUserTujuan(),
         data.listPermintaanGudang(),
         data.getSession(),
       ])
       setGudang(g)
-      setProduk(p)
       setUsers(u)
       setDaftar(d)
       setUid(sesi.user.id)
@@ -206,8 +257,7 @@ function PermintaanGudang() {
     [daftar, filterStatus]
   )
 
-  const sedangMemuat =
-    gudang === null || produk === null || users === null || daftar === null || uid === null
+  const sedangMemuat = gudang === null || users === null || daftar === null || uid === null
 
   return (
     <>
@@ -352,7 +402,7 @@ function PermintaanGudang() {
                         namaGudang={namaGudang}
                         role={role}
                         uid={uid ?? ""}
-                        produk={produk ?? []}
+                        dariKekurangan={r.id === idDariKekurangan}
                         onSukses={() => void muat()}
                       />
                     </li>
@@ -368,10 +418,14 @@ function PermintaanGudang() {
         open={bukaBuat}
         onOpenChange={setBukaBuat}
         gudang={gudang ?? []}
-        produk={produk ?? []}
         users={users ?? []}
         role={role}
-        onSukses={() => void muat()}
+        prefill={prefill}
+        hanyaOnline={dariKekurangan}
+        onSukses={(id) => {
+          if (id && dariKekurangan) setIdDariKekurangan(id)
+          void muat()
+        }}
       />
     </>
   )
@@ -384,14 +438,15 @@ function KartuPermintaan({
   namaGudang,
   role,
   uid,
-  produk,
+  dariKekurangan,
   onSukses,
 }: {
   permintaan: PermintaanGudangDoc
   namaGudang: Map<string, string>
   role: string
   uid: string
-  produk: StockRow[]
+  /** Dokumen lahir dari jalur kekurangan /stok (badge penanda). */
+  dariKekurangan: boolean
   onSukses: () => void
 }) {
   const id = permintaan.id
@@ -400,6 +455,8 @@ function KartuPermintaan({
   const semuaTujuanFinal =
     permintaan.tujuan.length > 0 && permintaan.tujuan.every((t) => TUJUAN_FINAL.has(t.status))
   const bolehSelesai = role === "owner" || (uid !== "" && uid === permintaan.created_by)
+  const [bukaEkspor, setBukaEkspor] = useState(false)
+  const namaDokumen = "Permintaan " + id
 
   return (
     <Card size="sm" data-testid={`kartu-permintaan-${id}`}>
@@ -411,12 +468,43 @@ function KartuPermintaan({
           <Badge variant={varianStatus(permintaan.status)} data-testid={`status-permintaan-${id}`}>
             {LABEL_STATUS[permintaan.status]}
           </Badge>
+          {dariKekurangan ? (
+            <Badge variant="outline" data-testid="badge-dari-kekurangan">
+              Dari kekurangan stok
+            </Badge>
+          ) : null}
         </CardTitle>
         <p className="text-xs text-muted-foreground tabular-nums">
           {permintaan.tujuan.length} tujuan · {permintaan.items.length} item · Dibuat{" "}
           {formatTanggal(permintaan.created_at)} · Oleh {permintaan.created_by}
         </p>
+        <div className="flex justify-end">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="h-11 md:h-8"
+            data-testid={`ekspor-permintaan-${id}`}
+            onClick={() => setBukaEkspor(true)}
+          >
+            <FileDown data-icon="inline-start" />
+            Ekspor
+          </Button>
+        </div>
       </CardHeader>
+
+      <DialogPermintaanExport
+        open={bukaEkspor}
+        onOpenChange={setBukaEkspor}
+        id={id}
+        nama={namaDokumen}
+        asal={namaGudang.get(permintaan.dari_gudang_id) ?? permintaan.dari_gudang_id}
+        baris={permintaan.items.map((it) => ({
+          nama: it.kode_barang,
+          sku: it.kode_barang,
+          qty: it.qty,
+        }))}
+      />
 
       <CardContent className="flex flex-col gap-3">
         <div className="flex flex-col gap-1.5">
@@ -461,7 +549,7 @@ function KartuPermintaan({
             onSukses={onSukses}
           />
           {permintaan.status === "menunggu" ? (
-            <DialogUbahItem permintaan={permintaan} produk={produk} onSukses={onSukses} />
+            <DialogUbahItem permintaan={permintaan} onSukses={onSukses} />
           ) : null}
           <AksiSelesaiDokumen
             id={id}
@@ -1128,11 +1216,9 @@ interface BarisItem {
 
 function DialogUbahItem({
   permintaan,
-  produk,
   onSukses,
 }: {
   permintaan: PermintaanGudangDoc
-  produk: StockRow[]
   onSukses: () => void
 }) {
   const data = useData()
@@ -1141,6 +1227,12 @@ function DialogUbahItem({
   const [error, setError] = useState<string | null>(null)
   const [mengirim, setMengirim] = useState(false)
   const sinkron = useRef(false)
+
+  // Pencarian produk dilakukan SERVER (50 baris per ketikan); kode yang sudah terpilih
+  // selalu ikut ditahan sehingga labelnya tidak hilang saat daftar opsi berganti.
+  const { daftar: produk, setCari } = useCariProduk(
+    open ? baris.map((b) => b.kode).filter(Boolean) : []
+  )
 
   const opsiProduk = useMemo(
     () =>
@@ -1266,6 +1358,7 @@ function DialogUbahItem({
                       value={b.kode === "" ? null : b.kode}
                       onChange={(v) => ubah(b.key, { kode: v ?? "" })}
                       items={opsiProduk}
+                      onCariChange={setCari}
                       placeholder="Cari produk..."
                       kosongTeks="Produk tidak ditemukan"
                       disabled={mengirim}
@@ -1364,18 +1457,22 @@ function DialogBuatPermintaan({
   open,
   onOpenChange,
   gudang,
-  produk,
   users,
   role,
+  prefill,
+  hanyaOnline,
   onSukses,
 }: {
   open: boolean
   onOpenChange: (v: boolean) => void
   gudang: GudangDoc[]
-  produk: StockRow[]
   users: UserTujuan[]
   role: string
-  onSukses: () => void
+  /** Item awal dari /stok; null = jalur manual. */
+  prefill: BarisItem[] | null
+  /** Jalur kekurangan: tujuan dikunci ke gudang ONLINE. */
+  hanyaOnline: boolean
+  onSukses: (id?: string) => void
 }) {
   const data = useData()
   const [dari, setDari] = useState("")
@@ -1384,6 +1481,12 @@ function DialogBuatPermintaan({
   const [error, setError] = useState<string | null>(null)
   const [mengirim, setMengirim] = useState(false)
   const sinkron = useRef(false)
+
+  // Pencarian produk dilakukan SERVER (50 baris per ketikan). Kode dari prefill /stok dan
+  // yang sudah dipilih user ikut ditahan, jadi labelnya tidak hilang saat opsi berganti.
+  const { daftar: produk, setCari } = useCariProduk(
+    open ? baris.map((b) => b.kode).filter(Boolean) : []
+  )
 
   const opsiProduk = useMemo(
     () =>
@@ -1399,18 +1502,28 @@ function DialogBuatPermintaan({
     [gudang, dari]
   )
 
+  /** Jalur kekurangan: tujuan HANYA gudang ONLINE, tanpa checkbox pilihan. */
+  const gudangOnline = useMemo(
+    () => gudang.find((g) => g.gudang_id === GUDANG_ONLINE) ?? null,
+    [gudang]
+  )
+
   const barisTerisi = baris.filter((b) => b.kode !== "")
 
-  // Reset form SEKALI saat dialog dibuka.
+  // Reset form SEKALI saat dialog dibuka. Prefill /stok ikut mengisi item + tujuan ONLINE.
   useEffect(() => {
     if (open && !sinkron.current) {
-      setBaris([{ key: 1, kode: "", qty: "" }])
-      setTujuan([])
+      setBaris(prefill && prefill.length > 0 ? prefill : [{ key: 1, kode: "", qty: "" }])
+      setTujuan(
+        hanyaOnline && gudangOnline
+          ? [{ key: 1, gudangId: GUDANG_ONLINE, penerimaId: null, qty: {} }]
+          : []
+      )
       setError(null)
       setMengirim(false)
     }
     sinkron.current = open
-  }, [open])
+  }, [open, prefill, hanyaOnline, gudangOnline])
 
   // Isi gudang asal default. DIPISAH dari reset karena gudang bisa termuat SETELAH
   // dialog dibuka; tanpa efek ini `dari` tetap kosong dan server menolak.
@@ -1547,7 +1660,7 @@ function DialogBuatPermintaan({
       if (res.ok) {
         toast.success("Permintaan dibuat. Menunggu persetujuan.")
         onOpenChange(false)
-        onSukses()
+        onSukses(res.permintaan.id)
       } else {
         const kedaluwarsa = tampilkanGagalTulis(res.error)
         if (!kedaluwarsa) setError(res.error)
@@ -1588,7 +1701,12 @@ function DialogBuatPermintaan({
                 if (typeof v === "string") {
                   setDari(v)
                   // Tujuan harus selain gudang asal -> reset bila gudang asal berubah.
-                  setTujuan([])
+                  // Jalur kekurangan: tujuan ONLINE tetap terkunci (bukan pilihan user).
+                  setTujuan(
+                    hanyaOnline && gudangOnline
+                      ? [{ key: 1, gudangId: GUDANG_ONLINE, penerimaId: null, qty: {} }]
+                      : []
+                  )
                 }
               }}
               disabled={mengirim}
@@ -1633,6 +1751,7 @@ function DialogBuatPermintaan({
                       value={b.kode === "" ? null : b.kode}
                       onChange={(v) => ubah(b.key, { kode: v ?? "" })}
                       items={opsiProduk}
+                      onCariChange={setCari}
                       placeholder="Cari produk..."
                       kosongTeks="Produk tidak ditemukan"
                       disabled={mengirim}
@@ -1688,36 +1807,70 @@ function DialogBuatPermintaan({
 
           <fieldset className="flex flex-col gap-2" data-testid="pilih-tujuan">
             <legend className="mb-1.5 text-sm font-medium">Kirim ke</legend>
-            <p className="text-xs text-muted-foreground">Pilih satu atau lebih gudang tujuan.</p>
-            <div className="flex max-h-56 flex-col gap-1 overflow-y-auto rounded-lg border border-border p-2">
-              {gudangTujuanTersedia.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  Belum ada gudang tujuan selain gudang asal.
+            {hanyaOnline ? (
+              <>
+                <p className="text-xs text-muted-foreground" data-testid="catatan-tujuan-online">
+                  Tujuan terkunci ke gudang ONLINE karena permintaan ini untuk mengisi stok gudang
+                  online.
                 </p>
-              ) : (
-                gudangTujuanTersedia.map((g) => {
-                  const dipilih = tujuan.some((t) => t.gudangId === g.gudang_id)
-                  return (
+                <div className="flex flex-col gap-1 rounded-lg border border-border p-2">
+                  {gudangOnline ? (
                     <label
-                      key={g.gudang_id}
-                      htmlFor={`tujuan-gudang-${g.gudang_id}`}
-                      className="flex min-h-11 cursor-pointer items-center gap-2 rounded-md px-1.5 py-1.5 text-sm hover:bg-muted/50 md:min-h-8"
+                      htmlFor="tujuan-gudang-ONLINE"
+                      className="flex min-h-11 items-center gap-2 rounded-md px-1.5 py-1.5 text-sm md:min-h-8"
                     >
                       <input
-                        id={`tujuan-gudang-${g.gudang_id}`}
+                        id="tujuan-gudang-ONLINE"
                         type="checkbox"
                         className="size-4 accent-primary"
-                        checked={dipilih}
-                        disabled={mengirim}
-                        data-testid={`tujuan-gudang-${g.gudang_id}`}
-                        onChange={() => pilihGudangTujuan(g.gudang_id)}
+                        checked
+                        disabled
+                        data-testid="tujuan-gudang-ONLINE"
+                        onChange={() => undefined}
                       />
-                      <span className="min-w-0 flex-1 truncate">{g.nama}</span>
+                      <span className="min-w-0 flex-1 truncate">{gudangOnline.nama}</span>
                     </label>
-                  )
-                })
-              )}
-            </div>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      Gudang ONLINE belum ada di master gudang. Minta owner menambahkannya.
+                    </p>
+                  )}
+                </div>
+              </>
+            ) : (
+              <>
+                <p className="text-xs text-muted-foreground">Pilih satu atau lebih gudang tujuan.</p>
+                <div className="flex max-h-56 flex-col gap-1 overflow-y-auto rounded-lg border border-border p-2">
+                  {gudangTujuanTersedia.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                      Belum ada gudang tujuan selain gudang asal.
+                    </p>
+                  ) : (
+                    gudangTujuanTersedia.map((g) => {
+                      const dipilih = tujuan.some((t) => t.gudangId === g.gudang_id)
+                      return (
+                        <label
+                          key={g.gudang_id}
+                          htmlFor={`tujuan-gudang-${g.gudang_id}`}
+                          className="flex min-h-11 cursor-pointer items-center gap-2 rounded-md px-1.5 py-1.5 text-sm hover:bg-muted/50 md:min-h-8"
+                        >
+                          <input
+                            id={`tujuan-gudang-${g.gudang_id}`}
+                            type="checkbox"
+                            className="size-4 accent-primary"
+                            checked={dipilih}
+                            disabled={mengirim}
+                            data-testid={`tujuan-gudang-${g.gudang_id}`}
+                            onChange={() => pilihGudangTujuan(g.gudang_id)}
+                          />
+                          <span className="min-w-0 flex-1 truncate">{g.nama}</span>
+                        </label>
+                      )
+                    })
+                  )}
+                </div>
+              </>
+            )}
           </fieldset>
 
           {tujuan.length > 0 ? (

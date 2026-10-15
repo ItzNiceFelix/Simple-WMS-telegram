@@ -6,6 +6,7 @@ import type {
   AdminDoc,
   AiSettingsDoc,
   AdminV5Response,
+  BarisKekurangan,
   BuatOpnameGudangRequest,
   SetGudangUserRequest,
   SetJabatanRequest,
@@ -22,7 +23,6 @@ import type {
   MovementDoc,
   MutasiRequest,
   MutasiResponse,
-  OpnameDraftDoc,
   OpnameGudangDoc,
   PickingBatchDoc,
   ProdukDoc,
@@ -33,7 +33,6 @@ import type {
   SelesaikanResponse,
   SesuaikanQtyRequest,
   SesuaikanQtyResponse,
-  SyncStokDraftDoc,
   TambahAdminRequest,
   TambahAdminResponse,
   TandaiDatangRequest,
@@ -94,10 +93,21 @@ export interface DataSource {
   getRingkasan(): Promise<RingkasanData>;
   /** v5 (F9): filter opsional (gudang + online). Tanpa argumen = produk online (paritas lama). */
   listStock(filter?: import("../types").StockFilter): Promise<import("../types").StockRow[]>;
+  /**
+   * Stok satu halaman + total, dihitung server.
+   * Dipakai /stok supaya klien tidak perlu memegang seluruh katalog; `total` dari server
+   * membuat nomor halaman benar (paginasi di lapisan produk, bukan hasil JOIN).
+   */
+  listStockHalaman(
+    filter?: import("../types").StockFilter
+  ): Promise<{ rows: import("../types").StockRow[]; total: number }>;
+  /**
+   * Daftar kekurangan stok online (bahan dialog "Kekurangan Stok" di /stok).
+   * `kurang = max(butuh - stok, stok_min - stok)`, hanya baris dengan `kurang > 0`.
+   */
+  listKekurangan(): Promise<BarisKekurangan[]>;
   getProduk(kode: string): Promise<ProdukDetail | null>;
   listMovements(filter?: MovementFilter): Promise<MovementDoc[]>;
-  listOpnameDrafts(): Promise<OpnameDraftDoc[]>;
-  listSyncDrafts(): Promise<SyncStokDraftDoc[]>;
   listDailyRequests(): Promise<DailyRequestDoc[]>;
   listAdmins(): Promise<AdminDoc[]>;
   listRoleChanges(): Promise<RoleChangeDoc[]>;

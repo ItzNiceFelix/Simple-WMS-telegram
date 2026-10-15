@@ -23,6 +23,7 @@ import {
   EmptyTitle,
 } from "@/components/ui/empty"
 import { Field, FieldError, FieldLabel } from "@/components/ui/field"
+import { Combobox } from "@/components/ui/combobox"
 import { Input } from "@/components/ui/input"
 import {
   Select,
@@ -45,7 +46,8 @@ import {
 } from "@/components/ui/table"
 import { formatAngka, formatDelta, formatTanggal } from "@/lib/dashboard/format"
 import { useData, useRole } from "@/lib/dashboard/sumber-data"
-import type { GudangDoc, OpnameGudangDoc, OpnameGudangStatus, StockRow } from "@/lib/dashboard/types"
+import { useCariProduk } from "@/lib/dashboard/useCariProduk"
+import type { GudangDoc, OpnameGudangDoc, OpnameGudangStatus } from "@/lib/dashboard/types"
 
 /** Satu baris input opname. `qtyFisik` = teks mentah supaya field kosong bisa dibedakan dari 0. */
 interface BarisInput {
@@ -74,7 +76,6 @@ function OpnameGudang() {
   const bolehSetujui = role === "owner"
 
   const [gudang, setGudang] = useState<GudangDoc[] | null>(null)
-  const [produk, setProduk] = useState<StockRow[] | null>(null)
   const [daftar, setDaftar] = useState<OpnameGudangDoc[] | null>(null)
   const [error, setError] = useState(false)
 
@@ -86,16 +87,13 @@ function OpnameGudang() {
   const muat = useCallback(async () => {
     setError(false)
     setGudang(null)
-    setProduk(null)
     setDaftar(null)
     try {
-      const [g, p, o] = await Promise.all([
-        data.listGudang(),
-        data.listStock({ is_online: "semua", gudang_id: null }),
-        data.listOpnameGudang(),
-      ])
+      // Dulu di sini ada `listStock({ is_online: "semua", gudang_id: null })` TANPA limit:
+      // seluruh katalog ditarik hanya untuk mengisi pemilih produk. Sekarang pemilih
+      // memakai `useCariProduk` (pencarian di server, 50 baris per ketikan).
+      const [g, o] = await Promise.all([data.listGudang(), data.listOpnameGudang()])
       setGudang(g)
-      setProduk(p)
       setDaftar(o)
     } catch {
       setError(true)
@@ -112,7 +110,14 @@ function OpnameGudang() {
   }, [gudang, gudangId])
 
   const namaGudang = useMemo(() => new Map((gudang ?? []).map((g) => [g.gudang_id, g.nama])), [gudang])
-  const stokMap = useMemo(() => new Map((produk ?? []).map((p) => [p.kode_barang, p])), [produk])
+  // Pencarian produk di SERVER: hasil tetap lengkap walau hanya 50 baris dikirim per ketikan,
+  // dan kode yang sudah dipilih selalu ditahan sehingga labelnya tidak hilang.
+  const { daftar: produk, setCari } = useCariProduk(baris.map((b) => b.kode).filter(Boolean))
+  const stokMap = useMemo(() => new Map(produk.map((p) => [p.kode_barang, p])), [produk])
+  const opsiProduk = useMemo(
+    () => produk.map((p) => ({ value: p.kode_barang, label: p.nama_accurate ?? p.kode_barang })),
+    [produk]
+  )
   const menunggu = (daftar ?? []).filter((o) => o.status === "menunggu_approval")
 
   /** qty sistem untuk kode + gudang terpilih; null bila produk tanpa key gudang itu. */
@@ -187,7 +192,7 @@ function OpnameGudang() {
     }
   }
 
-  const sedangMemuat = gudang === null || produk === null || daftar === null
+  const sedangMemuat = gudang === null || daftar === null
 
   return (
     <>
@@ -281,34 +286,17 @@ function OpnameGudang() {
                             <FieldLabel htmlFor={`produk-${b.key}`}>
                               Produk{baris.length > 1 ? ` ${baris.indexOf(b) + 1}` : ""}
                             </FieldLabel>
-                            <Select
-                              value={b.kode === "" ? undefined : b.kode}
-                              onValueChange={(v) => {
-                                if (typeof v === "string") ubahBaris(b.key, { kode: v })
-                              }}
+                            <Combobox
+                              id={`produk-${b.key}`}
+                              value={b.kode === "" ? null : b.kode}
+                              onChange={(v) => ubahBaris(b.key, { kode: v ?? "" })}
+                              items={opsiProduk}
+                              onCariChange={setCari}
+                              placeholder="Cari produk..."
+                              kosongTeks="Produk tidak ditemukan"
                               disabled={mengirim}
-                            >
-                              <SelectTrigger
-                                id={`produk-${b.key}`}
-                                className="h-11 w-full data-[size=default]:h-11 md:h-8 md:data-[size=default]:h-8"
-                                data-testid={`pilih-produk-opname-${b.key}`}
-                              >
-                                <SelectValue>
-                                  {(v: string | null) =>
-                                    v ? (stokMap.get(v)?.nama_accurate ?? v) : "Pilih produk"
-                                  }
-                                </SelectValue>
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectGroup>
-                                  {produk.map((p) => (
-                                    <SelectItem key={p.kode_barang} value={p.kode_barang}>
-                                      {p.nama_accurate ?? p.kode_barang}
-                                    </SelectItem>
-                                  ))}
-                                </SelectGroup>
-                              </SelectContent>
-                            </Select>
+                              data-testid={`pilih-produk-opname-${b.key}`}
+                            />
                           </Field>
 
                           <Field className="md:w-40">

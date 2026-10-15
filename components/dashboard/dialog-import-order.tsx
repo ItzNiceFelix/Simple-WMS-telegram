@@ -9,8 +9,14 @@
 // BERURUTAN per batch_id supaya server tetap idempoten dan satu berkas gagal tidak
 // membatalkan berkas lain.
 import { useState } from "react"
-import * as XLSX from "xlsx"
 import { toast } from "sonner"
+
+// SheetJS 312 KB dimuat saat file benar-benar dibaca, bukan saat halaman dibuka.
+// Specifier statis; hanya waktu-muat yang dinamis (pola fabric di editor-desain).
+async function bacaExcel(buf: ArrayBuffer) {
+  const XLSX = await import("xlsx")
+  return { wb: XLSX.read(buf, { type: "array" }), toJson: XLSX.utils.sheet_to_json }
+}
 
 import { Button } from "@/components/ui/button"
 import {
@@ -143,13 +149,13 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
         setProgres({ nama: f.name, ke: i + 1, dari: files.length })
         try {
           const buf = await f.arrayBuffer()
-          const wb = XLSX.read(buf, { type: "array" })
+          const { wb, toJson } = await bacaExcel(buf)
           const ordersWs = wb.Sheets["orders"]
           const advanceWs = wb.Sheets["Advance Fulfilment"]
           if (!ordersWs) throw new Error('Workbook wajib memiliki sheet "orders".')
-          const ordersRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ordersWs, { defval: "" })
+          const ordersRows = toJson<Record<string, unknown>>(ordersWs, { defval: "" })
           const advanceRows = advanceWs
-            ? XLSX.utils.sheet_to_json<Record<string, unknown>>(advanceWs, { defval: "" })
+            ? toJson<Record<string, unknown>>(advanceWs, { defval: "" })
             : []
           const res = await fetch("/api/order", {
             method: "POST",

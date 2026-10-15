@@ -18,6 +18,13 @@ interface ComboboxProps {
   disabled?: boolean
   id?: string
   "data-testid"?: string
+  /**
+   * Mode pencarian SERVER: saat diisi, penyaringan lokal dimatikan (daftar `items` sudah
+   * hasil pencarian di server) dan tiap ketikan diteruskan lewat `onCariChange` supaya
+   * pemanggil bisa memicu request ber-debounce. Nilai terpilih TIDAK boleh hilang: pemanggil
+   * wajib menahan barisnya di `items`.
+   */
+  onCariChange?: (q: string) => void
 }
 
 function Combobox({
@@ -29,14 +36,16 @@ function Combobox({
   disabled = false,
   id,
   "data-testid": dataTestId,
+  onCariChange,
 }: ComboboxProps) {
   const [query, setQuery] = React.useState("")
   const [terbuka, setTerbuka] = React.useState(false)
+  const modeServer = onCariChange !== undefined
 
   // Satu sumber kebenaran untuk pencarian (dipakai juga oleh test CJS).
   const itemsTerfilter = React.useMemo(
-    () => filterItems(items, query),
-    [items, query]
+    () => filterItems(items, modeServer ? "" : query),
+    [items, query, modeServer]
   )
 
   // Base UI memakai nilai objek item sebagai value; komponen ini mengekspos
@@ -51,7 +60,11 @@ function Combobox({
       items={items}
       value={nilaiObjek}
       onValueChange={(it: ComboboxItem | null) => onChange(it ? it.value : null)}
-      onInputValueChange={(q: string) => setQuery(q)}
+      onInputValueChange={(q: string) => {
+        setQuery(q)
+        // Mode server: teruskan mentah-mentah; debounce + request urusan pemanggil.
+        onCariChange?.(q)
+      }}
       onOpenChange={(open: boolean) => setTerbuka(open)}
       itemToStringLabel={(it: ComboboxItem | null) => (it ? it.label : "")}
       itemToStringValue={(it: ComboboxItem | null) => (it ? it.value : "")}

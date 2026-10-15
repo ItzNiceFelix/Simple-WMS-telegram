@@ -30,23 +30,31 @@ import type { MovementDoc, RingkasanData, StockRow } from "@/lib/dashboard/types
 export default function HalamanRingkasan() {
   const data = useData();
   const [ringkasan, setRingkasan] = useState<RingkasanData | null>(null);
-  const [stock, setStock] = useState<StockRow[] | null>(null);
+  // Dua irisan sempit, bukan seluruh katalog: beranda cuma butuh daftar minus + 10 menipis.
+  const [minus, setMinus] = useState<StockRow[] | null>(null);
+  const [menipis, setMenipis] = useState<StockRow[] | null>(null);
   const [movements, setMovements] = useState<MovementDoc[] | null>(null);
   const [pesanError, setPesanError] = useState<string | null>(null);
 
   const muat = useCallback(async () => {
     setPesanError(null);
     setRingkasan(null);
-    setStock(null);
+    setMinus(null);
+    setMenipis(null);
     setMovements(null);
     try {
-      const [r, s, m] = await Promise.all([
+      const [r, s, sm, m] = await Promise.all([
         data.getRingkasan(),
-        data.listStock(),
+        // Beranda hanya menampilkan daftar minus + 10 menipis. Menarik SELURUH katalog
+        // (dulu ~2000 baris JOIN) demi dua potongan kecil itu jelas boros; ambil dua
+        // irisan sempit ini dari server. Dua panggilan supaya daftar minus tetap utuh.
+        data.listStockHalaman({ status: "minus", limit: 200 }),
+        data.listStockHalaman({ status: "menipis", limit: 10 }),
         data.listMovements({ limit: 10 }),
       ]);
       setRingkasan(r);
-      setStock(s);
+      setMinus(s.rows);
+      setMenipis(sm.rows);
       setMovements(m);
     } catch (e) {
       setPesanError(e instanceof Error ? e.message : "Gagal memuat ringkasan. Coba lagi.");
@@ -57,16 +65,11 @@ export default function HalamanRingkasan() {
     void muat();
   }, [muat]);
 
-  const minus = useMemo(
-    () =>
-      (stock ?? [])
-        .filter((r) => (r.stok_gudang_online ?? 0) < 0)
-        .sort((a, b) => b.kekurangan - a.kekurangan),
-    [stock]
-  );
-  const menipis = useMemo(
-    () => (stock ?? []).filter((r) => r.status === "menipis").slice(0, 10),
-    [stock]
+  // Urutan dihitung di sini karena SQL hanya menyaring statusnya; server tak tahu
+  // mana yang paling mendesak. Daftarnya sudah sempit (≤200 + 10), jadi murah.
+  const minusUrut = useMemo(
+    () => (minus ?? []).slice().sort((a, b) => b.kekurangan - a.kekurangan),
+    [minus]
   );
 
   return (
@@ -88,7 +91,7 @@ export default function HalamanRingkasan() {
               </Button>
             </AlertDescription>
           </Alert>
-        ) : !ringkasan || !stock || !movements ? (
+        ) : !ringkasan || !minus || !menipis || !movements ? (
           <Memuat />
         ) : (
           <>
@@ -99,7 +102,7 @@ export default function HalamanRingkasan() {
               judul="Perlu Minta Gudang Cabang"
               deskripsi="Produk dengan stok online di bawah nol, urut kekurangan terbesar."
               aksi={
-                minus.length > 0 ? (
+                minusUrut.length > 0 ? (
                   <Button
                     variant="link"
                     size="sm"
@@ -113,7 +116,7 @@ export default function HalamanRingkasan() {
                 ) : null
               }
             >
-              {minus.length === 0 ? (
+              {minusUrut.length === 0 ? (
                 <Empty className="border border-dashed" data-testid="empty-minta-gudang">
                   <EmptyHeader>
                     <EmptyMedia variant="icon">
@@ -127,7 +130,7 @@ export default function HalamanRingkasan() {
                 </Empty>
               ) : (
                 <ul className="flex flex-col">
-                  {minus.slice(0, 5).map((r, i) => (
+                  {minusUrut.slice(0, 5).map((r, i) => (
                     <li key={r.kode_barang} data-testid={`baris-minus-${r.kode_barang}`}>
                       {i > 0 ? <Separator /> : null}
                       <div className="flex items-center justify-between gap-3 py-3">

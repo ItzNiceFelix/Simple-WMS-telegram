@@ -12,7 +12,10 @@ import { transisiFulfillBatch, type KeFulfill } from "@/lib/d1/orderTransisi";
 import { buatPicklist, buatPicklistPaket } from "@/lib/d1/picklist";
 import { bangunPdfPicklist } from "@/lib/d1/picklistPdf";
 import { bangunPdfPicklistPaket } from "@/lib/d1/picklistPaketPdf";
+import { bangunPdfPicklistGabung, type BarisPickGabung } from "@/lib/d1/picklistGabungPdf";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
+import { potongOnlineUntukOrder } from "@/lib/d1/stokOnline";
+import { listBooking } from "@/lib/d1/advanceBelumSku";
 import { normalisasiSheetShopee, normalisasiStatus, type GabunganOrder, type ShopeeAdvanceRow, type ShopeeOrderRow, type ShopeeBooking, type BarisBelumSku } from "@/lib/d1/orderImportShopee";
 import { hitungFingerprint, cekFileSudahAda, catatImportFile } from "@/lib/d1/importFingerprint";
 import { klasifikasikanImport, type OrderBaru } from "@/lib/d1/orderKlasifikasi";
@@ -165,13 +168,61 @@ export async function GET(request: Request) {
       return json({ ok: true, ringkas });
     }
     const mode = modeMinta === "" ? ((await pakaiPerPaket(db, targets)) ? "per_paket" : "pisah") : modeMinta;
-    if (mode !== "per_paket" && mode !== "pisah" && mode !== "gabung") return json({ ok: false, error: "Mode harus per_paket/pisah/gabung." }, 400);
+    if (mode !== "per_paket" && mode !== "pisah" && mode !== "gabung" && mode !== "gabung-order")
+      return json({ ok: false, error: "Mode harus per_paket/pisah/gabung/gabung-order." }, 400);
+    // Mode gabung-order = satu lembar berisi order + advance. Dipakai picker supaya tidak
+    // menyisir rak dua kali untuk barang yang diambil pada saat yang sama.
+    if (mode === "gabung-order") {
+      const st = url.searchParams.get("status") ?? "menunggu";
+      const booking = await listBooking(db, { status: st, limit: 500 });
+      const pick = await buatPicklistPaket(db, targets);
+      if (!pick.ok) return json({ ok: false, error: pick.error }, pick.status);
+      const barisGabung: BarisPickGabung[] = [
+        ...pick.paket.flatMap((p) =>
+          p.rows.map((r) => ({
+            jenis: "order" as const,
+            sku: r.sku,
+            nama: r.nama,
+            lokasi: "Gudang ONLINE",
+            qty: r.qty,
+            kunci: p.no_resi || p.no_pesanan.join("+"),
+            kirimKe: p.no_pesanan.join("+"),
+          }))
+        ),
+        ...booking.map((b2) => ({
+          jenis: "advance" as const,
+          sku: b2.sku,
+          nama: b2.nama_produk,
+          lokasi: "Gudang ONLINE",
+          qty: b2.qty,
+          kunci: b2.booking_sn,
+          kirimKe: b2.antar_ke,
+        })),
+      ];
+      if (barisGabung.length === 0) return json({ ok: false, error: "Tak ada item untuk dicetak." }, 400);
+      const bytes = await bangunPdfPicklistGabung(barisGabung, { gudangDefault: "Gudang ONLINE" });
+      return new Response(new Uint8Array(bytes), {
+        status: 200,
+        headers: {
+          "content-type": "application/pdf",
+          "content-disposition": `attachment; filename="picklist-order-advance.pdf"`,
+          "cache-control": "no-store",
+        },
+      });
+    }
+    // Stok gudang ONLINE dipotong DI SINI, sekali per order, karena Kledo tidak mengenal
+    // gudang virtual itu. Cetak ulang aman: orders.stok_dikurangi menahan pemotongan kedua.
+    const potong = await potongOnlineUntukOrder(db, targets, String(sesi.user.id));
+    if (!potong.ok) return json({ ok: false, error: potong.error }, potong.status);
     const namaFile = mode === "per_paket" ? "picklist-per-paket.pdf" : mode === "gabung" ? "picklist-gabung.pdf" : "picklist.pdf";
     const header = {
       status: 200,
       headers: {
         "content-type": "application/pdf",
         "content-disposition": `attachment; filename="${namaFile}"`,
+        // Kekurangan ikut di header supaya halaman order bisa memunculkan dialog permintaan
+        // TANPA panggilan kedua. Header HTTP aman untuk teks pendek ber-ASCII.
+        "x-kurang-online": String(potong.kurang.length),
         "cache-control": "no-store",
       },
     };

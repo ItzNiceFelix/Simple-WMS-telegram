@@ -10,6 +10,7 @@ import { SESI_KEDALUWARSA } from "../pesan";
 import type {
   AdminDoc,
   AiSettingsDoc,
+  BarisKekurangan,
   BuatOpnameGudangRequest,
   BuatOpnameGudangResponse,
   DailyRequestDoc,
@@ -662,6 +663,67 @@ export function makeMockDataSource(getRole: () => Role): DataSource {
       return filterStok.terapkanFilter(baris as unknown as Record<string, unknown>[], filter as Record<string, unknown>) as unknown as StockRow[];
     },
 
+    /** Paritas real.ts: halaman + total dari sisi "server" (mock), termasuk cari + urut. */
+    async listStockHalaman(filter?: StockFilter): Promise<{ rows: StockRow[]; total: number }> {
+      await delay();
+      const semua = store.produk
+        .map((p) => toRow(p.kode_barang, { gudang_id: filter?.gudang_id ?? null }))
+        .filter((r): r is StockRow => r !== null);
+      const q = (filter?.q ?? "").trim().toLowerCase();
+      const tersaring = semua.filter((r) => {
+        if (q && !(`${r.kode_barang} ${r.nama_accurate ?? ""}`.toLowerCase().includes(q))) return false;
+        return true;
+      });
+      const terfilter = filterStok.terapkanFilter(
+        tersaring as unknown as Record<string, unknown>[],
+        filter as Record<string, unknown>
+      ) as unknown as StockRow[];
+      const urut = terfilter.slice().sort((a, b) => a.kode_barang.localeCompare(b.kode_barang));
+      const offset = filter?.offset ?? 0;
+      const limit = filter?.limit ?? urut.length;
+      return { rows: urut.slice(offset, offset + limit), total: urut.length };
+    },
+
+    async listKekurangan(): Promise<BarisKekurangan[]> {
+      await delay();
+      // Paritas real.ts (scope=kekurangan): rumus `kurang = max(butuh - stok, stok_min - stok)`,
+      // hanya baris `kurang > 0`. Mock tidak punya tabel orders, jadi `butuh` diambil dari
+      // permintaan keluar yang tercatat di movements (qty negatif) — satu-satunya sinyal
+      // demand yang ada di store mock. Hanya produk online, sama seperti server.
+      const butuhPerSku = new Map<string, number>();
+      for (const m of store.movements) {
+        if (m.qty === null || m.qty >= 0 || !m.kode_barang) continue;
+        butuhPerSku.set(m.kode_barang, (butuhPerSku.get(m.kode_barang) ?? 0) + Math.abs(m.qty));
+      }
+      const baris: BarisKekurangan[] = [];
+      for (const p of store.produk) {
+        if (p.is_online_product !== true) continue;
+        const stok = stokByKode(p.kode_barang);
+        const nilaiStok = stok?.stok_gudang_online ?? 0;
+        const stokMin = stok?.reorder_point ?? null;
+        const butuh = butuhPerSku.get(p.kode_barang) ?? 0;
+        const kurangOrder = Math.max(0, butuh - nilaiStok);
+        const kurangMenipis = stokMin != null ? Math.max(0, stokMin - nilaiStok) : 0;
+        const kurang = Math.max(kurangOrder, kurangMenipis);
+        if (kurang <= 0) continue;
+        baris.push({
+          sku: p.kode_barang,
+          nama: p.nama_accurate,
+          stok: nilaiStok,
+          stok_min: stokMin,
+          butuh,
+          kurang,
+          alasan:
+            kurangOrder > 0 && kurangMenipis > 0
+              ? "keduanya"
+              : kurangOrder > 0
+                ? "order"
+                : "menipis",
+        });
+      }
+      return baris.sort((a, b) => (a.nama ?? a.sku).localeCompare(b.nama ?? b.sku, "id"));
+    },
+
     async getProduk(kode: string): Promise<ProdukDetail | null> {
       await delay();
       const produk = produkByKode(kode);
@@ -698,21 +760,6 @@ export function makeMockDataSource(getRole: () => Role): DataSource {
       rows.sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
       if (filter.limit) rows = rows.slice(0, filter.limit);
       return rows;
-    },
-
-    async listOpnameDrafts(): Promise<OpnameDraftDoc[]> {
-      await delay();
-      // Baca STORE (bukan konstanta) supaya konfirmasi mengubah state dan refetch melihatnya.
-      return store.opnameDrafts
-        .filter((d) => d.status === "pending_confirmation")
-        .map((d) => ({ ...d, owner_user_id: d.owner_user_id ?? null }));
-    },
-
-    async listSyncDrafts(): Promise<SyncStokDraftDoc[]> {
-      await delay();
-      return store.syncDrafts
-        .filter((d) => d.status === "pending_confirmation")
-        .map((d) => ({ ...d, owner_user_id: d.owner_user_id ?? null }));
     },
 
     async listPickingDrafts(): Promise<PickingBatchDoc[]> {

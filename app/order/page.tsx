@@ -93,6 +93,7 @@ const MODE_PICKLIST = [
   { mode: "per_paket", label: "Per Paket" },
   { mode: "pisah", label: "Pisah" },
   { mode: "gabung", label: "Gabung" },
+  { mode: "gabung-order", label: "Gabung order + advance (satu lembar)" },
 ] as const;
 
 type ModePicklist = (typeof MODE_PICKLIST)[number]["mode"];
@@ -227,6 +228,8 @@ function DaftarOrder() {
       .filter((o) => terpilih.has(kunciOrder(o)))
       .map((o) => ({ marketplace: o.marketplace, no_pesanan: o.no_pesanan }));
     const q = new URLSearchParams({ aksi: "picklist-pdf", targets: JSON.stringify(targets), mode: modePicklist });
+    // Mode gabung-order juga menyisir rak untuk booking advance aktif.
+    if (modePicklist === "gabung-order") q.set("status", "menunggu");
     window.open(`/api/order?${q}`, "_blank");
   }
 
@@ -415,6 +418,13 @@ function DaftarOrder() {
             </Select>
           </div>
         </div>
+
+        {modePicklist === "gabung-order" ? (
+          <p className="text-xs text-muted-foreground" data-testid="bantuan-gabung-order">
+            Mode ini menggabungkan order terpilih dengan booking advance berstatus “menunggu” ke satu lembar PDF, digabung per SKU + lokasi
+            gudang — picker mengambil barang sekali saja untuk keduanya.
+          </p>
+        ) : null}
 
         {error ? (
           <Alert variant="destructive">

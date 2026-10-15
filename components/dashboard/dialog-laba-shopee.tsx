@@ -4,8 +4,13 @@
 // Alur: pilih file → baca sheet "orders" di klien (xlsx) → POST /api/laba hitung → preview agregat + tolak → simpan.
 // Standalone: tak sentuh stok, tak pakai import_batches.
 import { useState } from "react";
-import * as XLSX from "xlsx";
 import { toast } from "sonner";
+
+// SheetJS 312 KB dimuat saat file benar-benar dibaca, bukan saat halaman laba dibuka.
+async function bacaExcel(buf: ArrayBuffer) {
+  const XLSX = await import("xlsx");
+  return { wb: XLSX.read(buf, { type: "array" }), toJson: XLSX.utils.sheet_to_json };
+}
 
 import { Button } from "@/components/ui/button";
 import {
@@ -84,14 +89,14 @@ export function DialogLabaShopee({
 
   async function bacaFile(f: File): Promise<Record<string, unknown>[] | null> {
     const buf = await f.arrayBuffer();
-    const wb = XLSX.read(buf, { type: "array" });
+    const { wb, toJson } = await bacaExcel(buf);
     const nama = wb.SheetNames.includes("orders") ? "orders" : wb.SheetNames[0];
     const ws = nama ? wb.Sheets[nama] : undefined;
     if (!nama || !ws) {
       tampilkanGagalTulis('Sheet "orders" tidak ditemukan di file ini.');
       return null;
     }
-    const data = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: "" });
+    const data = toJson<Record<string, unknown>>(ws, { defval: "" });
     if (data.length === 0) {
       tampilkanGagalTulis(`Sheet ${nama} kosong.`);
       return null;

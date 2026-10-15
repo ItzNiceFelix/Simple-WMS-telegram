@@ -9,6 +9,7 @@ import { kekuranganStok, statusStok } from "../format";
 import filterStok from "./filterStok.js";
 import { adalahProviderAi } from "../providerAi";
 import type {
+  BarisKekurangan,
   DailyRequestDoc,
   Role,
   StockFilter,
@@ -99,6 +100,32 @@ export function makeRealDataSource(_getRole: () => Role): DataSource {
     return filterStok.terapkanFilter(baris as unknown as Record<string, unknown>[], opts) as unknown as StockRow[];
   }
 
+  /**
+   * Stok satu halaman + total, dihitung SERVER.
+   *
+   * Dipakai /stok. Bedanya dari rowsStok: pencarian dan paginasi dilakukan D1, jadi klien
+   * hanya memegang satu halaman. `total` datang dari server (COUNT di lapisan produk),
+   * bukan dari panjang array — itulah yang membuat nomor halaman benar sekarang.
+   */
+  async function rowsStokHalaman(
+    opts: StockFilter & { limit?: number; offset?: number } = {}
+  ): Promise<{ rows: StockRow[]; total: number }> {
+    const data = await bacaServer<{ rows: StockRow[]; total: number }>("stok", {
+      ...(opts.gudang_id ? { gudang_id: opts.gudang_id } : {}),
+      ...(opts.is_online === true ? { is_online: "true" } : {}),
+      ...(opts.q ? { q: opts.q } : {}),
+      ...(opts.status ? { status: opts.status } : {}),
+      ...(opts.limit ? { limit: String(opts.limit) } : {}),
+      ...(opts.offset ? { offset: String(opts.offset) } : {}),
+    });
+    const baris = data.rows.map((r) => ({
+      ...r,
+      status: statusStok(r.stok_gudang_online, r.reorder_point),
+      kekurangan: kekuranganStok(r.stok_gudang_online),
+    }));
+    return { rows: baris as unknown as StockRow[], total: data.total ?? baris.length };
+  }
+
   return {
     async getSession() {
       const s = await sesi();
@@ -134,6 +161,15 @@ export function makeRealDataSource(_getRole: () => Role): DataSource {
       return rowsStok(filter);
     },
 
+    async listStockHalaman(filter) {
+      return rowsStokHalaman(filter);
+    },
+
+    async listKekurangan(): Promise<BarisKekurangan[]> {
+      const data = await bacaServer<{ rows: BarisKekurangan[] }>("kekurangan", {});
+      return data.rows;
+    },
+
     async getProduk(kode: string): Promise<ProdukDetail | null> {
       try {
         const data = await bacaServer<{ produk: ProdukDetail["produk"]; stok: ProdukDetail["stok"] }>("produk", { kode });
@@ -154,14 +190,6 @@ export function makeRealDataSource(_getRole: () => Role): DataSource {
       if (filter.limit) params.limit = String(filter.limit);
       const data = await bacaServer<{ rows: DataSource extends never ? never : import("../types").MovementDoc[] }>("histori", params);
       return data.rows;
-    },
-
-    async listOpnameDrafts() {
-      return [];
-    },
-
-    async listSyncDrafts() {
-      return [];
     },
 
     async listDailyRequests(): Promise<DailyRequestDoc[]> {
@@ -273,7 +301,12 @@ export function makeRealDataSource(_getRole: () => Role): DataSource {
     },
 
     async listPickingDrafts() {
-      const movements = await this.listMovements({ status: "pending_confirmation" });
+      // Dua pembacaan histori ini independen; dulu SERIAL (2x latensi baca 8 dtk) padahal
+      // tidak ada ketergantungan data — sekarang satu gelombang.
+      const [movements, semuaMovement] = await Promise.all([
+        this.listMovements({ status: "pending_confirmation" }),
+        this.listMovements({}),
+      ]);
       const pending = movements.filter((m) => m.status === "pending_confirmation" && m.action_type != null);
       const perOwner = new Map<string, typeof pending>();
       for (const m of pending) {
@@ -282,7 +315,6 @@ export function makeRealDataSource(_getRole: () => Role): DataSource {
         if (daftar) daftar.push(m);
         else perOwner.set(owner, [m]);
       }
-      const semuaMovement = await this.listMovements({});
       const perOwnerSemua = new Map<string, typeof pending>();
       for (const m of semuaMovement) {
         const owner = m.created_by?.trim() || m.requested_by?.trim() || "";

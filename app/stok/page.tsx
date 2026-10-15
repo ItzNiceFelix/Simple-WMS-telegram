@@ -5,6 +5,7 @@
 // kekurangan = nilai absolut (PRD 13.6).
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import {
   ChevronLeft,
@@ -24,6 +25,10 @@ import { DialogStokGudang } from "@/components/dashboard/dialog-stok-gudang";
 import { tampilkanGagalTulis } from "@/components/dashboard/umpan-tulis";
 import { DialogTambahProduk } from "@/components/dashboard/dialog-tambah-produk";
 import { DialogImportExcel } from "@/components/dashboard/dialog-import-excel";
+import {
+  DialogKekuranganStok,
+  type PilihanKekurangan,
+} from "@/components/dashboard/dialog-kekurangan-stok";
 import { AksiMassalKategori } from "@/components/dashboard/aksi-massal-kategori";
 import { StatusBadge } from "@/components/dashboard/status-badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -60,10 +65,13 @@ import { Spinner } from "@/components/ui/spinner";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { formatAngka, formatRupiah } from "@/lib/dashboard/format";
 import { useData, useRole } from "@/lib/dashboard/sumber-data";
-import type { GudangDoc, StockFilter, StockRow } from "@/lib/dashboard/types";
+import type { BarisKekurangan, GudangDoc, StockFilter, StockRow } from "@/lib/dashboard/types";
 
 type Filter = "semua" | "menipis" | "minus" | "belum_petakan" | "kat_kosong";
 type Sort = "nama" | "stok" | "kekurangan";
+
+/** Kunci sessionStorage prefill kekurangan -> /permintaan-gudang. Dibaca halaman tujuan. */
+const KUNCI_PREFILL_KEKURANGAN = "wms:kekurangan-prefill";
 
 interface Target {
   kode: string;
@@ -88,6 +96,7 @@ export default function HalamanStok() {
 function DaftarStok() {
   const data = useData();
   const role = useRole();
+  const router = useRouter();
   const bolehKoreksi = role === "owner" || role === "admin";
   const bolehUbahOnline = role === "owner" || role === "admin";
 
@@ -102,12 +111,24 @@ function DaftarStok() {
   const [targetGudang, setTargetGudang] = useState<TargetGudang | null>(null);
   const [tambahOpen, setTambahOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
+  const [kekuranganOpen, setKekuranganOpen] = useState(false);
+  // Daftar kekurangan: sumber tombol "Kekurangan (N)" + isi dialog. Dimuat sekali saat
+  // halaman dibuka; anggap opsional agar kegagalan tidak mengganggu tabel stok.
+  const [kekurangan, setKekurangan] = useState<BarisKekurangan[]>([]);
   const [onlineSedang, setOnlineSedang] = useState<string | null>(null);
   const [terpilih, setTerpilih] = useState<Set<string>>(new Set());
-  // Paginasi klien: 1174 baris x 2 (tabel + kartu) meledakkan DOM (~84.000 elemen).
-  // `hasil` tetap daftar penuh agar total & nomor halaman benar; hanya render yang dipotong.
+  // Paginasi SERVER: klien tidak lagi menarik seluruh katalog. Dulu 2000 baris JOIN
+  // dikirim tiap muat lalu dipotong di klien — bukan cuma berat, tapi juga SALAH: LIMIT
+  // di lapisan JOIN memotong di tengah produk sehingga SKU hilang tanpa pesan.
   const [ukuranHalaman, setUkuranHalaman] = useState<10 | 20 | 50 | 100>(50);
   const [halaman, setHalaman] = useState(1);
+  const [total, setTotal] = useState(0);
+  // Cari ditunda supaya tiap ketikan tidak jadi satu request ke D1.
+  const [cariDitunda, setCariDitunda] = useState("");
+  useEffect(() => {
+    const t = setTimeout(() => setCariDitunda(cari.trim().toLowerCase()), 300);
+    return () => clearTimeout(t);
+  }, [cari]);
   // Daftar gudang untuk kontrol filter (F9). Gagal memuat -> filter tetap "Semua gudang".
   useEffect(() => {
     let batal = false;
@@ -117,6 +138,24 @@ function DaftarStok() {
         if (!batal) setGudang(g);
       } catch {
         // abaikan: filter gudang opsional, halaman tetap berguna tanpa daftar gudang.
+      }
+    })();
+    return () => {
+      batal = true;
+    };
+  }, [data]);
+
+  // Kekurangan stok dimuat SEKALI di sini (map produk + order; tidak ikut paginasi /stok),
+  // supaya tombol tahu jumlahnya tanpa membuka dialog. Satu panggilan per muat halaman.
+  useEffect(() => {
+    let batal = false;
+    void (async () => {
+      try {
+        const k = await data.listKekurangan();
+        if (!batal) setKekurangan(k);
+      } catch {
+        // abaikan: kalau gagal, tombol tetap mati ("Belum ada kekurangan stok") tapi
+        // tabel stok tetap berguna — dialog bukan inti halaman ini.
       }
     })();
     return () => {
@@ -134,12 +173,18 @@ function DaftarStok() {
       // walau dicari — sebab filter online dipasang server-side, bukan di klien.
       const f: StockFilter = {
         gudang_id: gudangId === "SEMUA" ? null : gudangId,
+        q: cariDitunda || undefined,
+        status: filter === "menipis" || filter === "minus" ? filter : undefined,
+        limit: ukuranHalaman,
+        offset: (halaman - 1) * ukuranHalaman,
       };
-      setRows(await data.listStock(f));
+      const { rows: baris, total: jml } = await data.listStockHalaman(f);
+      setRows(baris);
+      setTotal(jml);
     } catch (e) {
       setPesanError(e instanceof Error ? e.message : "Gagal memuat daftar stok.");
     }
-  }, [data, gudangId]);
+  }, [data, gudangId, halaman, ukuranHalaman, cariDitunda]);
 
   useEffect(() => {
     void muat();
@@ -187,15 +232,11 @@ function DaftarStok() {
     }
   }
 
+  // Baris yang diterima SUDAH satu halaman dari server (cari sudah diterapkan di server),
+  // jadi yang tersisa di sini hanya filter status + urutan yang murni tampilan.
   const hasil = useMemo(() => {
     if (!rows) return [];
-    const q = cari.trim().toLowerCase();
-    let out = rows.filter(
-      (r) =>
-        q === "" ||
-        r.kode_barang.toLowerCase().includes(q) ||
-        (r.nama_accurate ?? "").toLowerCase().includes(q)
-    );
+    let out = rows;
     if (filter === "menipis") out = out.filter((r) => r.status === "menipis");
     if (filter === "minus") out = out.filter((r) => r.status === "minus");
     if (filter === "belum_petakan") out = out.filter((r) => r.kategori && !r.terpetakan);
@@ -213,26 +254,21 @@ function DaftarStok() {
       sorted.sort((a, b) => (a.nama_accurate ?? a.kode_barang).localeCompare(b.nama_accurate ?? b.kode_barang, "id"));
     }
     return sorted;
-  }, [rows, cari, filter, sort]);
+  }, [rows, filter, sort]);
 
   const teksKosong = filter === "minus" ? "Tidak ada produk minus." : "Tidak ada produk cocok.";
 
-  const jumlahHalaman = Math.max(1, Math.ceil(hasil.length / ukuranHalaman));
-  // halamanAman: kalau data menyusut (mis. setelah koreksi/toggle online) dan halaman
-  // sekarang melewati akhir, jepit ke halaman terakhir — bukan tampilkan daftar kosong palsu.
+  // Nomor halaman dari `total` SERVER, bukan panjang array halaman ini — itu inti
+  // perbaikannya: dulu total dihitung dari seluruh baris JOIN yang terpotong cap.
+  const jumlahHalaman = Math.max(1, Math.ceil(total / ukuranHalaman));
   const halamanAman = Math.min(halaman, jumlahHalaman);
-  // Dipotong HANYA untuk render; map mobile & desktop memakai halamanIni, bukan hasil.
-  const halamanIni = useMemo(
-    () => hasil.slice((halamanAman - 1) * ukuranHalaman, halamanAman * ukuranHalaman),
-    [hasil, halamanAman, ukuranHalaman]
-  );
+  const halamanIni = hasil;
 
-  // Reset ke halaman 1 saat kriteria berubah. Sengaja TIDAK bergantung pada `rows`:
-  // refetch (mis. setelah toggle online) tak boleh melempar user dari halaman yang sedang
-  // dikoreksi; kasus halaman melewati akhir ditangani jepitan halamanAman di atas.
+  // Reset ke halaman 1 saat kriteria pencarian berubah; hasil filter tampilan tidak
+  // mengubah halaman karena paginasi kini milik server.
   useEffect(() => {
     setHalaman(1);
-  }, [cari, filter, sort, gudangId, ukuranHalaman]);
+  }, [cariDitunda, gudangId, ukuranHalaman]);
 
   function togglePilih(kode: string) {
     setTerpilih((lama) => {
@@ -253,6 +289,24 @@ function DaftarStok() {
     setTerpilih(new Set());
   }
 
+  /**
+   * Kirim pilihan kekurangan ke /permintaan-gudang.
+   *
+   * Dipakai sessionStorage, bukan kolom DB baru atau query panjang: halaman tujuan harus bisa
+   * membacanya tanpa skema bersama, dan isinya cuma sementara (sekali pakai, per tab) — tidak
+   * boleh bertahan lama atau ikut tersinkron ke perangkat lain.
+   */
+  function buatPermintaanDariKekurangan(pilihan: PilihanKekurangan[]) {
+    try {
+      sessionStorage.setItem(KUNCI_PREFILL_KEKURANGAN, JSON.stringify(pilihan));
+    } catch {
+      // sessionStorage bisa diblokir (mode privat/kebijakan browser). Navigasi tetap jalan;
+      // halaman tujuan hanya kehilangan prefill, bukan gagal total.
+    }
+    setKekuranganOpen(false);
+    router.push("/permintaan-gudang?dari=kekurangan");
+  }
+
   return (
     <>
       <PageHeader
@@ -261,6 +315,18 @@ function DaftarStok() {
         aksi={
           bolehKoreksi ? (
             <div className="flex gap-2">
+              <Button
+                size="lg"
+                variant="outline"
+                className="h-11 md:h-8"
+                data-testid="buka-kekurangan-stok"
+                disabled={kekurangan.length === 0}
+                title={kekurangan.length === 0 ? "Belum ada kekurangan stok" : undefined}
+                onClick={() => setKekuranganOpen(true)}
+              >
+                <TriangleAlert data-icon="inline-start" />
+                {`Kekurangan (${kekurangan.length})`}
+              </Button>
               <Button
                 size="lg"
                 variant="outline"
@@ -821,6 +887,13 @@ function DaftarStok() {
         onOpenChange={setImportOpen}
         gudangId={gudangId === "SEMUA" ? "ONLINE" : gudangId}
         onSukses={() => void muat()}
+      />
+
+      <DialogKekuranganStok
+        open={kekuranganOpen}
+        onOpenChange={setKekuranganOpen}
+        baris={kekurangan}
+        onBuatPermintaan={buatPermintaanDariKekurangan}
       />
 
       <DialogKoreksiStok

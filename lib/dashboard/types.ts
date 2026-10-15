@@ -103,6 +103,39 @@ export interface StockFilter {
   is_online?: boolean | "semua";
   /** Sertakan produk tanpa dokumen stock (qty null). */
   sertakan_tanpa_gudang?: boolean;
+  /** Cari di SKU + nama (server-side, case-insensitive). */
+  q?: string;
+  /** Jumlah baris per halaman; server membatasi maksimum 200. */
+  limit?: number;
+  /** Lewati sekian baris dari awal (dihitung dari daftar SKU, bukan hasil JOIN). */
+  offset?: number;
+  /**
+   * Saring status stok ONLINE di server. Disaring di SQL karena status dihitung dari
+   * nilai stok: kalau disaring di klien, hanya halaman yang sedang tampil yang tersaring.
+   */
+  status?: "menipis" | "minus";
+}
+
+/** Alasan satu baris masuk daftar kekurangan stok (`GET /api/baca?scope=kekurangan`). */
+export type AlasanKekurangan = "order" | "menipis" | "keduanya";
+
+/**
+ * Satu baris kekurangan stok online (bahan dialog kekurangan di /stok).
+ * Dihitung server dari order yang stoknya sudah dipotong vs stok sekarang; TIDAK disimpan
+ * di tabel sendiri supaya angka tidak pernah basi.
+ */
+export interface BarisKekurangan {
+  sku: string;
+  nama: string | null;
+  /** Stok ONLINE sekarang. 0 = tidak bisa dikirim sama sekali. */
+  stok: number;
+  /** `products.stok_min`; null = belum diatur. */
+  stok_min: number | null;
+  /** Total qty yang diminta order yang sudah memotong stok. */
+  butuh: number;
+  /** max(butuh - stok, stok_min - stok) — selalu > 0. */
+  kurang: number;
+  alasan: AlasanKekurangan;
 }
 
 /** v5 (F1): koleksi gudang/{gudang_id}. */

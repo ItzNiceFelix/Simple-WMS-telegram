@@ -4,7 +4,6 @@
 // Import Excel 2-fase (Fase 2, PRD F3): upload → preview gagal/sukses → konfirmasi.
 // Export: tombol unduh per tipe (produk/stok/hpp) + filter gudang.
 import { useState } from "react"
-import * as XLSX from "xlsx"
 import { toast } from "sonner"
 
 import { Button } from "@/components/ui/button"
@@ -44,6 +43,14 @@ function isKonfirmasiOk(v: unknown): v is { ok: true; sukses?: number; order?: n
   return !!v && typeof v === "object" && "ok" in v && v.ok === true
 }
 
+// SheetJS 312 KB TIDAK boleh ikut bundel halaman: dialog ini hanya dipakai sesekali, tapi
+// import statisnya membuat /stok dan /order membayar 312 KB setiap kali dibuka. Dimuat saat
+// file benar-benar dibaca; specifier statis, hanya waktu-muat yang dinamis (pola fabric).
+async function bacaExcel(buf: ArrayBuffer) {
+  const XLSX = await import("xlsx")
+  return { wb: XLSX.read(buf, { type: "array" }), toJson: XLSX.utils.sheet_to_json }
+}
+
 export function DialogImportExcel({ open, onOpenChange, gudangId = "ONLINE", onSukses, tipe = "produk" }: Props) {
   const [file, setFile] = useState<File | null>(null)
   const [preview, setPreview] = useState<Preview | null>(null)
@@ -65,12 +72,12 @@ export function DialogImportExcel({ open, onOpenChange, gudangId = "ONLINE", onS
     try {
       if (tipe === "pesanan-shopee") {
         const buf = await file.arrayBuffer();
-        const wb = XLSX.read(buf, { type: "array" });
+        const { wb, toJson } = await bacaExcel(buf);
         const ordersWs = wb.Sheets["orders"];
         const advanceWs = wb.Sheets["Advance Fulfilment"];
         if (!ordersWs || !advanceWs) { tampilkanGagalTulis('Workbook wajib memiliki sheet "orders" dan "Advance Fulfilment".'); return; }
-        const ordersRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ordersWs, { defval: "" });
-        const advanceRows = XLSX.utils.sheet_to_json<Record<string, unknown>>(advanceWs, { defval: "" });
+        const ordersRows = toJson<Record<string, unknown>>(ordersWs, { defval: "" });
+        const advanceRows = toJson<Record<string, unknown>>(advanceWs, { defval: "" });
         const res = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ aksi: "preview-shopee", ordersRows, advanceRows, file: file.name }), credentials: "include" });
         const raw = await res.json().catch(() => null) as { ok?: boolean; error?: string; batch_id?: number; review?: { no_pesanan: string; no_resi: string }[]; gagal?: { no_pesanan: string; pesan: string }[]; orders?: unknown[] } | null;
         if (!res.ok || !raw?.ok) { tampilkanGagalTulis(raw?.error ?? `Gagal preview (${res.status}).`); return; }
@@ -79,11 +86,11 @@ export function DialogImportExcel({ open, onOpenChange, gudangId = "ONLINE", onS
       }
       if (tipe === "pesanan") {
         const buf = await file.arrayBuffer();
-        const wb = XLSX.read(buf, { type: "array" });
+        const { wb, toJson } = await bacaExcel(buf);
         const nama = wb.SheetNames.includes("Pesanan") ? "Pesanan" : wb.SheetNames[0];
         const ws = nama ? wb.Sheets[nama] : undefined;
         if (!nama || !ws) { tampilkanGagalTulis("Sheet Pesanan tidak ditemukan."); return; }
-        const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { defval: "" });
+        const rows = toJson<Record<string, unknown>>(ws, { defval: "" });
         if (rows.length === 0) { tampilkanGagalTulis(`Sheet ${nama} kosong.`); return; }
         const res = await fetch(endpoint, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ aksi: "preview", rows, file: file.name }), credentials: "include" });
         if (!res.ok) throw new Error(`Gagal preview pesanan (${res.status}).`);

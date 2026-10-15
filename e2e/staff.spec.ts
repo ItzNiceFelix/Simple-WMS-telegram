@@ -1,8 +1,9 @@
 import { test, expect, type Page } from "@playwright/test";
 
 // A5 — Konten H5 Draft, H6 Permintaan, H7 Admin, H8 Pengaturan. Mode mock (PRD I2).
-// Mock: 1 opname draft (3 item) + 1 sync draft (2 item); daily hari ini (tanggal relatif)
-// & kemarin; 3 admins, 2 perubahan peran, 3 access request; provider "groq".
+// Mock: batch picking (900004 siap = 2 movement); daily hari ini (tanggal relatif) & kemarin;
+// 3 admins, 2 perubahan peran, 3 access request; provider "groq".
+// H5 /draft kini HANYA seksi picking; seksi opname & sync dihapus karena selalu kosong di mode real.
 
 async function buka(page: Page, href: string, role: "owner" | "admin" | "guest" = "owner") {
   await page.goto(`/?role=${role}`);
@@ -20,32 +21,15 @@ function tanggalId(offsetHari: number): string {
 }
 
 test.describe("H5 Draft", () => {
-  test("menampilkan dua seksi draft + tombol Tinjau di Telegram", async ({ page }) => {
+  test("menampilkan seksi picking list saja", async ({ page }) => {
     await buka(page, "/draft");
     await expect(page.getByTestId("h5-draft")).toBeVisible();
-    await expect(page.getByTestId("kartu-opname-od-001")).toBeVisible();
-    await expect(page.getByTestId("kartu-sync-sd-001")).toBeVisible();
-    await expect(page.getByTestId("kartu-opname-od-001")).toContainText("3 item");
-    await expect(page.getByTestId("kartu-sync-sd-001")).toContainText("2 item");
-    // v3b: kondisi seed kini salah satu KONDISI_VALID (`sheets_manual`), bukan "selisih"
-    // yang ditolak validator server.
-    await expect(page.getByTestId("kartu-sync-sd-001")).toContainText("sheets_manual");
-
-    const tombol = page.getByTestId("tinjau-telegram");
-    // v3b A2: hanya kartu yang LAYAK aksi (ber-owner) merender tombol Telegram: od-001,
-    // sd-001, sd-002 = 3. Kartu orphan, batch picking, dan batch sebagian memakai teks pengganti.
-    await expect(tombol).toHaveCount(3);
-    await expect(tombol.first()).toHaveAttribute("href", "https://t.me/");
-    await expect(tombol.first()).toHaveAttribute("target", "_blank");
-    await expect(tombol.first()).toHaveAttribute("rel", "noopener noreferrer");
-  });
-
-  test("ringkas item opname tampil (kode + kategori)", async ({ page }) => {
-    await buka(page, "/draft");
-    const kartu = page.getByTestId("kartu-opname-od-001");
-    await expect(kartu).toContainText("Celana Chino Slim Fit");
-    await expect(kartu).toContainText("BRG-003");
-    await expect(kartu).toContainText("selisih_kecil");
+    await expect(page.getByTestId("daftar-picking")).toBeVisible();
+    await expect(page.getByTestId("kartu-picking-900004")).toBeVisible();
+    // Ringkasan batch siap milik 900004: 2 movement berkode, 0 dilewati.
+    await expect(page.getByTestId("ringkasan-picking-batch-900004")).toContainText(
+      "2 item siap diproses, 0 dilewati"
+    );
   });
 });
 

@@ -40,8 +40,9 @@ export async function GET(request: Request) {
     const onlineSaja = url.searchParams.get("is_online") === "true";
     // B5-A: cari server-side (hemat rows-read); tanpa q = perilaku lama (cap 2000).
     const q = (url.searchParams.get("q") ?? "").trim().toLowerCase();
-    let sql = `SELECT p.sku, p.nama_accurate, p.hpp, p.is_online_product, p.stok_min, p.kategori, p.tier_override, p.pre_order, p.ukuran_khusus, p.go_override, b.warehouse_id, b.qty
-      FROM products p LEFT JOIN stock_by_bin b ON b.sku = p.sku`;
+    // Filter status ikut ke SQL: kalau disaring di klien, hanya baris di halaman ini yang
+    // tersaring sementara sisanya di halaman lain — user mengira daftar minus cuma segitu.
+    const statusSaring = (url.searchParams.get("status") ?? "").trim();
     const args: unknown[] = [];
     const syarat: string[] = [];
     if (onlineSaja) syarat.push("p.is_online_product = 1");
@@ -49,53 +50,125 @@ export async function GET(request: Request) {
       syarat.push("(lower(p.sku) LIKE ? OR lower(p.nama_accurate) LIKE ?)");
       args.push(`%${q}%`, `%${q}%`);
     }
-    if (syarat.length > 0) sql += ` WHERE ${syarat.join(" AND ")}`;
-    // Paginasi opsional: klien lama yang tidak mengirim limit/offset tetap dapat cap 2000
-    // (kontrak respons lama aman — field baru bersifat aditif).
+    // Status butuh nilai stok ONLINE, jadi memakai subquery korelasi. Hanya tiga nilai
+    // yang dikenal; nilai lain diabaikan supaya param asing tidak membocorkan 500.
+    if (statusSaring === "menipis") {
+      syarat.push(
+        "(SELECT COALESCE(qty,0) FROM stock_by_bin WHERE sku = p.sku AND warehouse_id = 'ONLINE') < COALESCE(p.stok_min, 0) AND p.stok_min IS NOT NULL AND (SELECT COALESCE(qty,0) FROM stock_by_bin WHERE sku = p.sku AND warehouse_id = 'ONLINE') >= 0"
+      );
+    } else if (statusSaring === "minus") {
+      syarat.push(
+        "(SELECT COALESCE(qty,0) FROM stock_by_bin WHERE sku = p.sku AND warehouse_id = 'ONLINE') < 0"
+      );
+    }
+    const whereClause = syarat.length > 0 ? ` WHERE ${syarat.join(" AND ")}` : "";
+    // Paginasi DIPINDAH ke lapisan produk, bukan lapisan hasil JOIN.
+    //
+    // Kenapa: `LIMIT ? OFFSET ?` pada JOIN products×stock_by_bin memotong di TENGAH
+    // produk. Dengan 6 gudang, 2000 baris hanya menutup ~333 SKU — SKU sisanya hilang
+    // tanpa pesan apa pun, dan `COUNT(DISTINCT p.sku)` tetap melaporkan 1174 sehingga
+    // nomor halaman di UI menunjuk halaman yang isinya kosong. Sekarang yang dibatasi
+    // adalah daftar SKU (satu baris per produk); qty semua gudang diambil per SKU itu.
     const limitParam = Number(url.searchParams.get("limit"));
     const pakaiLimit = Number.isInteger(limitParam) && limitParam >= 1;
     const limit = pakaiLimit ? Math.min(limitParam, 200) : 2000;
     const offsetParam = Number(url.searchParams.get("offset"));
     const offset = Number.isInteger(offsetParam) && offsetParam > 0 ? offsetParam : 0;
-    const whereClause = syarat.length > 0 ? ` WHERE ${syarat.join(" AND ")}` : "";
-    sql += ` ORDER BY p.sku ASC LIMIT ? OFFSET ?`;
-    const { results } = await db.prepare(sql).bind(...args, limit, offset).all<{
-      sku: string; nama_accurate: string; hpp: number | null; is_online_product: number; stok_min: number | null;
-      kategori: string | null; tier_override: string | null; pre_order: number; ukuran_khusus: number; go_override: string | null;
-      warehouse_id: string | null; qty: number | null;
-    }>();
-    // Total memakai COUNT(DISTINCT p.sku), bukan COUNT(*): LEFT JOIN stock_by_bin menjadikan
-    // satu SKU bisa punya banyak baris (per bin), sehingga COUNT(*) menggelembung dan nomor
-    // halaman jadi salah. Syarat WHERE (onlineSaja + q) identik dengan query data di atas.
+
+    const { results: skuRows } = await db
+      .prepare(`SELECT p.sku FROM products p${whereClause} ORDER BY p.sku ASC LIMIT ? OFFSET ?`)
+      .bind(...args, limit, offset)
+      .all<{ sku: string }>();
+    // Total memakai COUNT(*) di lapisan produk: satu SKU = satu baris, jadi jumlahnya
+    // persis sebanding dengan yang dipaginasi di atas.
     const totalRow = await db
-      .prepare(`SELECT COUNT(DISTINCT p.sku) AS total FROM products p LEFT JOIN stock_by_bin b ON b.sku = p.sku${whereClause}`)
+      .prepare(`SELECT COUNT(*) AS total FROM products p${whereClause}`)
       .bind(...args)
       .first<{ total: number }>();
     const total = totalRow?.total ?? 0;
-    const { results: paths } = await db.prepare("SELECT kategori_path FROM kategori_tarif").all<{ kategori_path: string }>();
-    const himpunan = new Set(paths.map((p) => p.kategori_path));
-    const grup = new Map<string, { p: (typeof results)[number]; qtyMap: Record<string, number> }>();
-    for (const r of results) {
-      let g = grup.get(r.sku);
-      if (!g) { g = { p: r, qtyMap: {} }; grup.set(r.sku, g); }
-      if (r.warehouse_id != null && r.qty != null) g.qtyMap[r.warehouse_id] = r.qty;
-    }
-    const baris = [];
-    for (const { p, qtyMap } of grup.values()) {
-      const nilai = gudangFilter ? (qtyMap[gudangFilter] ?? 0) : (qtyMap.ONLINE ?? 0);
-      if (gudangFilter && !(gudangFilter in qtyMap)) continue;
-      const status = nilai < 0 ? "minus" : p.stok_min != null && nilai < p.stok_min ? "menipis" : "aman";
-      const terpetakan = !!p.tier_override || (!!p.kategori && himpunan.has(p.kategori));
-      baris.push({
-        kode_barang: p.sku, nama_accurate: p.nama_accurate, hpp: p.hpp,
-        stok_gudang_online: nilai, qty_per_gudang: qtyMap,
-        is_online_product: p.is_online_product === 1, reorder_point: p.stok_min,
-        status, kekurangan: status === "aman" ? 0 : (p.stok_min ?? 0) - nilai,
-        kategori: p.kategori, terpetakan,
-        pre_order: p.pre_order === 1, ukuran_khusus: p.ukuran_khusus === 1, go_override: p.go_override ?? null,
-      });
+
+    const daftarSku = skuRows.map((r) => r.sku);
+    let baris: Record<string, unknown>[] = [];
+    if (daftarSku.length > 0) {
+      // Satu query tambahan untuk kolom produk + qty semua gudang milik SKU halaman ini.
+      // Tetap perlu satu query produk karena kolom p.* tidak ikut di query SKU di atas.
+      const tanda = daftarSku.map(() => "?").join(",");
+      const { results } = await db
+        .prepare(
+          `SELECT p.sku, p.nama_accurate, p.hpp, p.is_online_product, p.stok_min, p.kategori, p.tier_override, p.pre_order, p.ukuran_khusus, p.go_override, b.warehouse_id, b.qty
+           FROM products p LEFT JOIN stock_by_bin b ON b.sku = p.sku
+           WHERE p.sku IN (${tanda}) ORDER BY p.sku ASC`
+        )
+        .bind(...daftarSku)
+        .all<{
+          sku: string; nama_accurate: string; hpp: number | null; is_online_product: number; stok_min: number | null;
+          kategori: string | null; tier_override: string | null; pre_order: number; ukuran_khusus: number; go_override: string | null;
+          warehouse_id: string | null; qty: number | null;
+        }>();
+      const { results: paths } = await db.prepare("SELECT kategori_path FROM kategori_tarif").all<{ kategori_path: string }>();
+      const himpunan = new Set(paths.map((p) => p.kategori_path));
+      const grup = new Map<string, { p: (typeof results)[number]; qtyMap: Record<string, number> }>();
+      for (const r of results) {
+        let g = grup.get(r.sku);
+        if (!g) { g = { p: r, qtyMap: {} }; grup.set(r.sku, g); }
+        if (r.warehouse_id != null && r.qty != null) g.qtyMap[r.warehouse_id] = r.qty;
+      }
+      baris = [];
+      for (const { p, qtyMap } of grup.values()) {
+        const nilai = gudangFilter ? (qtyMap[gudangFilter] ?? 0) : (qtyMap.ONLINE ?? 0);
+        if (gudangFilter && !(gudangFilter in qtyMap)) continue;
+        const status = nilai < 0 ? "minus" : p.stok_min != null && nilai < p.stok_min ? "menipis" : "aman";
+        const terpetakan = !!p.tier_override || (!!p.kategori && himpunan.has(p.kategori));
+        baris.push({
+          kode_barang: p.sku, nama_accurate: p.nama_accurate, hpp: p.hpp,
+          stok_gudang_online: nilai, qty_per_gudang: qtyMap,
+          is_online_product: p.is_online_product === 1, reorder_point: p.stok_min,
+          status, kekurangan: status === "aman" ? 0 : (p.stok_min ?? 0) - nilai,
+          kategori: p.kategori, terpetakan,
+          pre_order: p.pre_order === 1, ukuran_khusus: p.ukuran_khusus === 1, go_override: p.go_override ?? null,
+        });
+      }
     }
     return json({ ok: true, rows: baris, total, limit, offset });
+  }
+
+  // scope=kekurangan — bahan dialog "kekurangan stok" di /stok.
+  //
+  // Kekurangan dihitung dari `orders.stok_dikurangi = 1` yang MASIH ada qty-nya, lalu
+  // dibandingkan dengan stok ONLINE sekarang. Sengaja TIDAK menyimpan tabel kekurangan
+  // sendiri: stok berubah tiap hari, dan tabel simpanan akan basi tanpa ada yang
+  // menyadarinya. Hitung ulang selalu benar terhadap keadaan sekarang.
+  if (scope === "kekurangan") {
+    const { results } = await db
+      .prepare(
+        `SELECT oi.sku AS sku, SUM(oi.qty) AS butuh, p.nama_accurate AS nama,
+                COALESCE(b.qty, 0) AS stok, p.stok_min AS stok_min, p.is_online_product AS online
+         FROM order_items oi
+         JOIN orders o ON o.marketplace = oi.marketplace AND o.no_pesanan = oi.no_pesanan
+         JOIN products p ON p.sku = oi.sku
+         LEFT JOIN stock_by_bin b ON b.sku = oi.sku AND b.warehouse_id = 'ONLINE'
+         WHERE o.stok_dikurangi = 1 AND p.is_online_product = 1
+         GROUP BY oi.sku
+         HAVING COALESCE(b.qty, 0) < SUM(oi.qty) OR (p.stok_min IS NOT NULL AND COALESCE(b.qty, 0) < p.stok_min)
+         ORDER BY p.nama_accurate ASC`
+      )
+      .all<{ sku: string; butuh: number; nama: string; stok: number; stok_min: number | null; online: number }>();
+    const baris = results.map((r) => {
+      const kurangOrder = Math.max(0, r.butuh - r.stok);
+      const kurangMenipis = r.stok_min != null ? Math.max(0, r.stok_min - r.stok) : 0;
+      return {
+        sku: r.sku,
+        nama: r.nama,
+        stok: r.stok,
+        stok_min: r.stok_min,
+        butuh: r.butuh,
+        // Dua alasan berbeda bisa menimpa SKU yang sama; ambil yang paling mendesak supaya
+        // angka yang diminta user tidak pernah lebih kecil dari kenyataan.
+        kurang: Math.max(kurangOrder, kurangMenipis),
+        alasan: kurangOrder > 0 && kurangMenipis > 0 ? "keduanya" : kurangOrder > 0 ? "order" : "menipis",
+      };
+    }).filter((r) => r.kurang > 0);
+    return json({ ok: true, rows: baris });
   }
 
   if (scope === "produk") {
