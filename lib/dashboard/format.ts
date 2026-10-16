@@ -92,6 +92,57 @@ export function formatTanggalSingkat(iso: string | null | undefined): string {
 }
 
 /**
+ * Epoch DETIK (kolom `orders.tanggal`) → "15 Okt 2026, 20.04 WIB".
+ *
+ * Kenapa epoch detik, bukan menerima `iso`: kolom tanggal di DB adalah INTEGER detik dan
+ * pemanggilnya sudah memegang angka itu; mengubahnya jadi string lebih dulu hanya menambah
+ * satu kesempatan salah parse.
+ *
+ * Kenapa timeZone WAJIB disebut: tanpa itu hasilnya mengikuti zona BROWSER. Owner memakai
+ * Telegram Mini App dari HP yang zonanya bisa apa saja, dan jam order WIB akan tampil
+ * bergeser (20.04 jadi 13.04) — persis keluhan "datanya kelihatan salah". Zona papannya
+ * adalah WIB dan tidak boleh bergantung pada perangkat.
+ *
+ * Gaya (id-ID, `hour12: false`, titik sebagai pemisah jam, akhiran "WIB") SENGAJA sama dengan
+ * `waktuJakarta` di lib/d1/*Pdf.ts supaya angka di layar dan angka di lembar tercetak sama
+ * persis — dua format berbeda untuk satu nilai membuat orang mengira ada dua data.
+ *
+ * `stamp <= 0` → "—", bukan tengah malam: baris lama dari template Excel repo ini di-truncate
+ * ke tengah malam UTC dan sebagian baris bisa 0/kosong. Menampilkan "00.00" untuk itu berarti
+ * MENGARANG jam yang tidak pernah tercatat, dan picker bisa mengira ordernya jam 12 malam.
+ */
+export function formatTanggalJamWib(stamp: number | null | undefined): string {
+  const tgl = formatTanggalJamWibBagian(stamp, "tanggal");
+  const jam = formatTanggalJamWibBagian(stamp, "jam");
+  if (tgl === null || jam === null) return "—";
+  return `${tgl}, ${jam} WIB`;
+}
+
+/**
+ * Satu bagian dari `formatTanggalJamWib` — dipakai kolom tabel yang mencetak tanggal dan jam
+ * di BARIS TERPISAH (kolom jadi lebih sempit; lihat SelTanggalWaktu di app/order/page.tsx).
+ *
+ * Kenapa dipecah di sini, bukan dengan memotong hasil `formatTanggalJamWib`: memotong string
+ * berarti bergantung pada posisi koma dan urutan bagian — berubah begitu locale/pilihan opsi
+ * berubah, dan salah potong menghasilkan tanggal tanpa jam tanpa error. Kedua bagian dibuat
+ * dari opsi `Intl` yang berbeda, jadi tidak ada pemotongan string sama sekali.
+ *
+ * `stamp <= 0`/bukan angka → `null` (bukan "00.00"), alasannya sama dengan fungsi di atas:
+ * jam karangan lebih berbahaya daripada sel kosong.
+ */
+export function formatTanggalJamWibBagian(stamp: number | null | undefined, bagian: "tanggal" | "jam"): string | null {
+  if (stamp == null || !Number.isFinite(stamp) || stamp <= 0) return null;
+  const d = new Date(stamp * 1000);
+  if (Number.isNaN(d.getTime())) return null;
+  return new Intl.DateTimeFormat(
+    "id-ID",
+    bagian === "tanggal"
+      ? { timeZone: "Asia/Jakarta", day: "2-digit", month: "short", year: "numeric" }
+      : { timeZone: "Asia/Jakarta", hour: "2-digit", minute: "2-digit", hour12: false }
+  ).format(d);
+}
+
+/**
  * "YYYY-MM-DD" -> "15 Sep 2026" TANPA `new Date()` supaya TIDAK bergeser timezone.
  * `new Date("2026-09-15")` diparse sebagai tengah malam UTC; di server TZ barat UTC hasilnya
  * bisa H-1 (PRD v3a §3.5/§10 #7b). Di sini string dipecah manual.

@@ -74,11 +74,59 @@ function waktuJakarta(d = new Date()): string {
 }
 
 /**
+ * Urutkan baris gabungan.
+ *
+ * Dipisah dari `gabungPerSku` supaya ada SATU implementasi urutan: lembar gabungan
+ * (lewat `gabungPerSku`) dan pratinjau JSON di `app/api/order` memanggil fungsi yang sama
+ * persis. Dulu pratinjau menyalin perbandingan ini, dan salinan begitu selalu berakhir
+ * berbeda dari aslinya tanpa ada yang tahu sampai dua lembar keluar dengan urutan berbeda.
+ *
+ * Kedua cabang SENGAJA tidak seragam, dan itu dipertahankan apa adanya:
+ *
+ * - `default` = urutan LAMA PERSIS: lokasi dulu (picker menyisir rak satu per satu), lalu
+ *   nama. TANPA tiebreak SKU — menambahkannya akan mengubah lembar lama yang sudah dicetak.
+ *   Perhatikan urutan lama memakai `localeCompare(...,"id")` untuk KEDUANYA, bukan
+ *   `lokasi || nama` seperti dugaan awal.
+ * - Ber-kunci: `sku`/`nama`/`lokasi` → tiebreak SKU → dikali arah (`desc` membalik
+ *   KESELURUHAN, termasuk tiebreak-nya). Tiebreak SKU wajib: dua baris bisa punya nama sama
+ *   (produk berbeda varian), dan tanpa itu urutannya berubah-ubah antar cetakan.
+ *
+ * ── SENGAJA BEDA dari `urutkanBaris` (lib/d1/picklist.ts) ──
+ * Jangan disatukan. Di sini `default` = URUTKAN lokasi→nama; di `urutkanBaris` `default` =
+ * JANGAN sentuh (kembalikan apa adanya), karena ia melayani picklist datar lama yang urutan
+ * datangnya sudah benar. Dua fungsi ini melayani dua bentuk lembar yang berbeda, dan
+ * menyeragamkannya akan mengubah urutan cetakan lama tanpa ada yang meminta.
+ */
+export function urutkanBarisGabung(
+  baris: BarisGabung[],
+  urut: KunciUrutPicklist = "default",
+  arah: ArahUrutPicklist = "asc"
+): BarisGabung[] {
+  if (urut === "default") {
+    return [...baris].sort((a, b) => a.lokasi.localeCompare(b.lokasi, "id") || a.nama.localeCompare(b.nama, "id"));
+  }
+  const balik = arah === "desc" ? -1 : 1;
+  return [...baris].sort((a, b) => {
+    const c = urut === "nama"
+      ? a.nama.localeCompare(b.nama, "id")
+      : urut === "sku"
+        ? a.sku.localeCompare(b.sku, "id")
+        : a.lokasi.localeCompare(b.lokasi, "id");
+    return (c !== 0 ? c : a.sku.localeCompare(b.sku, "id")) * balik;
+  });
+}
+
+/**
  * Gabungkan baris per (SKU + lokasi) — HANYA yang benar-benar setara.
  *
  * SKU berbeda atau lokasi berbeda TIDAK digabung: kalau dipaksa jadi satu baris, picker
  * mengira barangnya satu tumpukan padahal harus diambil dari dua tempat.
  * Baris bermasalah (perluSku) selalu berdiri sendiri supaya tidak menyatu dengan barang jelas.
+ *
+ * HASILNYA SUDAH TERURUT (lihat `urutkanBarisGabung`). Pemanggil TIDAK boleh mengurutkan
+ * ulang hasilnya: mengurutkan dua kali dengan kunci yang sama tidak mengubah apa pun, tapi
+ * pemanggil yang "menambal" urutan di luarnya menandakan ia tidak percaya fungsi ini — dan
+ * begitu kuncinya berbeda, dua lembar keluar berbeda dengan cara yang sangat sulit dilacak.
  */
 export function gabungPerSku(
   baris: BarisPickGabung[],
@@ -99,26 +147,7 @@ export function gabungPerSku(
     g.qty += b.qty;
     g.rincian.push({ jenis: b.jenis, kunci: b.kunci, kirimKe: b.kirimKe, qty: b.qty });
   }
-  // `default` = urutan LAMA PERSIS: lokasi dulu (picker menyisir rak satu per satu), lalu nama.
-  // Perhatikan urutan lama memakai `localeCompare(...,"id")` untuk KEDUANYA, bukan
-  // `lokasi || nama` seperti dugaan awal — jadi default tetap dipertahankan apa adanya dan
-  // hanya berubah bila klien benar-benar mengirim kunci urut.
-  if (urut === "default") {
-    return [...peta.values()].sort((a, b) => a.lokasi.localeCompare(b.lokasi, "id") || a.nama.localeCompare(b.nama, "id"));
-  }
-  // Kunci `lokasi` dipertahankan sebagai PILIHAN eksplisit supaya user yang menyortir per
-  // lokasi di layar mendapat lembar yang sama; `sku`/`nama` untuk urutan produk A–Z.
-  // Tiebreak SKU: dua baris bisa punya nama sama (produk berbeda varian), tanpa tiebreak
-  // urutannya berubah-ubah antar cetakan.
-  const balik = arah === "desc" ? -1 : 1;
-  return [...peta.values()].sort((a, b) => {
-    const c = urut === "nama"
-      ? a.nama.localeCompare(b.nama, "id")
-      : urut === "sku"
-        ? a.sku.localeCompare(b.sku, "id")
-        : a.lokasi.localeCompare(b.lokasi, "id");
-    return (c !== 0 ? c : a.sku.localeCompare(b.sku, "id")) * balik;
-  });
+  return urutkanBarisGabung([...peta.values()], urut, arah);
 }
 
 type OpsiGabung = {

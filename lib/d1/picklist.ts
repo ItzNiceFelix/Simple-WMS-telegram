@@ -51,6 +51,16 @@ export type ArahUrutPicklist = "asc" | "desc";
  * PENTING: pemanggil TANPA kunci (default) harus mendapat urutan LAMA apa adanya. Karena itu
  * pengurutan hanya dilakukan di sini, setelah pemanggil lama selesai menyusun urutannya —
  * dan `default` berarti "jangan sentuh".
+ *
+ * ── SENGAJA BEDA dari `urutkanBarisGabung` (lib/d1/picklistGabungPdf.ts) ──
+ * Dua fungsi ini TIDAK boleh disatukan, dan bedanya bukan kecelakaan:
+ *   • Di sini `default` = JANGAN URUTKAN (kembalikan apa adanya). Fungsi ini melayani
+ *     picklist datar lama (mode `pisah`/paket), yang urutan lamanya adalah urutan datang
+ *     dari kueri; menyentuhnya akan mengubah urutan lembar yang sudah dicetak owner.
+ *   • Di `urutkanBarisGabung`, `default` = URUTKAN lokasi→nama (tanpa tiebreak SKU), karena
+ *     lembar gabungan order+advance selalu butuh urutan yang pasti.
+ * Menyeragamkan keduanya diam-diam akan membuat ulang cetakan lama berbeda urutan. Jangan
+ * "rapikan" ini tanpa keputusan owner dan tanpa mengecek ulang berkas cetak lama.
  */
 export function urutkanBaris<T extends { sku: string; nama: string; lokasi?: string }>(
   baris: T[],

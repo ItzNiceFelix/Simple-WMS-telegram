@@ -16,6 +16,9 @@ const LAYOUT_SENSITIVE = [
   "**/tambah-produk.spec.ts",
   "**/histori.spec.ts",
   "**/kata-kunci.spec.ts",
+  // Dialog pratinjau harus terpakai di HP (Telegram Mini App): tabelnya menggulir sendiri dan
+  // tombol Export-nya tidak boleh terdorong keluar layar. Dijalankan di 768px dan 360px.
+  "**/preview-picklist.spec.ts",
 ];
 
 /** Semua spec kecuali yang layout-sensitif. */

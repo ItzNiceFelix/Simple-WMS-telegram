@@ -20,14 +20,14 @@ import {
   KOLOM_URUT_ORDER, type ArahUrut, type BarisPesanan, type KolomUrutOrder,
 } from "@/lib/d1/order";
 import { transisiFulfillBatch, type KeFulfill } from "@/lib/d1/orderTransisi";
-import { buatPicklist, buatPicklistPaket, KUNCI_URUT_PICKLIST, type ArahUrutPicklist, type KunciUrutPicklist } from "@/lib/d1/picklist";
+import { buatPicklist, buatPicklistPaket, KUNCI_URUT_PICKLIST, type ArahUrutPicklist, type KunciUrutPicklist, type PaketPicklist } from "@/lib/d1/picklist";
 import { bangunPdfPicklist } from "@/lib/d1/picklistPdf";
 import { bangunPdfPicklistPaket } from "@/lib/d1/picklistPaketPdf";
-import { bangunPdfPicklistGabung, type BarisPickGabung } from "@/lib/d1/picklistGabungPdf";
+import { bangunPdfPicklistGabung, gabungPerSku, type BarisPickGabung } from "@/lib/d1/picklistGabungPdf";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
 import { potongOnlineUntukOrder } from "@/lib/d1/stokOnline";
 import { catatEksporPicklist } from "@/lib/d1/picklistEkspor";
-import { listBooking } from "@/lib/d1/advanceBelumSku";
+import { listBooking, type BookingRow } from "@/lib/d1/advanceBelumSku";
 import { normalisasiSheetShopee, normalisasiStatus, type GabunganOrder, type ShopeeAdvanceRow, type ShopeeOrderRow, type ShopeeBooking, type BarisBelumSku } from "@/lib/d1/orderImportShopee";
 import { hitungFingerprint, cekFileSudahAda, catatImportFile } from "@/lib/d1/importFingerprint";
 import { klasifikasikanImport, type OrderBaru } from "@/lib/d1/orderKlasifikasi";
@@ -402,7 +402,16 @@ async function jalankanPernyataan(
  * picker tahu harus memeriksa rak lain juga. Stok negatif diabaikan saat memilih gudang —
  * angka minus berarti catatan yang salah, bukan barang yang ada.
  */
-async function infoNamaDanLokasi(db: D1Database, daftar: string[]): Promise<Map<string, InfoSku>> {
+async function infoNamaDanLokasi(
+  db: D1Database,
+  daftar: string[],
+  /**
+   * Penerjemah kode gudang → nama (`petaNamaGudang`). Dipanggil SEKALI oleh pemanggil
+   * supaya jalur picklist tidak menambah satu kueri master per bagian SKU (hanya satu
+   * penerjemah per request, berapa pun banyaknya potongan).
+   */
+  gudangNama?: (kode: string) => string
+): Promise<Map<string, InfoSku>> {
   const hasil = new Map<string, InfoSku>();
   const unik = [...new Set(daftar)].filter((s) => s.length > 0 && !s.startsWith("+"));
   if (unik.length === 0) return hasil;
@@ -433,18 +442,150 @@ async function infoNamaDanLokasi(db: D1Database, daftar: string[]): Promise<Map<
         nama: e.nama,
         // Tidak ada stok positif di gudang mana pun: jujur tulis kosong daripada menebak.
         // Picklist akan menampilkan "-", yang artinya "cek dulu" — bukan instruksi salah.
-        lokasi: utama?.nama ?? "",
-        lokasiLain: positif.length > 1 ? `+${positif.slice(1).map((g) => g.nama).join(", ")}` : "",
+        lokasi: utama ? (gudangNama ? gudangNama(utama.nama) : utama.nama) : "",
+        lokasiLain: positif.length > 1 ? `+${positif.slice(1).map((g) => (gudangNama ? gudangNama(g.nama) : g.nama)).join(", ")}` : "",
       });
     }
   }
   return hasil;
 }
 
+/**
+ * Terjemahkan kode/ID gudang (`stock_by_bin.warehouse_id`) menjadi NAMA gudang.
+ *
+ * Diperlukan karena dua sumber menyebut gudang dengan dua cara: `stock_by_bin` menyimpan
+ * ID gudang ('GMV0LJYS5'), sedangkan `advance_bookings.gudang` menyimpan CODE ('D12') —
+ * lihat pemetaan Kledo di migrations/0025 yang juga memakai `code` sebagai kunci cadangan.
+ * Satu kali kueri untuk SEMUA gudang (tabelnya kecil), bukan satu kueri per baris.
+ *
+ * Gudang tak dikenal dikembalikan APA ADANYA: menulis string kosong akan menyembunyikan
+ * baris bermasalah, dan picklist yang menyuruh picker ke tempat yang salah lebih buruk
+ * daripada kolom yang kelihatan aneh.
+ */
+async function petaNamaGudang(db: D1Database): Promise<(kode: string) => string> {
+  const peta = new Map<string, string>();
+  const { results } = await db.prepare("SELECT id, code, nama FROM warehouses").all<{ id: string; code: string; nama: string }>();
+  for (const g of results) {
+    // `code` dulu: itu tulisan pendek yang dipakai kolom Lokasi Gudang (D12/D19) — sama
+    // aturan dengan app/api/baca/route.ts. `id` jadi cadangan supaya kode lama yang sudah
+    // telanjur tertulis sebagai ID tetap bisa diterjemahkan.
+    if (!peta.has(g.code)) peta.set(g.code, g.nama);
+    if (!peta.has(g.id)) peta.set(g.id, g.nama);
+  }
+  return (kode: string) => peta.get(kode) ?? kode;
+}
+
 function intBaris(v: unknown): number | null {
   if (v == null || v === "") return null;
   const n = Number(v);
   return Number.isInteger(n) ? n : (NaN as unknown as null);
+}
+
+/**
+ * Booking advance yang DIPILIH user, dari parameter `booking` (JSON array `booking_sn`).
+ *
+ * Kenapa parameter ini ada: tanpa itu jalur `gabung-order` menarik SELURUH booking
+ * berstatus `menunggu` di database (`listBooking` global), sehingga picker menerima lembar
+ * berisi advance milik orang lain — dan mode itu jadi tak bisa dipakai karena isinya tidak
+ * bisa dikendalikan user. Di sini pilihan itu dibuat eksplisit.
+ *
+ * `undefined` = parameter tidak dikirim → perilaku LAMA (semua `menunggu`, limit 500),
+ * supaya tautan cetak lama dan pemanggil non-UI tidak berubah diam-diam. Array kosong
+ * dianggap "tidak memilih" juga, dengan alasan yang sama: klien yang mengirim `[]` berarti
+ * "tidak menyaring", bukan "pilih nol".
+ *
+ * SN yang tidak ada / tidak `menunggu` DITOLAK, bukan dibuang diam-diam. Picklist yang
+ * kehilangan satu booking adalah picklist yang kurang barang — persis kegagalan yang paling
+ * dihindari repo ini; lebih baik teriak sekarang daripada ketahuan setelah paket dikirim.
+ */
+type HasilBooking = { ok: true; sn: string[] | null } | { ok: false; error: string };
+
+function bacaBookingParam(raw: string | null): HasilBooking {
+  if (raw === null || raw.trim() === "") return { ok: true, sn: null };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ok: false, error: "Parameter booking tidak valid (harus JSON array booking_sn)." };
+  }
+  if (!Array.isArray(parsed)) return { ok: false, error: "Parameter booking harus berupa array booking_sn." };
+  const sn = [...new Set(parsed.map((x) => teks(x)).filter((x) => x.length > 0))];
+  if (sn.length === 0) return { ok: true, sn: null };
+  if (sn.length > 500) return { ok: false, error: "Terlalu banyak booking dipilih (maksimal 500)." };
+  return { ok: true, sn };
+}
+
+/**
+ * Booking advance yang benar-benar akan dicetak: seluruh `menunggu` (perilaku lama) atau
+ * tepat SN yang diminta, DENGAN verifikasi bahwa tiap SN memang ada dan masih `menunggu`.
+ *
+ * ── JENDELA 500 (kenapa verifikasi bisa salah bilang "tidak ditemukan") ──
+ * Pencarian SN di bawah dibatasi `listBooking(db, { limit: 500 })` — 500 booking TERBARU
+ * (`ORDER BY at DESC, booking_sn DESC`). Padanan di UI (/api/advance?aksi=daftar) mengambil
+ * kandidat dengan `limit=300`. Akibatnya, begitu antrean `menunggu` melewati 500 baris, SN
+ * yang SAH tapi berada di luar jendela itu akan dijawab "Booking tidak ditemukan".
+ *
+ * Ini AMAN (fail closed: 400, tidak ada lembar tercetak, tidak ada barang diam-diam hilang),
+ * tapi pesannya menyesatkan. Kalau antrean advance pernah melewati 500, JANGAN sekadar
+ * menaikkan angka di sini — ganti pencarian per-SN menjadi kueri bertarget
+ * (`WHERE booking_sn IN (...)` dengan potongan 50 seperti kueri lain di repo), sehingga
+ * verifikasinya tidak lagi bergantung pada jendela urutan. Batas `sn.length > 500` di
+ * `bacaBookingParam` adalah pengaman bentuk yang terpisah dan tidak perlu ikut berubah.
+ */
+async function ambilBookingTerpilih(
+  db: D1Database,
+  status: string,
+  sn: string[] | null
+): Promise<{ ok: true; booking: BookingRow[] } | { ok: false; error: string }> {
+  // Perilaku LAMA (semua `menunggu`) hanya berlaku bila `booking` TIDAK dikirim. Itu
+  // dipertahankan demi tautan cetak lama dan pemanggil non-UI.
+  if (sn === null) return { ok: true, booking: await listBooking(db, { status, limit: 500 }) };
+  // `listBooking` memfilter satu status; pilihan user bisa saja sudah berubah status di tab
+  // lain, jadi baris diambil per SN tanpa filter status lalu diperiksa satu per satu.
+  // Jendela 500 di sini — lihat catatan panjang di atas fungsi ini.
+  const semua = await listBooking(db, { limit: 500 });
+  const peta = new Map(semua.map((b) => [b.booking_sn, b]));
+  const booking: BookingRow[] = [];
+  const hilang: string[] = [];
+  const statusSalah: string[] = [];
+  for (const s of sn) {
+    const b = peta.get(s);
+    if (!b) hilang.push(s);
+    else if (b.status !== status) statusSalah.push(`${s} (${b.status})`);
+    else booking.push(b);
+  }
+  if (hilang.length > 0) {
+    return { ok: false, error: `Booking tidak ditemukan: ${hilang.slice(0, 5).join(", ")}${hilang.length > 5 ? ` (+${hilang.length - 5} lagi)` : ""}.` };
+  }
+  if (statusSalah.length > 0) {
+    return { ok: false, error: `Booking bukan berstatus ${status}: ${statusSalah.slice(0, 5).join(", ")}${statusSalah.length > 5 ? ` (+${statusSalah.length - 5} lagi)` : ""}.` };
+  }
+  return { ok: true, booking };
+}
+
+/**
+ * Jumlah ORDER yang benar-benar berkontribusi — target yang sudah dideduplikasi.
+ *
+ * `buatPicklist` dan `buatPicklistPaket` sama-sama memetakan kunci `${mp}|${no}` lebih dulu,
+ * jadi dua entri kembar di `targets` menghasilkan SATU set baris. Memakai `targets.length`
+ * untuk kepala "N order" membuat angka itu membengkak dibanding tabel di bawahnya — angka
+ * yang benar untuk barisnya, tapi bohong di judul. Dedupe di sini dengan kunci yang SAMA,
+ * supaya pratinjau dan PDF sepakat soal apa itu "satu order".
+ */
+function hitungOrderUnik(targets: { mp: string; no: string }[]): number {
+  return new Map(targets.map((t) => [`${t.mp}|${t.no}`, t])).size;
+}
+
+/** `targets` query param → daftar target order (sama bentuk untuk preview dan PDF). */
+function bacaTargets(raw: string): { ok: true; targets: { mp: string; no: string }[] } | { ok: false; error: string } {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) throw new Error("bukan array");
+    const targets = (parsed as Record<string, unknown>[]).map((t) => ({ mp: teks(t.marketplace).toLowerCase(), no: teks(t.no_pesanan) }));
+    return { ok: true, targets };
+  } catch {
+    return { ok: false, error: "Parameter targets tidak valid." };
+  }
 }
 
 function tanggalKeEpoch(t: string): number | null {
@@ -563,15 +704,13 @@ export async function GET(request: Request) {
   const aksi = url.searchParams.get("aksi");
   if (aksi === "picklist-pdf") {
     const db = getDb();
-    const raw = url.searchParams.get("targets") ?? "[]";
-    let targets: { mp: string; no: string }[];
-    try {
-      const parsed: unknown = JSON.parse(raw);
-      if (!Array.isArray(parsed)) throw new Error("bukan array");
-      targets = (parsed as Record<string, unknown>[]).map((t) => ({ mp: teks(t.marketplace).toLowerCase(), no: teks(t.no_pesanan) }));
-    } catch {
-      return json({ ok: false, error: "Parameter targets tidak valid." }, 400);
-    }
+    const tgt = bacaTargets(url.searchParams.get("targets") ?? "[]");
+    if (!tgt.ok) return json({ ok: false, error: tgt.error }, 400);
+    const targets = tgt.targets;
+    // Pilihan booking advance (mode gabung-order). `null` = tidak menyaring (perilaku lama).
+    const bk = bacaBookingParam(url.searchParams.get("booking"));
+    if (!bk.ok) return json({ ok: false, error: bk.error }, 400);
+    const bookingSn = bk.sn;
     // Unduh (attachment) itu default lama; `inline=1` membuat browser menampilkan PDF di viewer
     // tab baru, dari situ user memilih print/simpan sendiri. Satu bendera dibaca sekali di sini
     // supaya SEMUA mode (termasuk gabung-order) berperilaku sama.
@@ -611,9 +750,26 @@ export async function GET(request: Request) {
     // Mode gabung-order = satu lembar berisi order + advance. Dipakai picker supaya tidak
     // menyisir rak dua kali untuk barang yang diambil pada saat yang sama.
     if (mode === "gabung-order") {
+      // Tidak ada order DAN tidak ada pilihan booking → tidak ada apa pun untuk dicetak.
+      // Diperiksa SEBELUM menarik booking: tanpa order, "perilaku lama" (semua `menunggu`)
+      // akan mengirim SELURUH database ke picker — persis cacat yang sedang diperbaiki.
+      if (targets.length === 0 && bookingSn === null) {
+        return json({ ok: false, error: "Pilih minimal satu order atau satu booking advance." }, 400);
+      }
       const st = url.searchParams.get("status") ?? "menunggu";
-      const booking = await listBooking(db, { status: st, limit: 500 });
-      const pick = await buatPicklistPaket(db, targets, urutPick, arahPick);
+      const ambil = await ambilBookingTerpilih(db, st, bookingSn);
+      if (!ambil.ok) return json({ ok: false, error: ambil.error }, 400);
+      const booking = ambil.booking;
+      // Mode ini boleh dicetak dengan HANYA advance: itu justru kasus saat mode ini paling
+      // dibutuhkan — ada booking yang harus disiapkan walau belum ada order yang perlu
+      // dicetak. Mode lain TIDAK ikut dilonggarkan (picklist order-only tanpa order =
+      // lembar kosong), dan jalur itu tetap 400 lewat penjaga di `buatPicklistPaket`.
+      if (targets.length === 0 && booking.length === 0) {
+        return json({ ok: false, error: "Pilih minimal satu order atau satu booking advance." }, 400);
+      }
+      const pick = targets.length > 0
+        ? await buatPicklistPaket(db, targets, urutPick, arahPick)
+        : ({ ok: true as const, paket: [] as PaketPicklist[] });
       if (!pick.ok) return json({ ok: false, error: pick.error }, pick.status);
 
       // Satu query nama + gudang untuk SEMUA SKU yang terlibat, dipakai bersama oleh jalur
@@ -633,7 +789,8 @@ export async function GET(request: Request) {
           ...booking.map((b2) => b2.sku),
         ]),
       ];
-      const infoSku = await infoNamaDanLokasi(db, skuTerlibat);
+      const gudangNama = await petaNamaGudang(db);
+      const infoSku = await infoNamaDanLokasi(db, skuTerlibat, gudangNama);
 
       const barisGabung: BarisPickGabung[] = [
         ...pick.paket.flatMap((p) =>
@@ -670,7 +827,20 @@ export async function GET(request: Request) {
           };
         }),
       ];
-      if (barisGabung.length === 0) return json({ ok: false, error: "Tak ada item untuk dicetak." }, 400);
+      if (barisGabung.length === 0) {
+        // Dua sebab berbeda, dua pesan berbeda: "tidak memilih apa pun" dan "memilih sesuatu
+        // yang tidak punya item" butuh tindakan user yang berbeda.
+        return json(
+          {
+            ok: false,
+            error:
+              targets.length === 0 && booking.length === 0
+                ? "Pilih minimal satu order atau satu booking advance."
+                : "Tak ada item untuk dicetak dari pilihan ini.",
+          },
+          400
+        );
+      }
       const bytes = await bangunPdfPicklistGabung(barisGabung, { gudangDefault: "Gudang ONLINE", urut: urutPick, arah: arahPick });
       return kirimPdf(new Uint8Array(bytes), "gabung-order", {
         status: 200,
@@ -715,6 +885,203 @@ export async function GET(request: Request) {
     if (!pick.ok) return json({ ok: false, error: pick.error }, pick.status);
     const bytes = await bangunPdfPicklist(pick.rows, pick.orders);
     return kirimPdf(new Uint8Array(bytes), "pisah", header);
+  }
+  // Pratinjau isi picklist SEBELUM dicetak: daftar baris yang akan masuk PDF, dalam JSON.
+  //
+  // Kenapa harus dari server, bukan disusun di klien dari daftar order: isi picklist
+  // dihitung ULANG dari `order_items` (+ booking advance untuk mode gabung-order). Klien
+  // tidak punya `lokasiLain`, tidak punya baris advance, dan tidak tahu qty gabungan —
+  // pratinjau yang disusun di klien akan menjanjikan angka yang berbeda dari kertas.
+  //
+  // Kuncinya: fungsi yang dipanggil di sini PERSIS sama dengan cabang `picklist-pdf` di
+  // atas (buatPicklistPaket / buatPicklist / gabungPerSku) dengan `urut`/`arah` yang sama,
+  // dan `gabung-order` memakai derivasi `urutPick`/`arahPick` yang sama persis. Tidak ada
+  // kueri SQL paralel di sini — satu-satunya cara pratinjau tidak bisa melenceng dari PDF.
+  if (aksi === "preview-picklist") {
+    const db = getDb();
+    const tgtP = bacaTargets(url.searchParams.get("targets") ?? "[]");
+    if (!tgtP.ok) return json({ ok: false, error: tgtP.error }, 400);
+    const targets = tgtP.targets;
+    // Kontrak `booking` DISAMAKAN dengan jalur PDF: `null` = tidak menyaring (semua
+    // `menunggu`), array = tepat SN itu, SN tak dikenal/menunggu-bukan → ditolak.
+    const bkP = bacaBookingParam(url.searchParams.get("booking"));
+    if (!bkP.ok) return json({ ok: false, error: bkP.error }, 400);
+    const bookingSn = bkP.sn;
+    // Derivasi urut/arah: DISALIN APA ADANYA dari cabang picklist-pdf. Sengaja tidak
+    // diekstrak ke fungsi agar tidak ada satu pun jalur PDF yang ikut berubah — PDF yang
+    // sudah dicetak owner tidak boleh bergeser hanya karena ada fitur pratinjau baru.
+    const urutMinta = (url.searchParams.get("urut") ?? "").trim();
+    const urutPick: KunciUrutPicklist = (KUNCI_URUT_PICKLIST as readonly string[]).includes(urutMinta)
+      ? (urutMinta as KunciUrutPicklist)
+      : "default";
+    const arahPick: ArahUrutPicklist = url.searchParams.get("arah") === "desc" ? "desc" : "asc";
+    const modeMinta = (url.searchParams.get("mode") ?? "").trim();
+    const mode = modeMinta === "" ? ((await pakaiPerPaket(db, targets)) ? "per_paket" : "pisah") : modeMinta;
+    if (mode !== "per_paket" && mode !== "pisah" && mode !== "gabung" && mode !== "gabung-order")
+      return json({ ok: false, error: "Mode harus per_paket/pisah/gabung/gabung-order." }, 400);
+
+    const judul: Record<string, string> = {
+      "gabung-order": "PICKLIST ORDER — GABUNG ORDER + ADVANCE",
+      gabung: "PICKLIST ORDER — GABUNG PER PAKET",
+      per_paket: "PICKLIST ORDER — PER PAKET",
+      pisah: "PICKLIST ORDER — PISAH",
+    };
+    type BarisPreview = { no: number; nama: string; sku: string; lokasi: string; qty: number; perluSku: boolean; skuAsal: string; grup?: string };
+    let kolom: string[];
+    let baris: Omit<BarisPreview, "no">[];
+    // Kontribusi per sisi, supaya klien bisa menulis "12 order + 40 advance". Owner
+    // bingung karena mode ini diam-diam menarik advance yang tidak ia pilih; angka ini
+    // membuat isi lembar terlihat SEBELUM dicetak.
+    //
+    // Dihitung dari target UNIK, bukan `targets.length`: helper di bawah mendedupe kunci
+    // `${mp}|${no}`, jadi target kembar menghasilkan satu set baris. Memakai panjang array
+    // mentah akan menulis "12 order" di atas tabel yang isinya 11 order.
+    let totalOrder = hitungOrderUnik(targets);
+    let totalAdvance = 0;
+
+    if (mode === "gabung-order") {
+      // Cabang ini MENGULANG perakitan baris milik picklist-pdf karena butuh
+      // `BarisPickGabung[]` — bentuk ANTARA yang tidak keluar dari sana (di sana ia langsung
+      // jadi PDF). Yang diulang hanya perakitan; URUTANNYA tidak disalin: `gabungPerSku`
+      // diimpor dari lib yang sama dengan jalur PDF, jadi pratinjau dan lembar tercetak
+      // bernomor sama karena memakai satu implementasi, bukan dua yang dijaga tetap serupa.
+      // Tidak ada order DAN tidak ada pilihan booking → tidak ada apa pun untuk dicetak.
+      // Diperiksa SEBELUM menarik booking: tanpa order, "perilaku lama" (semua `menunggu`)
+      // akan mengirim SELURUH database ke picker — persis cacat yang sedang diperbaiki.
+      if (targets.length === 0 && bookingSn === null) {
+        return json({ ok: false, error: "Pilih minimal satu order atau satu booking advance." }, 400);
+      }
+      const st = url.searchParams.get("status") ?? "menunggu";
+      const ambil = await ambilBookingTerpilih(db, st, bookingSn);
+      if (!ambil.ok) return json({ ok: false, error: ambil.error }, 400);
+      const booking = ambil.booking;
+      // Sama seperti jalur PDF: mode ini boleh jalan dengan HANYA advance.
+      if (targets.length === 0 && booking.length === 0) {
+        return json({ ok: false, error: "Pilih minimal satu order atau satu booking advance." }, 400);
+      }
+      const pick = targets.length > 0
+        ? await buatPicklistPaket(db, targets, urutPick, arahPick)
+        : ({ ok: true as const, paket: [] as PaketPicklist[] });
+      if (!pick.ok) return json({ ok: false, error: pick.error }, pick.status);
+      totalAdvance = booking.length;
+      const skuTerlibat = [
+        ...new Set([...pick.paket.flatMap((p) => p.rows.map((r) => r.sku)), ...booking.map((b2) => b2.sku)]),
+      ];
+      const gudangNama = await petaNamaGudang(db);
+      const infoSku = await infoNamaDanLokasi(db, skuTerlibat, gudangNama);
+      const barisGabung: BarisPickGabung[] = [
+        ...pick.paket.flatMap((p) =>
+          p.rows.map((r) => {
+            const info = infoSku.get(r.sku);
+            return {
+              jenis: "order" as const,
+              sku: r.sku,
+              nama: info?.nama || r.nama,
+              lokasi: info?.lokasi ?? "",
+              lokasiLain: info?.lokasiLain ?? "",
+              qty: r.qty,
+              kunci: p.no_resi || p.no_pesanan.join("+"),
+              kirimKe: p.no_pesanan.join("+"),
+              perluSku: r.perlu_sku === true,
+              skuAsal: r.sku_asal ?? "",
+            };
+          })
+        ),
+        ...booking.map((b2) => {
+          const info = infoSku.get(b2.sku);
+          return {
+            jenis: "advance" as const,
+            sku: b2.sku,
+            nama: info?.nama || b2.nama_produk,
+            lokasi: info?.lokasi ?? "",
+            lokasiLain: info?.lokasiLain ?? "",
+            qty: b2.qty,
+            kunci: b2.booking_sn,
+            kirimKe: b2.antar_ke,
+            perluSku: !info?.nama,
+            skuAsal: b2.sku,
+          };
+        }),
+      ];
+      kolom = ["No", "Nama Produk", "SKU", "Lokasi Gudang", "Quantity Total"];
+      // SEKALI urut saja: `gabungPerSku` sudah mengurutkan hasilnya (lewat
+      // `urutkanBarisGabung` di lib) dan lembar PDF memakai fungsi yang sama, jadi urutan
+      // pratinjau dan urutan tercetak berasal dari SATU implementasi, bukan dua salinan.
+      baris = gabungPerSku(barisGabung, urutPick, arahPick).map((r) => ({
+        nama: r.nama,
+        sku: r.sku,
+        lokasi: r.lokasiLain ? `${r.lokasi} (${r.lokasiLain})` : r.lokasi,
+        qty: r.qty,
+        perluSku: r.perluSku,
+        skuAsal: r.skuAsal,
+      }));
+    } else if (mode === "pisah") {
+      const pick = await buatPicklist(db, targets, urutPick, arahPick);
+      if (!pick.ok) return json({ ok: false, error: pick.error }, pick.status);
+      kolom = ["No", "Nama Produk", "SKU", "Quantity Total"];
+      baris = pick.rows.map((r) => ({
+        nama: r.nama,
+        sku: r.sku,
+        // `buatPicklist` tidak menghitung lokasi — kolomnya memang tidak ada di mode ini.
+        lokasi: "",
+        qty: r.qty,
+        perluSku: r.perlu_sku === true,
+        skuAsal: r.sku_asal ?? "",
+      }));
+    } else {
+      // `gabung` dan `per_paket` memakai baris yang SAMA (satu baris per baris item, semua
+      // paket) — yang membedakan klien hanya pemisahan per `grup`. `no_resi` dikosongkan
+      // oleh `buatPicklistPaket` untuk order tanpa resi, dan baris tanpa grup akan
+      // memisahkan dua paket palsu yang sebenarnya berbeda paket.
+      const pick = await buatPicklistPaket(db, targets, urutPick, arahPick);
+      if (!pick.ok) return json({ ok: false, error: pick.error }, pick.status);
+      kolom = ["No", "Nama Produk", "SKU", "Quantity Total"];
+      baris = pick.paket.flatMap((p) =>
+        p.rows.map((r) => ({
+          nama: r.nama,
+          sku: r.sku,
+          lokasi: "",
+          qty: r.qty,
+          perluSku: r.perlu_sku === true,
+          skuAsal: r.sku_asal ?? "",
+          // Paket tanpa resi tetap dibedakan: tanpa ini semua order tanpa resi tampak
+          // satu paket di pratinjau, padahal PDF mencetaknya sebagai lembar terpisah.
+          grup: p.no_resi || `NO-RESI: ${p.no_pesanan.join("+")}`,
+        }))
+      );
+    }
+
+    if (baris.length === 0) {
+      return json(
+        {
+          ok: false,
+          error:
+            totalOrder === 0 && totalAdvance === 0
+              ? "Pilih minimal satu order atau satu booking advance."
+              : "Tak ada item untuk dicetak dari pilihan ini.",
+        },
+        400
+      );
+    }
+
+    const perluSku = baris.filter((b) => b.perluSku).length;
+    return json({
+      ok: true,
+      mode,
+      urut: urutPick,
+      arah: arahPick,
+      kolom,
+      // Nomor diberikan SETELAH urutan final, sekali di sini supaya tidak ada mode yang
+      // lupa menomori ulang.
+      baris: baris.map((b, i) => ({ no: i + 1, ...b })),
+      total_baris: baris.length,
+      total_unit: baris.reduce((s, b) => s + b.qty, 0),
+      ada_bermasalah: perluSku,
+      // Isi lembar terlihat sebelum dicetak: berapa order dan berapa booking yang ikut.
+      total_order: totalOrder,
+      total_advance: totalAdvance,
+      judul: judul[mode],
+    });
   }
   if (aksi !== "daftar") return json({ ok: true, header: HEADER_PESANAN });
   const f = filterDariQuery(url);

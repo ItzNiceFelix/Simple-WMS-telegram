@@ -5,7 +5,7 @@
 // kesalahannya baru ketahuan setelah paket dikirim ke pembeli.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { gabungPerSku, bangunPdfPicklistGabung, type BarisPickGabung } from "./picklistGabungPdf";
+import { gabungPerSku, urutkanBarisGabung, bangunPdfPicklistGabung, type BarisGabung, type BarisPickGabung } from "./picklistGabungPdf";
 
 
 /**
@@ -177,6 +177,57 @@ describe("lokasi gudang di PDF", () => {
     const bytes = await bangunPdfPicklistGabung([b({ sku: "A", qty: 1 })]);
     const teks = await teksPdf(bytes);
     assert.ok(!teks.some((t) => t.includes("PERLU SKU")), "jangan tampilkan tabel kosong");
+  });
+});
+
+describe("urutkanBarisGabung — fungsi urutan TUNGGAL untuk PDF dan pratinjau", () => {
+  // Cacat yang dijaga: fitur pratinjau pernah MENYALIN perbandingan ini ke route. Dua
+  // salinan urutan berarti dua lembar bisa keluar berbeda urutan tanpa ada yang sadar sampai
+  // picker menyisir rak dengan urutan yang tidak dipilih user. Sekarang hanya ada satu.
+  const baris: BarisGabung[] = [
+    { nama: "Beras", sku: "B", lokasi: "D19", lokasiLain: "", qty: 1, perluSku: false, skuAsal: "", rincian: [] },
+    { nama: "Gula", sku: "A", lokasi: "D12", lokasiLain: "", qty: 1, perluSku: false, skuAsal: "", rincian: [] },
+    { nama: "Gula", sku: "C", lokasi: "D19", lokasiLain: "", qty: 1, perluSku: false, skuAsal: "", rincian: [] },
+  ];
+
+  it("gabungPerSku MENGURUTKAN hasilnya — mengurutkan ulang tidak mengubah apa pun", () => {
+    // Inilah bukti bahwa pemanggil tidak perlu (dan tidak boleh) "menambal" urutan di luar:
+    // bila ini gagal, urutan di luar memang berarti dan catatan di lib itu salah.
+    for (const urut of ["default", "sku", "nama", "lokasi"] as const) {
+      for (const arah of ["asc", "desc"] as const) {
+        const sekali = urutkanBarisGabung(baris, urut, arah);
+        const duaKali = urutkanBarisGabung(sekali, urut, arah);
+        assert.deepEqual(duaKali, sekali, `urutan ${urut}/${arah} harus IDEMPOTEN`);
+      }
+    }
+  });
+
+  it("hasil gabungPerSku sudah urut menurut kunci yang diminta", () => {
+    const b1: BarisPickGabung = { jenis: "order", nama: "Beras", sku: "B", lokasi: "D19", lokasiLain: "", qty: 1, kunci: "R1", kirimKe: "O1", perluSku: false, skuAsal: "" };
+    const b2: BarisPickGabung = { ...b1, nama: "Gula", sku: "A", lokasi: "D12" };
+    const b3: BarisPickGabung = { ...b1, nama: "Gula", sku: "C", lokasi: "D19" };
+    assert.deepEqual(gabungPerSku([b1, b2, b3], "sku", "asc").map((r) => r.sku), ["A", "B", "C"]);
+    assert.deepEqual(gabungPerSku([b1, b2, b3], "sku", "desc").map((r) => r.sku), ["C", "B", "A"]);
+    // Sama seperti `urutkanBarisGabung` dipanggil langsung: satu implementasi, satu hasil.
+    assert.deepEqual(gabungPerSku([b1, b2, b3], "sku", "asc"), urutkanBarisGabung(gabungPerSku([b1, b2, b3], "default").slice(), "sku", "asc"));
+  });
+
+  it("default = lokasi lalu nama TANPA tiebreak sku (lembar lama tidak bergeser)", () => {
+    // Dua baris dengan lokasi + nama SAMA (hanya SKU beda). Tanpa tiebreak, urutan keduanya
+    // mengikuti urutan masukan — dan itu memang perilaku lama yang harus dipertahankan.
+    const a: BarisGabung = { nama: "Gula", sku: "C", lokasi: "D12", lokasiLain: "", qty: 1, perluSku: false, skuAsal: "", rincian: [] };
+    const b2: BarisGabung = { ...a, sku: "A" };
+    assert.deepEqual(urutkanBarisGabung([a, b2], "default").map((r) => r.sku), ["C", "A"]);
+    assert.deepEqual(urutkanBarisGabung([b2, a], "default").map((r) => r.sku), ["A", "C"]);
+    // Ber-kunci: tiebreak SKU membuatnya deterministik ke arah naik.
+    assert.deepEqual(urutkanBarisGabung([a, b2], "nama", "asc").map((r) => r.sku), ["A", "C"]);
+    assert.deepEqual(urutkanBarisGabung([b2, a], "nama", "asc").map((r) => r.sku), ["A", "C"]);
+  });
+
+  it("desc membalik KESELURUHAN, termasuk tiebreak-nya", () => {
+    const a: BarisGabung = { nama: "Gula", sku: "C", lokasi: "D12", lokasiLain: "", qty: 1, perluSku: false, skuAsal: "", rincian: [] };
+    const b2: BarisGabung = { ...a, sku: "A" };
+    assert.deepEqual(urutkanBarisGabung([a, b2], "nama", "desc").map((r) => r.sku), ["C", "A"]);
   });
 });
 

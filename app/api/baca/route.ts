@@ -238,6 +238,21 @@ export async function GET(request: Request) {
     // Ekspresi di peta ini TANPA arah — arah dipasang TEPAT SEKALI di bawah. Menyimpan
     // "ASC" di dalam peta sambil menyambung `arah` lagi menghasilkan "total_qty ASC ASC":
     // SQL tidak sah dan halaman mati 500 tanpa sebab yang jelas.
+    // Nama gudang diambil dari master `warehouses` lewat CODE, bukan id.
+    //
+    // Kenapa lewat code: halaman /produk-total dulu menampilkan ID gudang asli D1
+    // ('GMV0LJYS5') di kolom "Lokasi Gudang" — picker tak bisa memakai string itu untuk
+    // mencari rak. `warehouses.code` LAHIR sebagai kode pendek yang dibaca orang (D12/D19)
+    // dan diisi sama dengan id saat gudang dibuat manual, jadi kode = tulisan yang sudah
+    // dipakai jalur picklist. `warehouses.nama` ("Gudang D12") sengaja TIDAK dipakai: di
+    // kolom 105pt nama panjang mendorong penanda "+gudang lain" keluar dari lebar tabel.
+    const LOKASI: Record<string, string> = {
+      utama: "(SELECT COALESCE(w.code, b2.warehouse_id) FROM stock_by_bin b2 LEFT JOIN warehouses w ON w.id = b2.warehouse_id WHERE b2.sku = stock_by_bin.sku AND b2.qty > 0 ORDER BY b2.qty DESC, b2.warehouse_id ASC LIMIT 1)",
+      // Daftar SEMUA gudang ber-stok positif (kode), dipotong jadi "+sisa" di Node.
+      // Sengaja tidak `GROUP_CONCAT` di SQL: urutannya harus ikut qty DESC seperti aturan
+      // gudang dominan, dan GROUP_CONCAT tidak menjamin urutan subquery-nya.
+      lain: "(SELECT GROUP_CONCAT(COALESCE(w.code, b2.warehouse_id), char(9)) FROM stock_by_bin b2 LEFT JOIN warehouses w ON w.id = b2.warehouse_id WHERE b2.sku = stock_by_bin.sku AND b2.qty > 0 ORDER BY b2.qty DESC, b2.warehouse_id ASC)",
+    };
     const URUT: Record<string, string> = {
       nama: "p.nama_accurate COLLATE NOCASE",
       sku: "p.sku COLLATE NOCASE",
@@ -281,15 +296,12 @@ export async function GET(request: Request) {
     // di klien, hanya halaman yang tampil yang terurut, sisanya tetap acak.
     const { results: skuRows } = await db
       .prepare(
-        `SELECT p.sku, p.nama_accurate, agg.total_qty, agg.lokasi_utama
+        `SELECT p.sku, p.nama_accurate, agg.total_qty,
+                ${LOKASI.utama} AS lokasi_utama,
+                ${LOKASI.lain} AS lokasi_semua
          FROM products p
          LEFT JOIN (
-           SELECT sku,
-                  SUM(qty) AS total_qty,
-                  (SELECT b2.warehouse_id FROM stock_by_bin b2
-                    WHERE b2.sku = stock_by_bin.sku AND b2.qty > 0
-                    ORDER BY b2.qty DESC, b2.warehouse_id ASC LIMIT 1) AS lokasi_utama
-           FROM stock_by_bin GROUP BY sku
+           SELECT sku, SUM(qty) AS total_qty FROM stock_by_bin GROUP BY sku
          ) agg ON agg.sku = p.sku
          WHERE 1 = 1
          -- Tiebreaker WAJIB. Tanpa kolom unik di ekor, dua produk dengan nama sama bisa
@@ -299,41 +311,22 @@ export async function GET(request: Request) {
          LIMIT ? OFFSET ?`
       )
       .bind(ukuran, offset)
-      .all<{ sku: string; nama_accurate: string | null; total_qty: number | null; lokasi_utama: string | null }>();
+      .all<{ sku: string; nama_accurate: string | null; total_qty: number | null; lokasi_utama: string | null; lokasi_semua: string | null }>();
 
     // Total dari COUNT(*) di lapisan produk: satu SKU = satu baris. Ini yang membuat
     // nomor halaman di UI menunjuk halaman yang benar-benar berisi.
     const totalRow = await db.prepare("SELECT COUNT(*) AS total FROM products").bind().first<{ total: number }>();
     const total = totalRow?.total ?? 0;
 
-    // ── Langkah 2: SEMUA gudang milik SKU halaman ini, untuk penanda "+gudang lain" ──
-    // Menyalin batas aturan Lokasi Gudang yang sudah diputuskan repo
-    // (app/api/order/route.ts infoNamaDanLokasi): gudang positif dengan qty TERBESAR
-    // jadi lokasi utama, sisanya jadi penanda "+N", gudang non-positif diabaikan.
-    // Di sini penandanya memakai KODE gudang agar ringkas di kolom tabel.
-    const daftarSku = skuRows.map((r) => r.sku);
+    // ── Langkah 2: penanda "+gudang lain" dari daftar yang sudah diambil di langkah 1 ──
+    // Dulu ini kueri KEDUA ke `stock_by_bin`. Kini tidak perlu: daftar gudang datang
+    // bersama barisnya (`lokasi_semua`), jadi aturan "dominan = qty terbesar, sisanya
+    // jadi penanda" dijalankan pada data yang PERSIS sama dengan yang dipakai memilih
+    // `lokasi_utama` — dua query terpisah bisa berbeda bila stok berubah di antaranya.
     const gudangLain = new Map<string, string>();
-    if (daftarSku.length > 0) {
-      const tanda = daftarSku.map(() => "?").join(",");
-      const { results: periode } = await db
-        .prepare(
-          `SELECT sku, warehouse_id, qty FROM stock_by_bin
-           WHERE sku IN (${tanda}) AND qty > 0
-           ORDER BY qty DESC, warehouse_id ASC`
-        )
-        .bind(...daftarSku)
-        .all<{ sku: string; warehouse_id: string; qty: number }>();
-      const perSku = new Map<string, string[]>();
-      for (const r of periode) {
-        const daftar = perSku.get(r.sku);
-        if (daftar) daftar.push(r.warehouse_id);
-        else perSku.set(r.sku, [r.warehouse_id]);
-      }
-      // Penanda menyebut sisa gudang SETELAH yang dominan, bukan yang dominan lagi.
-      for (const [sku, daftar] of perSku) {
-        const sisa = daftar.slice(1);
-        if (sisa.length > 0) gudangLain.set(sku, `+${sisa.join(", ")}`);
-      }
+    for (const r of skuRows) {
+      const lain = (r.lokasi_semua ?? "").split("\t").slice(1);
+      if (lain.length > 0) gudangLain.set(r.sku, `+${lain.join(", ")}`);
     }
 
     return json({
