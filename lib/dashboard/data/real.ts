@@ -6,8 +6,8 @@
 // password, BUKAN initData Telegram); SEMUA baca lewat GET /api/baca?scope=*
 // (auth cookie, enforce di server); tulis tetap POST ke route server (sudah D1).
 import { kekuranganStok, statusStok } from "../format";
-import filterStok from "./filterStok.js";
-import { adalahProviderAi } from "../providerAi";
+import filterStok from "./filterStok.mjs";
+import { adalahProviderAi } from "../providerAi.mjs";
 import type {
   BarisKekurangan,
   DailyRequestDoc,

@@ -35,8 +35,8 @@ import { Spinner } from "@/components/ui/spinner";
 import { formatTanggal } from "@/lib/dashboard/format";
 import { useData, useRole } from "@/lib/dashboard/sumber-data";
 import type { AiSettingsDoc } from "@/lib/dashboard/types";
-import { PROVIDER_AI, LABEL_PROVIDER, adalahProviderAi } from "@/lib/dashboard/providerAi";
-import type { ProviderAi } from "@/lib/dashboard/providerAi";
+import { PROVIDER_AI, LABEL_PROVIDER, adalahProviderAi } from "@/lib/dashboard/providerAi.mjs";
+import type { ProviderAi } from "@/lib/dashboard/providerAi.mjs";
 
 export default function HalamanPengaturan() {
   return (

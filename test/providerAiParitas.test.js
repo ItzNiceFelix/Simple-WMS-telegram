@@ -19,7 +19,7 @@ const { installMockFirestore } = require("./helpers/mockFirestore");
 installMockFirestore();
 
 // Runtime shim = CJS browser-safe (providerAi.ts hanya facade tipe di atasnya).
-const { PROVIDER_AI, LABEL_PROVIDER, adalahProviderAi } = require("../lib/dashboard/providerAi.js");
+const { PROVIDER_AI, LABEL_PROVIDER, adalahProviderAi } = require("../lib/dashboard/providerAi.mjs");
 const { PROVIDER_VALID: REGISTRY_VALID } = require("../lib/ai/registry.js");
 const { PROVIDER_VALID: MODEL_VALID } = require("../lib/models/aiSettings.js");
 

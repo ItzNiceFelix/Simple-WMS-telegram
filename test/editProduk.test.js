@@ -21,11 +21,12 @@ const db = mock.db;
 
 const produk = require("../lib/models/produk");
 const { catatPerubahanProduk } = require("../lib/models/productChanges");
-const { validasiHpp } = require("../lib/dashboard/validasiTulisV2");
+const modulValidasi = import("../lib/dashboard/validasiTulisV2.mjs");
 
 // Helper: jalankan alur route di level model memakai helper validasi yang sama.
 // Mirror urutan route: validasi -> owner-only -> ambil produk -> idempotent -> tulis -> audit.
 async function jalankanEditHpp({ body, role, changedBy = "1" }) {
+  const { validasiHpp } = await modulValidasi;
   const valid = validasiHpp(body);
   if (!valid.ok) return { status: 400, error: valid.error, tulis: false };
   if (role !== "owner") return { status: 403, error: "Hanya owner yang dapat mengubah HPP.", tulis: false };
@@ -97,6 +98,7 @@ test("2. owner ubah hpp_baru -> null, doc simpan hpp_baru null", async () => {
 
 test('3. hpp: "90000" (string) ditolak, tidak ada tulis', async () => {
   await seedProduk("K3", { hpp: 85000 });
+  const { validasiHpp } = await modulValidasi;
   const valid = validasiHpp({ kode_barang: "K3", hpp: "90000" });
   assert.equal(valid.ok, false);
   assert.equal(valid.error, "HPP harus bilangan bulat >= 0.");
@@ -109,6 +111,7 @@ test('3. hpp: "90000" (string) ditolak, tidak ada tulis', async () => {
 
 test("4. non-owner (admin) -> 403, tidak ada tulis", async () => {
   await seedProduk("K4", { hpp: 85000 });
+  const { validasiHpp } = await modulValidasi;
   const valid = validasiHpp({ kode_barang: "K4", hpp: 90000 });
   assert.equal(valid.ok, true, "validasi payload owner-only tetap OK");
 

@@ -124,8 +124,10 @@ test("B1: notifikasi reorder dikirim ke telegram_user_id admin (bukan undefined)
   }
 });
 
-test("validasiReorderPoint: key hilang -> error, null sah, string ditolak", () => {
-  const { validasiReorderPoint } = require("../lib/dashboard/validasiTulisV2");
+test("validasiReorderPoint: key hilang -> error, null sah, string ditolak", async () => {
+  // Modul validasi kini ESM (.mjs, masuk grafik klien), dimuat lewat dynamic `import()`;
+  // asersi tidak berubah.
+  const { validasiReorderPoint } = await import("../lib/dashboard/validasiTulisV2.mjs");
   let r = validasiReorderPoint({ kode_barang: "K1" });
   assert.equal(r.ok, false);
   assert.equal(r.error, "Reorder point wajib diisi.");

@@ -18,7 +18,10 @@ const { installMockFirestore } = require("./helpers/mockFirestore");
 const mock = installMockFirestore();
 
 const { isSuperAdminDariEnv } = require("../lib/models/admins");
-const { superAdminMock } = require("../lib/dashboard/data/mock-paritas");
+// `mock-paritas` kini ESM (.mjs) karena masuk grafik klien, jadi dimuat lewat dynamic
+// `import()`. Hanya satu uji di bawah yang memakainya, jadi promise-nya di-await di uji itu —
+// asersinya tidak berubah.
+const modulMockParitas = import("../lib/dashboard/data/mock-paritas.mjs");
 
 // Aturan murni yang dipakai route auth: role owner ATAU id di env SUPER_ADMIN_ID.
 function hitungSuperAdmin(uid, role) {
@@ -71,7 +74,8 @@ test("role owner + id di env juga true (tidak bentrok)", () => {
 });
 // B-02 (DoD §6.5): `getSession()` mengembalikan `superAdmin` bertipe boolean, bukan
 // undefined. mock.ts getSession memakai `superAdminMock(role)` (mock-paritas.js).
-test("getSession mock: superAdmin boolean + benar utk owner/admin/guest", () => {
+test("getSession mock: superAdmin boolean + benar utk owner/admin/guest", async () => {
+  const { superAdminMock } = await modulMockParitas;
   for (const role of ["owner", "admin", "guest"]) {
     assert.equal(typeof superAdminMock(role), "boolean");
   }

@@ -4,8 +4,8 @@
 import { idTanggalHariIni, statusStok, kekuranganStok } from "../format";
 
 // CJS murni (satu sumber kebenaran filter dengan real.ts + test).
-import filterStok from "./filterStok.js";
-import { adalahProviderAi } from "../providerAi";
+import filterStok from "./filterStok.mjs";
+import { adalahProviderAi } from "../providerAi.mjs";
 import { SESI_KEDALUWARSA } from "../pesan";
 import type {
   AdminDoc,
@@ -80,7 +80,7 @@ import type {
   ProdukTotalFilter,
   RingkasanIrisan,
 } from "./index";
-import { guardHapusMock, superAdminMock, validasiHppMock } from "./mock-paritas";
+import { guardHapusMock, superAdminMock, validasiHppMock } from "./mock-paritas.mjs";
 import {
   gabungItemDuplikat,
   normalisasiDokumen,

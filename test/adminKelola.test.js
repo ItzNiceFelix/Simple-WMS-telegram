@@ -21,7 +21,9 @@ const db = mock.db;
 const admins = require("../lib/models/admins");
 const { catatPerubahanRole } = require("../lib/models/adminRoleChanges");
 const { revokeAccessRequest, ambilAccessRequest, buatAccessRequestBaru } = require("../lib/models/accessRequests");
-const { validasiTambahAdmin, alasanTolakHapus } = require("../lib/dashboard/validasiTulisV2");
+// Modul validasi kini ESM (.mjs, masuk grafik klien) -> dimuat lewat dynamic `import()`.
+// Promise-nya di-await di tiap uji yang memakainya; asersi tidak berubah.
+const modulValidasi = import("../lib/dashboard/validasiTulisV2.mjs");
 
 function resetStore() {
   for (const key of mock.collections.keys()) mock.collections.get(key).clear();
@@ -33,6 +35,7 @@ async function seedAdmin(id, data) {
 
 // Mirror route tambah: validasi -> owner-only -> duplikat -> tambahAdmin -> audit.
 async function tambahRoute({ body, requesterId, requesterRole }) {
+  const { validasiTambahAdmin } = await modulValidasi;
   const valid = validasiTambahAdmin(body);
   if (!valid.ok) return { status: 400, error: valid.error };
   if (requesterRole !== "owner") return { status: 403, error: "Hanya owner yang dapat menambah admin." };
@@ -57,6 +60,7 @@ async function tambahRoute({ body, requesterId, requesterRole }) {
 
 // Mirror route hapus: validasi -> owner-only -> target -> guard -> hapus -> revoke -> audit.
 async function hapusRoute({ targetUserId, requesterId, requesterRole }) {
+  const { alasanTolakHapus } = await modulValidasi;
   if (requesterRole !== "owner") return { status: 403, error: "Hanya owner yang dapat menghapus admin." };
   const targetAdmin = await admins.ambilAdmin(targetUserId);
   const superAdminEnv = admins.isSuperAdminDariEnv(targetUserId);
@@ -226,7 +230,8 @@ test("9b. hapusAdmin throw -> 0 audit row", async () => {
   assert.equal(await jumlahRowRole(), 0);
 });
 
-test("11. telegram_username: @ di depan / spasi ditolak, kosong -> null", () => {
+test("11. telegram_username: @ di depan / spasi ditolak, kosong -> null", async () => {
+  const { validasiTambahAdmin } = await modulValidasi;
   // '@' di depan = 400 (PRD §5.3), bukan di-strip diam-diam.
   let r = validasiTambahAdmin({ telegram_user_id: "2", name: "Budi", telegram_username: "@budi" });
   assert.equal(r.ok, false);

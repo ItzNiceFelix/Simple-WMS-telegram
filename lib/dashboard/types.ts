@@ -2,9 +2,9 @@
 // Bentuk data dashboard — WAJIB identik dengan dokumen Firestore nyata (PRD Bagian 23).
 // Mock dan real memakai tipe yang sama; integrasi = tukar implementasi, bukan ubah UI.
 
-import type { ProviderAi } from "./providerAi";
+import type { ProviderAi } from "./providerAi.mjs";
 
-export type { ProviderAi } from "./providerAi";
+export type { ProviderAi } from "./providerAi.mjs";
 
 // `staff` SENGAJA tidak ada di sini walau tetap sah di CHECK D1: kolom `users.role`
 // memakai DEFAULT 'staff' untuk baris lama/seed, dan baris itu HARUS turun jadi 'guest'
