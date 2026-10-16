@@ -26,6 +26,7 @@ import type {
   OpnameGudangDoc,
   PickingBatchDoc,
   ProdukDoc,
+  ProdukTotalRow,
   RingkasanData,
   RoleChangeDoc,
   SessionInfo,
@@ -69,7 +70,19 @@ import type {
   UbahItemPermintaanRequest,
   UbahGudangRequest,
   UbahGudangResponse,
+  UrutProdukTotal,
 } from "../types";
+
+/** Argumen `listProdukTotal` — kunci urut sudah dibatasi tipe, server tetap menjepitnya. */
+export interface ProdukTotalFilter {
+  /** 1-based. Server menjepit ke >= 1. */
+  halaman?: number;
+  /** Baris per halaman. Server MENJEPIT ke maksimum 200. */
+  ukuran?: number;
+  /** Kunci urut; server memakai allowlist dan jatuh ke "nama" bila tak dikenal. */
+  urut?: UrutProdukTotal;
+  arah?: "asc" | "desc";
+}
 
 export interface MovementFilter {
   kode_barang?: string;
@@ -141,6 +154,12 @@ export interface DataSource {
    * `kurang = max(butuh - stok, stok_min - stok)`, hanya baris dengan `kurang > 0`.
    */
   listKekurangan(): Promise<BarisKekurangan[]>;
+  /**
+   * Halaman "Produk Total": seluruh katalog, satu halaman per panggilan, diurutkan server.
+   * Baris yang diterima SUDAH satu halaman — klien tidak mengiris; `total` dari COUNT(*)
+   * di lapisan produk membuat `No.` global dan nomor halaman bisa benar.
+   */
+  listProdukTotal(filter: ProdukTotalFilter): Promise<{ rows: ProdukTotalRow[]; total: number }>;
   getProduk(kode: string): Promise<ProdukDetail | null>;
   listMovements(filter?: MovementFilter): Promise<MovementDoc[]>;
   listDailyRequests(): Promise<DailyRequestDoc[]>;
@@ -240,9 +259,16 @@ export interface DataSource {
 
 export type DataMode = "mock" | "real";
 
+/**
+ * Default variabel absen: `real` di build produksi (gagal-aman — variabel lupa
+ * diset tidak boleh membuat produksi menolak boot), `mock` di dev.
+ * Nilainya di-inline sebagai LITERAL oleh `next.config.mjs` (`env` key).
+ */
+const BAWAAN_MODE: DataMode = process.env.NODE_ENV === "production" ? "real" : "mock";
+
 export function dataMode(): DataMode {
-  const raw = (process.env.NEXT_PUBLIC_DASHBOARD_DATA || "mock").toLowerCase();
-  return raw === "real" ? "real" : "mock";
+  const raw = (process.env.NEXT_PUBLIC_DASHBOARD_DATA || BAWAAN_MODE).toLowerCase();
+  return raw === "mock" ? "mock" : "real";
 }
 
 export function isMockMode(): boolean {
@@ -263,7 +289,9 @@ export function assertMockAllowedInThisEnv(): void {
     process.env.NEXT_PUBLIC_VERCEL_ENV === "production";
   if (isProduction && !allowMock) {
     throw new Error(
-      "Mode mock tidak diizinkan di produksi. Set NEXT_PUBLIC_DASHBOARD_DATA=real."
+      "Mode data MOCK aktif di build produksi, dan NEXT_PUBLIC_ALLOW_MOCK !== \"true\". " +
+        "Set NEXT_PUBLIC_DASHBOARD_DATA=real saat build (atau NEXT_PUBLIC_ALLOW_MOCK=true " +
+        "khusus build e2e lokal)."
     );
   }
 }

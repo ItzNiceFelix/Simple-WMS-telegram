@@ -34,7 +34,7 @@ import { panggilTeks, type Konteks } from "@/lib/ai/provider";
 import type { BagianChat } from "@/lib/ai/http";
 import { ambilSettingEditor } from "@/lib/d1/aiEditorSetting";
 import { daftarElemen } from "@/lib/d1/elemenDesain";
-import { NAMA_TOOL_EDITOR, SKEMA_TOOL_EDITOR, susunPromptEditor, type ElemenKanvasRingkas } from "@/lib/desain/aiEditor";
+import { NAMA_TOOL_EDITOR, SPESIFIKASI_TOOL_EDITOR, susunPromptEditor, type ElemenKanvasRingkas } from "@/lib/desain/aiEditor";
 import { destruktif, validasiOperasi, type ElemenKatalog } from "@/lib/desain/skemaOperasi";
 import {
   MAKS_ELEMEN,
@@ -214,7 +214,7 @@ export async function POST(request: Request) {
     ctx,
     {
       pesan,
-      tool: [SKEMA_TOOL_EDITOR],
+      tool: [SPESIFIKASI_TOOL_EDITOR],
       ...(modelDiminta ? { modelDiminta, providerDiminta: providerModelEditor } : {}),
       reasoning: setting.reasoning,
       maksToken: setting.maks_token,

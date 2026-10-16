@@ -72,19 +72,41 @@ function bacaKandidat(d: ResponsGemini): JawabanChat | null {
   };
 }
 
+/** Nama fungsi Gemini: harus mulai huruf/underscore, sisanya alfanumerik/`_`/`.`/`:`/`-`, maks 128. */
+const POLA_NAMA_TOOL = /^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/;
+
 /**
- * SpesifikasiTool internal (`{nama, deskripsi, parameter}`) → format Gemini
- * (`{name, description, parameters}`).
+ * Spesifikasi tool → format Gemini (`{name, description, parameters}`).
  *
- * MASALAH YANG DIPERBAIKI: sebelumnya dikirim APA ADANYA, sehingga Gemini menerima
- * field `nama`/`deskripsi`/`parameter` yang tidak dikenal dan tool-nya tidak berfungsi.
+ * Menerima DUA bentuk:
+ * 1. Wire OpenAI (`{type:"function", function:{name, description, parameters}}`) — dipakai
+ *    `app/api/desain/layout/route.ts` lewat `SKEMA_TOOL_EDITOR`.
+ * 2. SpesifikasiTool internal (`{nama, deskripsi, parameter}`) — lihat `lib/ai/tools.ts`.
+ *
+ * Nama divalidasi karena Gemini MENOLAK seluruh permintaan (HTTP 400) kalau nama fungsi
+ * tidak valid — bentuk yang salah dulunya menghasilkan `name: ""` dan editor "Sunting
+ * kanvas" gagal total. Nama tidak valid → fallback `"tool"`. Input sampah apa pun tidak
+ * pernah melempar; selalu keluar objek wire yang sah.
  */
 function keToolGemini(t: unknown): Record<string, unknown> {
-  const s = t as { nama?: string; deskripsi?: string; parameter?: Record<string, unknown> };
+  const s = (t ?? {}) as Record<string, unknown>;
+  const f = s.function;
+  const wire = s.type === "function" && f !== null && typeof f === "object" ? (f as Record<string, unknown>) : null;
+  const sumber = wire ?? s;
+
+  const namaMentah = wire ? sumber.name : sumber.nama;
+  const deskripsiMentah = wire ? sumber.description : sumber.deskripsi;
+  const parameterMentah = wire ? sumber.parameters : sumber.parameter;
+
+  const nama = typeof namaMentah === "string" && POLA_NAMA_TOOL.test(namaMentah) ? namaMentah : "tool";
+
   return {
-    name: String(s.nama ?? ""),
-    description: String(s.deskripsi ?? ""),
-    parameters: s.parameter ?? { type: "object", properties: {} },
+    name: nama,
+    description: typeof deskripsiMentah === "string" ? deskripsiMentah : "",
+    parameters:
+      parameterMentah !== null && typeof parameterMentah === "object" && !Array.isArray(parameterMentah)
+        ? (parameterMentah as Record<string, unknown>)
+        : { type: "object", properties: {} },
   };
 }
 

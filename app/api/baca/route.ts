@@ -217,6 +217,143 @@ export async function GET(request: Request) {
     return json({ ok: true, rows: results });
   }
 
+  // scope=produk-total — daftar SELURUH produk untuk halaman "Produk Total".
+  //
+  // Kenapa di sini, bukan route baru: `baca` sudah jadi rumah scope baca ber-paginasi
+  // (stok, histori) dan satu-satunya jalur GET ber-cookie yang sudah dipakai klien
+  // (`bacaServer` di lib/dashboard/data/real.ts). Route baru berarti menyalin sesi,
+  // json(), dan penjaga guest — tiga tempat untuk lupa.
+  //
+  // Halaman ini menampilkan LOKASI (aturan gudang dominan) + TOTAL qty se-gudang, dan
+  // keduanya hanya bisa dihitung server. Kolom biaya (hpp) SENGAJA tidak ikut: yang
+  // dirender cuma identitas + lokasi + angka total.
+  if (scope === "produk-total") {
+    if (user.role === "guest") return json({ ok: false, error: "Akses ditolak." }, 403);
+
+    // ── Urutan: ALLOWLIST BEKU, bukan gabungan string dari klien ──
+    // Kunci dari query string hanya dipakai untuk MEMILIH salah satu ekspresi di bawah;
+    // nilainya tidak pernah masuk ke SQL. Kunci asing jatuh ke default (nama ASC),
+    // jadi permintaan ngawur tidak pernah menghasilkan 500 atau urutan acak.
+    //
+    // Ekspresi di peta ini TANPA arah — arah dipasang TEPAT SEKALI di bawah. Menyimpan
+    // "ASC" di dalam peta sambil menyambung `arah` lagi menghasilkan "total_qty ASC ASC":
+    // SQL tidak sah dan halaman mati 500 tanpa sebab yang jelas.
+    const URUT: Record<string, string> = {
+      nama: "p.nama_accurate COLLATE NOCASE",
+      sku: "p.sku COLLATE NOCASE",
+      // Lokasi = kode gudang; kosong ("tidak ada stok positif") selalu di bawah supaya
+      // "belum ada di gudang mana pun" tidak menyamar sebagai urutan awal alfabet.
+      // Caller tidak boleh menempelkan arah ke seluruh kunci: arah hanya masuk ke kolom
+      // urutannya, sedangkan penanda kosong TETAP menaik (0 = terisi lebih dulu) apa pun
+      // arahnya — urutan kosong-terakhir adalah keputusan tampilan, bukan preferensi user.
+      lokasi: "CASE WHEN lokasi_utama IS NULL OR lokasi_utama = '' THEN 1 ELSE 0 END ASC, lokasi_utama COLLATE NOCASE",
+      // Angka, jadi urut numerik — bukan teks ("100" harus setelah "20").
+      qty: "total_qty",
+    };
+    const kunciMinta = (url.searchParams.get("urut") ?? "nama").trim();
+    const kunci = Object.prototype.hasOwnProperty.call(URUT, kunciMinta) ? kunciMinta : "nama";
+    const arah = (url.searchParams.get("arah") ?? "asc").trim().toLowerCase() === "desc" ? "DESC" : "ASC";
+    // Arah disisipkan ke SETIAP kolom urutan: `lokasi` punya dua kolom. Yang ber-arah tetap
+    // hanya kolom urutan; penanda kosong dibiarkan menaik.
+    const ORDER_BY = URUT[kunci]
+      .split(", ")
+      .map((bagian) => (/ THEN \d+ ELSE \d+ END ASC$/.test(bagian) ? bagian : `${bagian} ${arah}`))
+      .join(", ");
+
+    // ── Halaman: cap KERAS di server ──
+    // `ukuran` dari klien boleh diperkecil, tidak pernah diperbesar. 200 sama dengan cap
+    // scope `stok`: satu halaman tetap satu request yang wajar.
+    const MAKS_UKURAN = 200;
+    const ukuranParam = Number(url.searchParams.get("ukuran"));
+    const ukuran = Number.isInteger(ukuranParam) && ukuranParam >= 1 ? Math.min(ukuranParam, MAKS_UKURAN) : 50;
+    const halamanParam = Number(url.searchParams.get("halaman"));
+    const halaman = Number.isInteger(halamanParam) && halamanParam >= 1 ? halamanParam : 1;
+    const offset = (halaman - 1) * ukuran;
+
+    // ── Langkah 1: paginasi di lapisan PRODUK, bukan hasil JOIN ──
+    // `LIMIT` pada JOIN products×stock_by_bin memotong di TENGAH produk: satu SKU dengan
+    // 6 gudang menghabiskan 6 baris jatah, sehingga jumlah baris yang tampil tidak
+    // sebanding dengan `total` dan halaman terakhir bisa kosong. Di sini yang dibatasi
+    // adalah daftar SKU (satu baris per produk); total pun COUNT(*) di lapisan yang sama.
+    //
+    // Qty diambil sebagai agregat KOREKSI di dalam subquery yang sama supaya sorting
+    // "quantity total" dan "lokasi" bisa dikerjakan SQL, bukan di klien — kalau diurutkan
+    // di klien, hanya halaman yang tampil yang terurut, sisanya tetap acak.
+    const { results: skuRows } = await db
+      .prepare(
+        `SELECT p.sku, p.nama_accurate, agg.total_qty, agg.lokasi_utama
+         FROM products p
+         LEFT JOIN (
+           SELECT sku,
+                  SUM(qty) AS total_qty,
+                  (SELECT b2.warehouse_id FROM stock_by_bin b2
+                    WHERE b2.sku = stock_by_bin.sku AND b2.qty > 0
+                    ORDER BY b2.qty DESC, b2.warehouse_id ASC LIMIT 1) AS lokasi_utama
+           FROM stock_by_bin GROUP BY sku
+         ) agg ON agg.sku = p.sku
+         WHERE 1 = 1
+         -- Tiebreaker WAJIB. Tanpa kolom unik di ekor, dua produk dengan nama sama bisa
+         -- bertukar posisi antar query; paginasi OFFSET lalu menampilkan satu baris DUA
+         -- KALI sambil menjatuhkan baris lain. Kolom sku unik, jadi urutannya selalu total.
+         ORDER BY ${ORDER_BY}, p.sku ASC
+         LIMIT ? OFFSET ?`
+      )
+      .bind(ukuran, offset)
+      .all<{ sku: string; nama_accurate: string | null; total_qty: number | null; lokasi_utama: string | null }>();
+
+    // Total dari COUNT(*) di lapisan produk: satu SKU = satu baris. Ini yang membuat
+    // nomor halaman di UI menunjuk halaman yang benar-benar berisi.
+    const totalRow = await db.prepare("SELECT COUNT(*) AS total FROM products").bind().first<{ total: number }>();
+    const total = totalRow?.total ?? 0;
+
+    // ── Langkah 2: SEMUA gudang milik SKU halaman ini, untuk penanda "+gudang lain" ──
+    // Menyalin batas aturan Lokasi Gudang yang sudah diputuskan repo
+    // (app/api/order/route.ts infoNamaDanLokasi): gudang positif dengan qty TERBESAR
+    // jadi lokasi utama, sisanya jadi penanda "+N", gudang non-positif diabaikan.
+    // Di sini penandanya memakai KODE gudang agar ringkas di kolom tabel.
+    const daftarSku = skuRows.map((r) => r.sku);
+    const gudangLain = new Map<string, string>();
+    if (daftarSku.length > 0) {
+      const tanda = daftarSku.map(() => "?").join(",");
+      const { results: periode } = await db
+        .prepare(
+          `SELECT sku, warehouse_id, qty FROM stock_by_bin
+           WHERE sku IN (${tanda}) AND qty > 0
+           ORDER BY qty DESC, warehouse_id ASC`
+        )
+        .bind(...daftarSku)
+        .all<{ sku: string; warehouse_id: string; qty: number }>();
+      const perSku = new Map<string, string[]>();
+      for (const r of periode) {
+        const daftar = perSku.get(r.sku);
+        if (daftar) daftar.push(r.warehouse_id);
+        else perSku.set(r.sku, [r.warehouse_id]);
+      }
+      // Penanda menyebut sisa gudang SETELAH yang dominan, bukan yang dominan lagi.
+      for (const [sku, daftar] of perSku) {
+        const sisa = daftar.slice(1);
+        if (sisa.length > 0) gudangLain.set(sku, `+${sisa.join(", ")}`);
+      }
+    }
+
+    return json({
+      ok: true,
+      rows: skuRows.map((r) => ({
+        kode_barang: r.sku,
+        nama_accurate: r.nama_accurate,
+        // Kosong = tidak ada stok positif di gudang mana pun. Jujur kosong, bukan "-".
+        lokasi_gudang: r.lokasi_utama ?? "",
+        gudang_lain: gudangLain.get(r.sku) ?? "",
+        quantity_total: r.total_qty ?? 0,
+      })),
+      total,
+      halaman,
+      ukuran,
+      urut: kunci,
+      arah: arah.toLowerCase(),
+    });
+  }
+
   if (scope === "gudang") {
     if (user.role === "guest") return json({ ok: false, error: "Akses ditolak." }, 403);
     const semua = url.searchParams.get("semua") === "true";

@@ -1,10 +1,43 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { ambilOrder, imporPesanan, listOrder, transisiFulfill, transisiFulfillBatch, type BarisPesanan } from "./order";
+import { ambilOrder, ambilOrderBanyak, imporPesanan, listOrder, transisiFulfill, transisiFulfillBatch, type BarisPesanan } from "./order";
 import type { Hasil } from "./hasil";
 
 type Row = Record<string, unknown>;
 const kunciOrder = (mp: string, no: string) => `${mp}|${no}`;
+
+/**
+ * Jalur `all()` daftar order, dipakai BARENGAN oleh `all()` dan `first()` (COUNT).
+ *
+ * Satu implementasi untuk keduanya disengaja: produksi memakai WHERE yang sama untuk daftar
+ * dan COUNT, jadi mock yang menghitungnya dengan dua potongan kode terpisah bisa "lolos" uji
+ * walau produksinya menghitung himpunan yang berbeda — persis bug yang ingin dicegah.
+ */
+function barisOrder(st: { _sql: string; _args: unknown[] }, orders: Record<string, Row>, items: Record<string, Row>) {
+  const sql = st._sql;
+  const a = st._args;
+  let r = Object.values(orders);
+  let i = 0;
+  if (sql.includes("marketplace = ?")) { const v = a[i++]; r = r.filter((x) => x["marketplace"] === v); }
+  if (sql.includes("status_fulfill = ?")) { const v = a[i++]; r = r.filter((x) => x["status_fulfill"] === v); }
+  if (sql.includes("tanggal >= ?")) { const v = Number(a[i++]); r = r.filter((x) => Number(x["tanggal"]) >= v); }
+  if (sql.includes("tanggal <= ?")) { const v = Number(a[i++]); r = r.filter((x) => Number(x["tanggal"]) <= v); }
+  if (sql.includes("EXISTS (SELECT 1 FROM order_items")) {
+    const sku = String(a[i++]);
+    r = r.filter((x) => Object.values(items).some((it) => it["marketplace"] === x["marketplace"] && it["no_pesanan"] === x["no_pesanan"] && it["sku"] === sku));
+  }
+  // Tiebreaker produksi: (marketplace ASC, no_pesanan ASC) setelah kolom utama, apa pun
+  // kolom utamanya. Mock menerapkan tiebreaker itu supaya uji "halaman tidak tumpang tindih"
+  // benar-benar menguji jaminan yang sama dengan SQL.
+  const kolom = /ORDER BY (\w+)/.exec(sql)?.[1] ?? "tanggal";
+  const naik = /ORDER BY \w+ ASC/.test(sql);
+  const kunci = kolom === "tanggal" ? (x: Row) => Number(x["tanggal"]) : (x: Row) => String(x[kolom] ?? "");
+  r.sort((x, y) => {
+    const c = typeof kunci(x) === "number" ? Number(kunci(y)) - Number(kunci(x)) : String(kunci(x)).localeCompare(String(kunci(y)));
+    return (naik ? c : -c) || kunciOrder(String(x["marketplace"]), String(x["no_pesanan"])).localeCompare(kunciOrder(String(y["marketplace"]), String(y["no_pesanan"])));
+  });
+  return r;
+}
 
 function buatDbOrder() {
   const products: Record<string, Row> = {
@@ -41,6 +74,9 @@ function buatDbOrder() {
           if (sql.includes("SELECT status_fulfill FROM orders")) {
             const o = orders[kunciOrder(String(a[0]), String(a[1]))];
             return o ? { status_fulfill: o["status_fulfill"] } : null;
+          }
+          if (sql.includes("SELECT COUNT(*) AS total FROM orders")) {
+            return { total: barisOrder(st, orders, items).length };
           }
           if (sql.startsWith("SELECT marketplace, no_pesanan, tanggal, buyer, no_resi,")) {
             // Pencocokan sengaja hanya pada AWAL daftar kolom, bukan seluruh daftar. Kolom
@@ -121,15 +157,40 @@ function buatDbOrder() {
           if (sql.includes("FROM order_fees WHERE marketplace")) {
             return { results: fees.filter((x) => x["marketplace"] === a[0] && x["no_pesanan"] === a[1]) };
           }
-          if (sql.includes("FROM orders") && sql.includes("ORDER BY tanggal DESC")) {
-            let r = Object.values(orders).sort((x, y) => Number(y["tanggal"]) - Number(x["tanggal"]));
+          if (sql.includes("FROM orders WHERE (marketplace = ? AND no_pesanan = ?)")) {
+            const pasangan: string[] = [];
+            for (let i = 0; i + 1 < a.length; i += 2) pasangan.push(kunciOrder(String(a[i]), String(a[i + 1])));
+            return { results: Object.values(orders).filter((x) => pasangan.includes(kunciOrder(String(x["marketplace"]), String(x["no_pesanan"])))) };
+          }
+          if (sql.includes("FROM order_items WHERE") && sql.includes("OR (marketplace")) {
+            // Jalur berkelompok (ambilOrderBanyak): pasangan (mp, no) di-OR, bukan dua argumen tunggal.
+            const pasangan: string[] = [];
+            for (let i = 0; i + 1 < a.length; i += 2) pasangan.push(kunciOrder(String(a[i]), String(a[i + 1])));
+            return { results: Object.values(items).filter((x) => pasangan.includes(kunciOrder(String(x["marketplace"]), String(x["no_pesanan"])))) };
+          }
+          if (sql.includes("FROM order_fees WHERE") && sql.includes("OR (marketplace")) {
+            const pasangan: string[] = [];
+            for (let i = 0; i + 1 < a.length; i += 2) pasangan.push(kunciOrder(String(a[i]), String(a[i + 1])));
+            return { results: fees.filter((x) => pasangan.includes(kunciOrder(String(x["marketplace"]), String(x["no_pesanan"])))) };
+          }
+          if (sql.includes("SELECT COUNT(*) AS total FROM orders")) {
+            let r = Object.values(orders);
             let i = 0;
             if (sql.includes("marketplace = ?")) { const v = a[i++]; r = r.filter((x) => x["marketplace"] === v); }
-            // ponytail: ceiling = e2e mock-mode cuma UI; perluas agregat bila route rekap butuh.
             if (sql.includes("status_fulfill = ?")) { const v = a[i++]; r = r.filter((x) => x["status_fulfill"] === v); }
             if (sql.includes("tanggal >= ?")) { const v = Number(a[i++]); r = r.filter((x) => Number(x["tanggal"]) >= v); }
             if (sql.includes("tanggal <= ?")) { const v = Number(a[i++]); r = r.filter((x) => Number(x["tanggal"]) <= v); }
-            return { results: r.slice(0, 100) };
+            if (sql.includes("EXISTS (SELECT 1 FROM order_items")) {
+              const sku = String(a[i++]);
+              r = r.filter((x) => Object.values(items).some((it) => it["marketplace"] === x["marketplace"] && it["no_pesanan"] === x["no_pesanan"] && it["sku"] === sku));
+            }
+            return { results: [{ total: r.length }] };
+          }
+          if (sql.includes("FROM orders") && sql.includes("ORDER BY")) {
+            const r = barisOrder(st, orders, items);
+            const limit = Number(a[a.length - 2]);
+            const offset = Number(a[a.length - 1]);
+            return { results: r.slice(offset, offset + limit) };
           }
           return { results: [] };
         },
@@ -250,10 +311,10 @@ describe("hapus order (koreksi salah impor)", () => {
   it("hapus order menghilangkan header + item, order lain utuh", async () => {
     const db = buatDbOrder();
     await imporPesanan(db, [barisA("D-1", 2), barisA("D-2", 3)], null);
-    assert.equal((await listOrder(db, {})).length, 2);
+    assert.equal((await listOrder(db, {})).orders.length, 2);
     const n = await hapus(db, [{ mp: "shopee", no: "D-1" }]);
     assert.equal(n, 1);
-    const sisa = await listOrder(db, {});
+    const sisa = (await listOrder(db, {})).orders;
     assert.equal(sisa.length, 1);
     assert.equal(sisa[0]?.no_pesanan, "D-2");
     const d2 = await ambilOrder(db, "shopee", "D-2");
@@ -304,7 +365,7 @@ describe("imporPesanan", () => {
     await imporPesanan(db, [barisA("O-9", 1)], null);
     const o = await ambilOrder(db, "shopee", "O-9");
     assert.equal(o?.items.length, 1);
-    assert.equal((await listOrder(db, {})).length, 1);
+    assert.equal((await listOrder(db, {})).orders.length, 1);
   });
 });
 
@@ -313,8 +374,8 @@ describe("ambilOrder + listOrder", () => {
     const db = buatDbOrder();
     assert.equal(await ambilOrder(db, "shopee", "NOPE"), null);
     await imporPesanan(db, [barisA("L-1", 1), { ...barisA("L-2", 1), marketplace: "tiktok" }], null);
-    assert.equal((await listOrder(db, {})).length, 2);
-    assert.equal((await listOrder(db, { mp: "shopee" })).length, 1);
+    assert.equal((await listOrder(db, {})).orders.length, 2);
+    assert.equal((await listOrder(db, { mp: "shopee" })).orders.length, 1);
   });
 });
 describe("listOrder filter status + periode", () => {
@@ -325,8 +386,63 @@ describe("listOrder filter status + periode", () => {
       { ...barisA("F-2", 1), tanggal: 1730419200 },
     ], null);
     await transisiFulfill(db, "shopee", "F-1", "pack", null);
-    assert.equal((await listOrder(db, { status: "pack" })).length, 1);
-    assert.equal((await listOrder(db, { dari: 1730000000 })).length, 1);
-    assert.equal((await listOrder(db, { sampai: 1729000000 })).length, 1);
+    assert.equal((await listOrder(db, { status: "pack" })).orders.length, 1);
+    assert.equal((await listOrder(db, { dari: 1730000000 })).orders.length, 1);
+    assert.equal((await listOrder(db, { sampai: 1729000000 })).orders.length, 1);
+  });
+});
+
+describe("paginasi + tiebreaker + urutan", () => {
+  /** 7 order dengan TANGGAL IDENTIK — persis pola satu batch impor. */
+  const batch = (n: number): BarisPesanan[] =>
+    Array.from({ length: n }, (_, i) => ({ ...barisA(`P-${String(i + 1).padStart(2, "0")}`, 1), tanggal: 1728288000 }));
+
+  it("tanggal identik tetap punya urutan TOTAL — halaman tidak tumpang tindih", async () => {
+    const db = buatDbOrder();
+    await imporPesanan(db, batch(7), null);
+    const h1 = await listOrder(db, { limit: 3, offset: 0 });
+    const h2 = await listOrder(db, { limit: 3, offset: 3 });
+    const h3 = await listOrder(db, { limit: 3, offset: 6 });
+    const semua = [...h1.orders, ...h2.orders, ...h3.orders].map((o) => o.no_pesanan);
+    assert.equal(semua.length, 7, "7 baris terkumpul dari 3 halaman");
+    assert.equal(new Set(semua).size, 7, "TIDAK ada baris yang muncul dua kali antar halaman");
+    assert.deepEqual(semua, [...semua].sort(), "tiebreaker ASC membuat urutan dapat diulang");
+  });
+
+  it("total dihitung dari WHERE yang sama, bukan dari isi halaman", async () => {
+    const db = buatDbOrder();
+    await imporPesanan(db, batch(7), null);
+    const h = await listOrder(db, { limit: 2 });
+    assert.equal(h.orders.length, 2, "satu halaman dibatasi");
+    assert.equal(h.total, 7, "total tetap seluruh himpunan");
+  });
+
+  it("urut=no_pesanan&arah=asc mengubah urutan tanpa menyentuh SQL", async () => {
+    const db = buatDbOrder();
+    await imporPesanan(db, batch(3), null);
+    const r = await listOrder(db, { kolomUrut: "no_pesanan", arah: "asc" });
+    assert.deepEqual(r.orders.map((o) => o.no_pesanan), ["P-01", "P-02", "P-03"]);
+  });
+});
+
+describe("ambilOrderBanyak", () => {
+  it("mengembalikan header+item+fee seluruh order dalam SATU panggilan", async () => {
+    const db = buatDbOrder();
+    await imporPesanan(db, [barisA("B-1", 2), barisA("B-2", 3), barisA("B-3", 1)], null);
+    const hasil = await ambilOrderBanyak(db, [
+      { mp: "shopee", no: "B-1" }, { mp: "shopee", no: "B-2" }, { mp: "shopee", no: "B-3" },
+    ]);
+    assert.equal(hasil.length, 3, "semua order diminta ikut kembali");
+    assert.equal(hasil[1]?.no_pesanan, "B-2", "urutan keluaran = urutan permintaan");
+    assert.equal(hasil[1]?.items[0]?.qty, 3, "item terpasang ke order yang benar");
+    assert.deepEqual(hasil[0]?.fees.length, 0, "fee kosong tetap array, bukan undefined");
+    assert.equal(hasil[1]?.status_fulfill, "pending", "header ikut terbaca");
+  });
+
+  it("order yang diminta dua kali tidak digandakan", async () => {
+    const db = buatDbOrder();
+    await imporPesanan(db, [barisA("B-9", 1)], null);
+    const hasil = await ambilOrderBanyak(db, [{ mp: "shopee", no: "B-9" }, { mp: "shopee", no: "B-9" }]);
+    assert.equal(hasil.length, 1);
   });
 });

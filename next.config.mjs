@@ -3,8 +3,19 @@ import path from "node:path";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+// Mode data di-inject sebagai LITERAL saat build. `env` men-substitusi
+// process.env.NAMA di klien DAN server, jadi tak bergantung pada heuristik
+// NEXT_PUBLIC_ (yang bisa gagal meng-inline → runtime baca `i.env.*` = undefined
+// → fallback "mock" di produksi → guard R11 meledak).
+//
+// NODE_ENV TIDAK perlu didaftarkan: Next sudah mengganti `process.env.NODE_ENV`
+// dengan literal build ("production"/"development") di semua bundel.
+const NEXT_PUBLIC_DASHBOARD_DATA =
+  process.env.NEXT_PUBLIC_DASHBOARD_DATA || (process.env.NODE_ENV === "production" ? "real" : "mock");
+
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  env: { NEXT_PUBLIC_DASHBOARD_DATA },
   // Semua halaman dipaksa statis (0 function). Route tulis hidup di app/api/*/route.ts.
   reactStrictMode: true,
   eslint: { ignoreDuringBuilds: true },

@@ -7,13 +7,20 @@
 // POST { aksi:'selesai-impor', batchId } → tutup batch bertahap → { ok, order, item, batch_id, dilewati }.
 // POST { aksi:'transisi', marketplace, no_pesanan, ke } → transisiFulfill.
 // POST { aksi:'hapus', targets:[{ marketplace, no_pesanan }] } → hapus baris order (koreksi salah impor).
-// GET ?aksi=daftar&dari=&sampai=&mp=&status=&sku=&limit= → { ok, orders } (header+item+fee, tanpa laba).
+// GET ?aksi=daftar&dari=&sampai=&tanggal=&mp=&status=&sku=&urut=&arah=&halaman=&ukuran=
+//   → { ok, orders, ekspor, total, halaman, ukuran, jumlah_halaman, urut, arah } (header+item+fee, tanpa laba).
+//   `tanggal=YYYY-MM-DD` = satu hari penuh (menang atas dari/sampai); urut ∈ {marketplace, no_pesanan,
+//   no_resi, tanggal, status_fulfill}, default tanggal desc.
+// GET ?aksi=picklist-pdf&targets=[]&mode=&urut=&arah=&inline= → PDF; `urut` ∈ {default, sku, nama, lokasi}.
 // Semua owner/admin.
 import { getDb } from "@/lib/d1/db";
 import { ambilProduk, ambilProdukBanyak, normalisasiNama } from "@/lib/d1/produk";
-import { ambilOrder, imporPesanan, listOrder, transisiFulfill, type BarisPesanan, type OrderDetail } from "@/lib/d1/order";
+import {
+  ambilOrderBanyak, imporPesanan, listOrder, listOrderBerSku, transisiFulfill,
+  KOLOM_URUT_ORDER, type ArahUrut, type BarisPesanan, type KolomUrutOrder,
+} from "@/lib/d1/order";
 import { transisiFulfillBatch, type KeFulfill } from "@/lib/d1/orderTransisi";
-import { buatPicklist, buatPicklistPaket } from "@/lib/d1/picklist";
+import { buatPicklist, buatPicklistPaket, KUNCI_URUT_PICKLIST, type ArahUrutPicklist, type KunciUrutPicklist } from "@/lib/d1/picklist";
 import { bangunPdfPicklist } from "@/lib/d1/picklistPdf";
 import { bangunPdfPicklistPaket } from "@/lib/d1/picklistPaketPdf";
 import { bangunPdfPicklistGabung, type BarisPickGabung } from "@/lib/d1/picklistGabungPdf";
@@ -476,21 +483,54 @@ async function validasiBarisPesanan(db: D1Database, row: Record<string, unknown>
   };
 }
 
-type FilterDaftar = { mp?: string; status?: string; sku?: string; dari?: number; sampai?: number; limit: number };
+type FilterDaftar = {
+  mp?: string; status?: string; sku?: string; dari?: number; sampai?: number;
+  limit: number; offset: number; halaman: number;
+  kolomUrut: KolomUrutOrder; arah: ArahUrut;
+};
+/**
+ * Plafon ukuran halaman. 200 = angka terbesar yang sudah dipakai halaman order (`limit=200`)
+ * dan masih muat anggaran kueri Worker Free.
+ *
+ * Arithmetic anggarannya: satu halaman 200 baris = 1 kueri COUNT + 1 kueri daftar + header
+ * item & fee masing-masing 200/50 = 4 potongan × 3 = 12 kueri + petaEkspor 200/50 = 4 kueri
+ * = 18 kueri. Di atas 200, pemotongan 50-an membuat biayanya naik ~1 kueri per 50 baris, dan
+ * plafon ~50 kueri per invokasi Worker Free tercapai di sekitar 1200 baris — plafon yang jauh
+ * lebih tinggi daripada yang dibutuhkan layar tapi cukup dekat untuk jadi jebakan kalau
+ * ukurannya dibiarkan bebas.
+ */
+const MAKS_UKURAN_HALAMAN = 200;
 
 /** Filter query string untuk daftar order. */
 function filterDariQuery(url: URL): { ok: true; filter: FilterDaftar } | { ok: false; error: string } {
   const dariTeks = url.searchParams.get("dari") || "";
   const sampaiTeks = url.searchParams.get("sampai") || "";
+  const tanggalTeks = url.searchParams.get("tanggal") || "";
   const filter: FilterDaftar = {
     mp: url.searchParams.get("mp")?.trim().toLowerCase() || undefined,
     status: url.searchParams.get("status")?.trim() || undefined,
     sku: url.searchParams.get("sku")?.trim().toUpperCase() || undefined,
     limit: ((): number => {
-      const n = Number(url.searchParams.get("limit"));
-      return Number.isInteger(n) && n > 0 ? Math.min(n, 500) : 100;
+      const n = Number(url.searchParams.get("ukuran") ?? url.searchParams.get("limit"));
+      return Number.isInteger(n) && n > 0 ? Math.min(n, MAKS_UKURAN_HALAMAN) : 50;
     })(),
+    offset: 0,
+    halaman: 1,
+    // Default = perilaku lama persis: terbaru dulu.
+    kolomUrut: "tanggal",
+    arah: "desc",
   };
+  // `halaman` (1-basis, untuk lompat-ke-halaman) menang atas `offset` bila keduanya dikirim —
+  // satu arti saja per permintaan, supaya tidak ada halaman yang isinya campur dua niat.
+  const halamanParam = Number(url.searchParams.get("halaman"));
+  filter.halaman = Number.isInteger(halamanParam) && halamanParam > 0 ? halamanParam : 1;
+  filter.offset = (filter.halaman - 1) * filter.limit;
+  // Urutan: allowlist beku. Nilai tak dikenal TIDAK ditolak dengan 400 — daftar tetap tampil
+  // terurut default. Menolak halaman karena satu parameter urut yang salah hanya membuat user
+  // kehilangan datanya, bukan membuat datanya lebih benar.
+  const kolomParam = url.searchParams.get("urut") ?? "";
+  if ((KOLOM_URUT_ORDER as readonly string[]).includes(kolomParam)) filter.kolomUrut = kolomParam as KolomUrutOrder;
+  if (url.searchParams.get("arah") === "asc") filter.arah = "asc";
   if (dariTeks) {
     const d = tanggalKeEpoch(dariTeks);
     if (d === null) return { ok: false, error: "Param dari harus YYYY-MM-DD." };
@@ -500,6 +540,17 @@ function filterDariQuery(url: URL): { ok: true; filter: FilterDaftar } | { ok: f
     const s = tanggalKeEpoch(sampaiTeks);
     if (s === null) return { ok: false, error: "Param sampai harus YYYY-MM-DD." };
     filter.sampai = s + 86399;
+  }
+  // `tanggal=YYYY-MM-DD` = SATU hari penuh. Hari dihitung dengan `tanggalKeEpoch`, helper yang
+  // sama dengan jalur impor: kolom `orders.tanggal` di-anchor ke tengah malam UTC oleh helper
+  // itu, jadi batas harinya HARUS dari helper yang sama pula. Menghitungnya dengan WIB akan
+  // menggeser jendela 7 jam terhadap data yang tersimpan — filter yang membuang order di
+  // malam hari, tepat saat order paling banyak masuk.
+  if (tanggalTeks) {
+    const d = tanggalKeEpoch(tanggalTeks);
+    if (d === null) return { ok: false, error: "Param tanggal harus YYYY-MM-DD." };
+    filter.dari = d;
+    filter.sampai = d + 86399;
   }
   return { ok: true, filter };
 }
@@ -527,6 +578,20 @@ export async function GET(request: Request) {
     // ponytail: baca parameter per titik balik respons; angkat ke satu variabel bila logika
     // makin panjang.
     const disp = (file: string) => (url.searchParams.get("inline") === "1" ? `inline; filename="${file}"` : `attachment; filename="${file}"`);
+    // Urutan picklist: allowlist BEKU yang sama dengan jalur lain — niatnya, bukan SQL.
+    //
+    // Kenapa harus dikirim ke server, bukan diurutkan di klien: PDF disusun ULANG di sini dari
+    // `order_items`, jadi urutan yang user lihat di layar tidak pernah ikut ke kertas. Tanpa
+    // parameter ini, "urutkan per nama produk" hanya mengubah tampilan — picker tetap menerima
+    // lembar urut lokasi dan menyisir rak dalam urutan yang tidak dia pilih.
+    //
+    // Nilai tak dikenal TIDAK ditolak: jatuh ke `default` supaya tautan cetak lama tetap
+    // menghasilkan lembar yang sama.
+    const urutMinta = (url.searchParams.get("urut") ?? "").trim();
+    const urutPick: KunciUrutPicklist = (KUNCI_URUT_PICKLIST as readonly string[]).includes(urutMinta)
+      ? (urutMinta as KunciUrutPicklist)
+      : "default";
+    const arahPick: ArahUrutPicklist = url.searchParams.get("arah") === "desc" ? "desc" : "asc";
     // PDF jadi → baru dicatat. Dipanggil dari SEMUA cabang mode supaya tag "sudah dicetak"
     // tidak bisa lupa di satu jalur, tapi TIDAK menyentuh header/isi PDF yang sudah disusun
     // pemanggil (header bisa berubah sewaktu-waktu, mis. inline vs attachment).
@@ -548,7 +613,7 @@ export async function GET(request: Request) {
     if (mode === "gabung-order") {
       const st = url.searchParams.get("status") ?? "menunggu";
       const booking = await listBooking(db, { status: st, limit: 500 });
-      const pick = await buatPicklistPaket(db, targets);
+      const pick = await buatPicklistPaket(db, targets, urutPick, arahPick);
       if (!pick.ok) return json({ ok: false, error: pick.error }, pick.status);
 
       // Satu query nama + gudang untuk SEMUA SKU yang terlibat, dipakai bersama oleh jalur
@@ -606,7 +671,7 @@ export async function GET(request: Request) {
         }),
       ];
       if (barisGabung.length === 0) return json({ ok: false, error: "Tak ada item untuk dicetak." }, 400);
-      const bytes = await bangunPdfPicklistGabung(barisGabung, { gudangDefault: "Gudang ONLINE" });
+      const bytes = await bangunPdfPicklistGabung(barisGabung, { gudangDefault: "Gudang ONLINE", urut: urutPick, arah: arahPick });
       return kirimPdf(new Uint8Array(bytes), "gabung-order", {
         status: 200,
         headers: {
@@ -633,7 +698,7 @@ export async function GET(request: Request) {
       },
     };
     if (mode === "gabung") {
-      const pick = await buatPicklistPaket(db, targets);
+      const pick = await buatPicklistPaket(db, targets, urutPick, arahPick);
       if (!pick.ok) return json({ ok: false, error: pick.error }, pick.status);
       const semua = pick.paket.flatMap((p) => p.rows.map((r) => ({ sku: r.sku, nama: r.nama, qty: r.qty, variasi: r.variasi ?? "", no_resi: p.no_resi })));
       if (semua.length === 0) return json({ ok: false, error: "Tak ada item untuk dicetak." }, 400);
@@ -641,12 +706,12 @@ export async function GET(request: Request) {
       return kirimPdf(new Uint8Array(bytes), "gabung", header);
     }
     if (mode === "per_paket") {
-      const pick = await buatPicklistPaket(db, targets);
+      const pick = await buatPicklistPaket(db, targets, urutPick, arahPick);
       if (!pick.ok) return json({ ok: false, error: pick.error }, pick.status);
       const bytes = await bangunPdfPicklistPaket(pick.paket, { mode: "per_paket", judul: "PICKLIST ORDER — PER PAKET", subjudul: "", gudang: "Gudang ONLINE" });
       return kirimPdf(new Uint8Array(bytes), "per_paket", header);
     }
-    const pick = await buatPicklist(db, targets);
+    const pick = await buatPicklist(db, targets, urutPick, arahPick);
     if (!pick.ok) return json({ ok: false, error: pick.error }, pick.status);
     const bytes = await bangunPdfPicklist(pick.rows, pick.orders);
     return kirimPdf(new Uint8Array(bytes), "pisah", header);
@@ -655,18 +720,39 @@ export async function GET(request: Request) {
   const f = filterDariQuery(url);
   if (!f.ok) return json({ ok: false, error: f.error }, 400);
   const db = getDb();
-  const daftar = await listOrder(db, { mp: f.filter.mp, status: f.filter.status, dari: f.filter.dari, sampai: f.filter.sampai, limit: f.filter.limit });
-  const orders: OrderDetail[] = [];
-  for (const h of daftar) {
-    const d = await ambilOrder(db, h.marketplace, h.no_pesanan);
-    if (!d) continue;
-    if (f.filter.sku && !d.items.some((i) => i.sku === f.filter.sku)) continue;
-    orders.push(d);
-  }
+  const filter = {
+    mp: f.filter.mp,
+    status: f.filter.status,
+    dari: f.filter.dari,
+    sampai: f.filter.sampai,
+    limit: f.filter.limit,
+    offset: f.filter.offset,
+    kolomUrut: f.filter.kolomUrut,
+    arah: f.filter.arah,
+  };
+  // Jalur ber-SKU memakai subquery EXISTS supaya HIMPUNAN yang dipaginasi = himpunan yang
+  // difilter; menyaring sesudah LIMIT akan memangkas halaman dan membuat footer menunjuk
+  // halaman yang isinya hampir kosong.
+  const halaman = f.filter.sku
+    ? await listOrderBerSku(db, { ...filter, sku: f.filter.sku })
+    : await listOrder(db, filter);
+  const daftar = halaman.orders;
+  // Header+item+fee SEMUA baris halaman dalam beberapa kueri, bukan 3 kueri per baris.
+  const orders = await ambilOrderBanyak(db, daftar.map((h) => ({ mp: h.marketplace, no: h.no_pesanan })));
   // Tag "sudah diekspor" per mode: satu gelombang kueri untuk SEMUA order di daftar, bukan
   // satu kueri per baris. Kunci `${mp}|${no}` sama dengan kunci `kunciOrder` di halaman order.
   const ekspor = Object.fromEntries(await petaEkspor(db, daftar.map((h) => ({ mp: h.marketplace, no: h.no_pesanan }))));
-  return json({ ok: true, orders, ekspor });
+  return json({
+    ok: true,
+    orders,
+    ekspor,
+    total: halaman.total,
+    halaman: f.filter.halaman,
+    ukuran: f.filter.limit,
+    jumlah_halaman: Math.max(1, Math.ceil(halaman.total / f.filter.limit)),
+    urut: f.filter.kolomUrut,
+    arah: f.filter.arah,
+  });
 }
 
 export async function POST(request: Request) {

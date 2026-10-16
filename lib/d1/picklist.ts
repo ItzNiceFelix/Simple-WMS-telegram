@@ -27,6 +27,54 @@ export type PaketPicklist = {
 };
 
 /**
+ * Kunci urut picklist yang sah — allowlist BEKU, sama pola dengan KOLOM_URUT_ORDER.
+ *
+ * Daftarnya sengaja hanya atribut BARIS (barang) dan lokasi: itu yang dicari picker saat
+ * menyisir rak. "Urutkan per nama produk" adalah permintaan nyata owner (PDF ikut urutan yang
+ * dipilih di layar), dan "lokasi" adalah default lama yang tidak boleh berubah diam-diam.
+ *
+ * Nilai tak dikenal TIDAK ditolak: jatuh ke `default` supaya cetak ulang picklist lama tetap
+ * menghasilkan urutan yang sama walau klien mengirim kunci yang sudah usang.
+ */
+export const KUNCI_URUT_PICKLIST = ["default", "sku", "nama", "lokasi"] as const;
+export type KunciUrutPicklist = (typeof KUNCI_URUT_PICKLIST)[number];
+
+/** Arah urut eksplisit; default `asc` (A–Z) karena itu yang diharapkan saat orang menyortir
+ *  nama produk di layar. `desc` disediakan supaya Z–A tidak perlu kunci kedua. */
+export type ArahUrutPicklist = "asc" | "desc";
+
+/**
+ * Urutkan baris picklist menurut allowlist. Dipakai SEMUA berkas PDF picklist supaya
+ * "urutkan per nama produk lalu cetak" menghasilkan lembar yang benar-benar urut nama —
+ * bukan urut per paket dengan nama urut hanya di dalam paket.
+ *
+ * PENTING: pemanggil TANPA kunci (default) harus mendapat urutan LAMA apa adanya. Karena itu
+ * pengurutan hanya dilakukan di sini, setelah pemanggil lama selesai menyusun urutannya —
+ * dan `default` berarti "jangan sentuh".
+ */
+export function urutkanBaris<T extends { sku: string; nama: string; lokasi?: string }>(
+  baris: T[],
+  kunci: KunciUrutPicklist,
+  arah: ArahUrutPicklist = "asc"
+): T[] {
+  if (kunci === "default") return baris;
+  // `localeCompare("id")` untuk nama/sku, dan `?? ""` untuk lokasi yang memang opsional.
+  const banding = (a: T, b: T): number => {
+    if (kunci === "sku") return a.sku.localeCompare(b.sku, "id");
+    if (kunci === "nama") return a.nama.localeCompare(b.nama, "id");
+    return (a.lokasi ?? "").localeCompare(b.lokasi ?? "", "id");
+  };
+  // Tiebreaker SKU: SKU unik di dalam satu picklist agregat, jadi urutannya total dan cetak
+  // ulang menghasilkan lembar yang identik. Tanpa itu dua baris bernama sama bisa bertukar
+  // tempat antar cetakan dan picker mengira barangnya berbeda.
+  const hasil = [...baris].sort((a, b) => {
+    const c = banding(a, b);
+    return (c !== 0 ? c : a.sku.localeCompare(b.sku, "id")) * (arah === "desc" ? -1 : 1);
+  });
+  return hasil;
+}
+
+/**
  * Picklist PER PAKET (F18/D4): satu lembar per no_resi, daftar semua order di grup.
  * Qty per baris diambil APA ADANYA dari `order_items` (file gabungan sudah total paket)
  * — TIDAK ada agregasi ulang lintas order. Resi tanpa grup jadi paket satu-order.
@@ -34,7 +82,12 @@ export type PaketPicklist = {
  * terbit saat picklist dicetak, dan menggagalkan seluruh cetakan karena satu order
  * ber-resi kosong tidak dapat diterima.
  */
-export async function buatPicklistPaket(db: D1Database, targets: PickTarget[]): Promise<Hasil<{ paket: PaketPicklist[] }>> {
+export async function buatPicklistPaket(
+  db: D1Database,
+  targets: PickTarget[],
+  urut: KunciUrutPicklist = "default",
+  arah: ArahUrutPicklist = "asc"
+): Promise<Hasil<{ paket: PaketPicklist[] }>> {
   const unik = [...new Map(targets.map((t) => [`${t.mp}|${t.no}`, t])).values()];
   if (unik.length === 0) return gagal(400, "Pilih minimal satu order.");
   const noList = unik.map((t) => t.no);
@@ -110,11 +163,54 @@ export async function buatPicklistPaket(db: D1Database, targets: PickTarget[]): 
       if (bermasalah) paket.perlu_sku = (paket.perlu_sku ?? 0) + 1;
     }
   }
-  return { ok: true, paket: [...paketMap.values()] };
+  return { ok: true, paket: urutkanPaket([...paketMap.values()], urut, arah) };
+}
+
+/**
+ * Terapkan urutan ke daftar paket.
+ *
+ * Dua tingkat, dan keduanya harus ikut: baris DI DALAM paket (yang dicari picker di rak) dan
+ * urutan PAKET itu sendiri (yang menentukan lembar mana tercetak lebih dulu). Kalau hanya
+ * barisnya yang diurutkan, "urut nama produk" menghasilkan 40 lembar yang masing-masing urut
+ * nama — di kertas tetap tampak acak, karena yang dibaca mata adalah lembar demi lembar.
+ *
+ * Urutan paket mengikuti baris pertamanya setelah diurutkan, bukan resi: dengan begitu
+ * paket yang memuat produk paling awal A–Z juga tercetak paling awal. `default` = biarkan
+ * urutan lama (urutan target dari klien) persis seperti sebelum perubahan ini.
+ */
+function urutkanPaket(paket: PaketPicklist[], urut: KunciUrutPicklist, arah: ArahUrutPicklist): PaketPicklist[] {
+  if (urut === "default") return paket;
+  const berurut = paket.map((p) => ({
+    ...p,
+    // Baris di dalam paket diurutkan dengan aturan yang SAMA seperti daftar datar; `lokasi`
+    // tidak ada di sini (picklist paket tidak menampilkannya), jadi dikosongkan.
+    rows: urutkanBaris(
+      p.rows.map((r) => ({ ...r, lokasi: "" })),
+      urut,
+      arah
+    ),
+  }));
+  const balik = arah === "desc" ? -1 : 1;
+  return berurut.sort((a, b) => {
+    // Paket tanpa baris selalu di belakang: ia tidak punya kunci untuk dibandingkan, dan
+    // menaruhnya di depan membuat lembar kosong jadi halaman pertama tiap cetakan.
+    if (a.rows.length === 0 || b.rows.length === 0) return a.rows.length === 0 ? (b.rows.length === 0 ? 0 : 1) : -1;
+    const ka = a.rows[0];
+    const kb = b.rows[0];
+    const c = urut === "nama" ? ka.nama.localeCompare(kb.nama, "id") : ka.sku.localeCompare(kb.sku, "id");
+    // Tiebreak SKU lalu resi: dua paket bisa mulai dengan produk yang sama, dan tanpa
+    // tiebreak urutannya berubah-ubah antar cetakan.
+    return (c !== 0 ? c : (ka.sku.localeCompare(kb.sku, "id") || a.no_resi.localeCompare(b.no_resi, "id"))) * balik;
+  });
 }
 
 /** Kumpulkan item dari order pending terpilih, agregat per SKU master, urut SKU. */
-export async function buatPicklist(db: D1Database, targets: PickTarget[]): Promise<Hasil<Picklist>> {
+export async function buatPicklist(
+  db: D1Database,
+  targets: PickTarget[],
+  urut: KunciUrutPicklist = "default",
+  arah: ArahUrutPicklist = "asc"
+): Promise<Hasil<Picklist>> {
   const unik = [...new Map(targets.map((t) => [`${t.mp}|${t.no}`, t])).values()];
   if (unik.length === 0) return gagal(400, "Pilih minimal satu order.");
   const rows: PickRow[] = [];
@@ -150,6 +246,11 @@ export async function buatPicklist(db: D1Database, targets: PickTarget[]): Promi
     const lama = bySku.get(row.sku);
     bySku.set(row.sku, lama ? { ...lama, qty: lama.qty + row.qty } : row);
   }
-  const hasil = [...bySku.values()].sort((a, b) => a.sku.localeCompare(b.sku));
+  // `default` = urutan lama PERSIS (sku A–Z via localeCompare). Pemanggil lama tanpa kunci
+  // harus melihat lembar yang identik dengan sebelumnya — mengubah default akan membuat
+  // cetak ulang picklist lama tiba-tiba berbeda urutan tanpa ada yang meminta.
+  const hasil = urut === "default"
+    ? [...bySku.values()].sort((a, b) => a.sku.localeCompare(b.sku))
+    : urutkanBaris([...bySku.values()], urut, arah);
   return { ok: true, orders: unik.length, units: hasil.reduce((sum, row) => sum + row.qty, 0), rows: hasil };
 }

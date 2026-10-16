@@ -88,6 +88,41 @@ describe("buatPicklist", () => {
       assert.equal(r.rows[0].sku_asal, "ZZ", "SKU asal dari file dibawa");
     }
   });
+
+  // Owner: "urutkan per nama produk, lalu cetak" — PDF yang dicetak HARUS ikut urutan itu.
+  // Sebelumnya urutan hanya hidup di layar: `buatPicklist` selalu mengurutkan per SKU, jadi
+  // lembar yang diterima picker tidak pernah cocok dengan yang dipilih user.
+  it("urut=nama mengubah urutan baris; tanpa kunci tetap urut SKU lama", async () => {
+    const db = buatDbPicklist(
+      [{ marketplace: "shopee", no_pesanan: "O9", status_fulfill: "pending" }],
+      [
+        { marketplace: "shopee", no_pesanan: "O9", sku: "B", qty: 1 },
+        { marketplace: "shopee", no_pesanan: "O9", sku: "A", qty: 1 },
+      ],
+      [{ sku: "A", nama_accurate: "Zebra" }, { sku: "B", nama_accurate: "Anggur" }],
+    );
+    const bawaan = await buatPicklist(db, [{ mp: "shopee", no: "O9" }]);
+    assert.equal(bawaan.ok, true);
+    if (bawaan.ok) assert.deepEqual(bawaan.rows.map((x) => x.sku), ["A", "B"], "default tetap urut SKU");
+
+    const perNama = await buatPicklist(db, [{ mp: "shopee", no: "O9" }], "nama");
+    assert.equal(perNama.ok, true);
+    if (perNama.ok) assert.deepEqual(perNama.rows.map((x) => x.sku), ["B", "A"], "A–Z nama: Anggur sebelum Zebra");
+  });
+
+  it("arah=desc membalik urutan nama (Z–A)", async () => {
+    const db = buatDbPicklist(
+      [{ marketplace: "shopee", no_pesanan: "O9", status_fulfill: "pending" }],
+      [
+        { marketplace: "shopee", no_pesanan: "O9", sku: "B", qty: 1 },
+        { marketplace: "shopee", no_pesanan: "O9", sku: "A", qty: 1 },
+      ],
+      [{ sku: "A", nama_accurate: "Zebra" }, { sku: "B", nama_accurate: "Anggur" }],
+    );
+    const r = await buatPicklist(db, [{ mp: "shopee", no: "O9" }], "nama", "desc");
+    assert.equal(r.ok, true);
+    if (r.ok) assert.deepEqual(r.rows.map((x) => x.sku), ["A", "B"], "Z–A nama: Zebra dulu");
+  });
 });
 
 describe("bangunPdfPicklist", () => {

@@ -12,12 +12,13 @@ import type { Role } from "./peran";
 
 /**
  * Halaman yang boleh dibuka tiap role (href persis seperti di NAV_ITEMS).
- * Sumber: components/dashboard/nav-config.ts (16 item) + `/advance` (halaman nyata
+ * Sumber: components/dashboard/nav-config.ts (17 item) + `/advance` (halaman nyata
  * yang belum masuk NAV_ITEMS).
  */
 const SEMUA_HALAMAN = [
   "/",
   "/stok",
+  "/produk-total",
   "/histori",
   "/draft",
   "/order",
@@ -44,7 +45,7 @@ export const AKSES_HALAMAN: Record<Role, readonly string[]> = {
   // admin: apa adanya hari ini — /gudang owner-only dan /pengaturan ikut (semua tab
   // selain AI tetap cek is_owner sendiri di servernya).
   admin: [
-    "/", "/stok", "/histori", "/draft", "/order", "/laba", "/harga-jual",
+    "/", "/stok", "/produk-total", "/histori", "/draft", "/order", "/laba", "/harga-jual",
     "/opname-gudang", "/permintaan-gudang", "/permintaan", "/analisa", "/admin",
     "/pengaturan", "/profil", "/ai-gambar", "/advance",
   ],

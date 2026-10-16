@@ -177,11 +177,13 @@ export function SumberDataProvider({ children }: { children: ReactNode }) {
         <div className="max-w-sm">
           <h1 className="text-lg font-semibold">Konfigurasi tidak valid</h1>
           <p className="mt-2 text-sm text-muted-foreground">
-            Mode data mock tidak diizinkan di lingkungan ini. Set{" "}
+            Build ini terkompilasi dalam mode data{" "}
+            <code className="rounded bg-muted px-1 py-0.5 text-xs">mock</code>, yang tidak
+            diizinkan di produksi. Set{" "}
             <code className="rounded bg-muted px-1 py-0.5 text-xs">
               NEXT_PUBLIC_DASHBOARD_DATA=real
-            </code>
-            .
+            </code>{" "}
+            lalu build ulang.
           </p>
         </div>
       </div>
@@ -225,6 +227,7 @@ function dataKosong(): DataSource {
     listStock: tolak,
     listStockHalaman: tolak,
     listKekurangan: tolak,
+    listProdukTotal: tolak,
     getProduk: tolak,
     listMovements: tolak,
     listDailyRequests: tolak,

@@ -9,6 +9,7 @@
 // di master yang sudah dicentang "belum di MP"). Dipisah supaya picker tetap bisa mengambil
 // barang normal lebih dulu dan tidak tertukar saat menghitung.
 import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+import type { ArahUrutPicklist, KunciUrutPicklist } from "./picklist";
 
 export type JenisBarisPick = "order" | "advance";
 
@@ -79,7 +80,11 @@ function waktuJakarta(d = new Date()): string {
  * mengira barangnya satu tumpukan padahal harus diambil dari dua tempat.
  * Baris bermasalah (perluSku) selalu berdiri sendiri supaya tidak menyatu dengan barang jelas.
  */
-export function gabungPerSku(baris: BarisPickGabung[]): BarisGabung[] {
+export function gabungPerSku(
+  baris: BarisPickGabung[],
+  urut: KunciUrutPicklist = "default",
+  arah: ArahUrutPicklist = "asc"
+): BarisGabung[] {
   const peta = new Map<string, BarisGabung>();
   for (const b of baris) {
     const kunci = b.perluSku ? `PERLU|${b.nama}|${b.skuAsal}` : `${b.sku}|${b.lokasi}`;
@@ -94,11 +99,34 @@ export function gabungPerSku(baris: BarisPickGabung[]): BarisGabung[] {
     g.qty += b.qty;
     g.rincian.push({ jenis: b.jenis, kunci: b.kunci, kirimKe: b.kirimKe, qty: b.qty });
   }
-  // Urutan: lokasi dulu supaya picker menyisir rak satu per satu, lalu nama.
-  return [...peta.values()].sort((a, b) => a.lokasi.localeCompare(b.lokasi, "id") || a.nama.localeCompare(b.nama, "id"));
+  // `default` = urutan LAMA PERSIS: lokasi dulu (picker menyisir rak satu per satu), lalu nama.
+  // Perhatikan urutan lama memakai `localeCompare(...,"id")` untuk KEDUANYA, bukan
+  // `lokasi || nama` seperti dugaan awal — jadi default tetap dipertahankan apa adanya dan
+  // hanya berubah bila klien benar-benar mengirim kunci urut.
+  if (urut === "default") {
+    return [...peta.values()].sort((a, b) => a.lokasi.localeCompare(b.lokasi, "id") || a.nama.localeCompare(b.nama, "id"));
+  }
+  // Kunci `lokasi` dipertahankan sebagai PILIHAN eksplisit supaya user yang menyortir per
+  // lokasi di layar mendapat lembar yang sama; `sku`/`nama` untuk urutan produk A–Z.
+  // Tiebreak SKU: dua baris bisa punya nama sama (produk berbeda varian), tanpa tiebreak
+  // urutannya berubah-ubah antar cetakan.
+  const balik = arah === "desc" ? -1 : 1;
+  return [...peta.values()].sort((a, b) => {
+    const c = urut === "nama"
+      ? a.nama.localeCompare(b.nama, "id")
+      : urut === "sku"
+        ? a.sku.localeCompare(b.sku, "id")
+        : a.lokasi.localeCompare(b.lokasi, "id");
+    return (c !== 0 ? c : a.sku.localeCompare(b.sku, "id")) * balik;
+  });
 }
 
-type OpsiGabung = { gudangDefault?: string; judul?: string; adaBermasalah?: number };
+type OpsiGabung = {
+  gudangDefault?: string; judul?: string; adaBermasalah?: number;
+  /** Kunci urut baris picklist; kosong = urutan lama (lokasi lalu nama). Lihat KUNCI_URUT_PICKLIST. */
+  urut?: KunciUrutPicklist;
+  arah?: ArahUrutPicklist;
+};
 
 /** Picklist gabungan A4: tabel utama + tabel produk bermasalah + dua tanda tangan. */
 export async function bangunPdfPicklistGabung(
@@ -115,7 +143,7 @@ export async function bangunPdfPicklistGabung(
     return `${s}…`;
   };
 
-  const semua = gabungPerSku(baris);
+  const semua = gabungPerSku(baris, opsi.urut ?? "default", opsi.arah ?? "asc");
   const normal = semua.filter((r) => !r.perluSku);
   const bermasalah = semua.filter((r) => r.perluSku);
 

@@ -8,6 +8,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { chatGemini, streamGemini, type OpsiGemini } from "./adapterGemini";
+import { SKEMA_TOOL_EDITOR, SPESIFIKASI_TOOL_EDITOR } from "../desain/aiEditor";
 import type { BagianChat } from "./http";
 import type { MintaStream, PotonganStream } from "./stream";
 
@@ -296,5 +297,62 @@ describe("chatGemini — pembangun body yang sama", () => {
     assert.equal(h2.ok, true, `chatGemini harus ok: ${h2.ok ? "" : h2.error}`);
     const tanpa = JSON.parse(bodyTerkirim[1] ?? "{}") as Record<string, unknown>;
     assert.equal("generationConfig" in tanpa, false, "tanpa reasoning tidak boleh ada generationConfig sama sekali");
+  });
+});
+
+describe("chatGemini — deklarasi tool dari bentuk apa pun", () => {
+  /** Jalankan `chatGemini` dengan fetch palsu, kembalikan body yang benar-benar dikirim. */
+  async function bodyDengan(tool?: unknown[]): Promise<Record<string, unknown>> {
+    let body = "";
+    globalThis.fetch = (async (_u: string | URL | Request, init?: RequestInit) => {
+      body = String(init?.body ?? "");
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify({ candidates: [{ content: { parts: [{ text: "ok" }] } }] }),
+      } as unknown as Response;
+    }) as unknown as typeof fetch;
+
+    const h = await chatGemini({ apiKey: "key-gemini", timeoutMs: 500 }, { model: "gemini-2.5-flash", pesan: PESAN, tool });
+    assert.equal(h.ok, true, `chatGemini harus ok: ${h.ok ? "" : h.error}`);
+    return JSON.parse(body) as Record<string, unknown>;
+  }
+
+  type Decl = { name?: string; description?: string; parameters?: Record<string, unknown> };
+
+  /** `tools[0].functionDeclarations[0]` dari body hasil stub. */
+  function declPertama(body: Record<string, unknown>): Decl {
+    const tools = body.tools as { functionDeclarations?: Decl[] }[] | undefined;
+    return tools?.[0]?.functionDeclarations?.[0] ?? {};
+  }
+
+  it("SKEMA_TOOL_EDITOR (bentuk wire) tetap menghasilkan nama fungsi yang sah untuk Gemini", async () => {
+    const d = declPertama(await bodyDengan([SKEMA_TOOL_EDITOR]));
+    // Dulu `nama` dibaca dari objek wire yang tidak punya `nama`, jadi name:"" → Gemini
+    // membalas HTTP 400 "Invalid function name" dan editor "Sunting kanvas" gagal total.
+    assert.equal(d.name, "terapkan_operasi_kanvas", "nama tool tidak boleh kosong/hilang");
+    assert.match(d.name ?? "", /^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/, "nama harus lolos pola Gemini");
+    assert.equal(typeof d.parameters, "object");
+    assert.ok((d.parameters?.properties as Record<string, unknown> | undefined)?.operasi, "parameters.properties.operasi wajib ada");
+  });
+
+  it("SPESIFIKASI_TOOL_EDITOR (yang dikirim route sekarang) menghasilkan deklarasi yang sama", async () => {
+    const dariWire = declPertama(await bodyDengan([SKEMA_TOOL_EDITOR]));
+    const dariFlat = declPertama(await bodyDengan([SPESIFIKASI_TOOL_EDITOR]));
+
+    assert.equal(dariFlat.name, "terapkan_operasi_kanvas", "bentuk flat harus terbaca lewat `nama`");
+    assert.equal(dariFlat.name, dariWire.name, "dua bentuk skema yang sama tidak boleh menghasilkan nama berbeda");
+    assert.deepEqual(dariFlat.parameters, dariWire.parameters, "parameters dua bentuk harus setara");
+  });
+
+  it("objek wire tanpa nama jatuh ke nama cadangan yang tetap sah", async () => {
+    const d = declPertama(await bodyDengan([{ type: "function", function: { name: "", description: "", parameters: {} } }]));
+    assert.ok(d.name, "nama tidak boleh kosong");
+    assert.match(d.name ?? "", /^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/, "fallback harus nama yang diterima Gemini");
+  });
+
+  it("tanpa tool, `tools` tidak ikut di body sama sekali", async () => {
+    const body = await bodyDengan();
+    assert.equal(body.tools, undefined, "tanpa tool tidak boleh ada `tools`");
   });
 });

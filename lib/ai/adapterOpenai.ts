@@ -146,19 +146,32 @@ type ResponsChat = {
  * SpesifikasiTool internal (`{nama, deskripsi, parameter}`) → format OpenAI
  * (`{type:"function", function:{name, description, parameters}}`).
  *
- * MASALAH YANG DIPERBAIKI: sebelumnya tool dikirim APA ADANYA tanpa pembungkus dan
- * tanpa field `type`, sehingga provider menolak dengan
- * "invalid JSON: missing field `type` at line 1 column 2477" untuk SEMUA model —
- * bot sama sekali tidak bisa menjawab.
+ * Dua bentuk diterima:
+ * 1. Bentuk internal flat: `{nama, deskripsi, parameter}`.
+ * 2. Bentuk wire OpenAI yang sudah dibungkus: `{type:"function", function:{name, description, parameters}}`.
+ *
+ * MASALAH YANG DIPERBAIKI: satu pemanggil (route editor layout) mengirim SKEMA_TOOL_EDITOR
+ * yang SUDAH dalam bentuk wire, sehingga `nama` tidak ada dan `name` menjadi string kosong —
+ * provider menolak dengan "invalid_request_error" (HTTP 400). Nama kosong itulah penyebabnya,
+ * jadi nama akhir selalu fallback ke "tool".
  */
 function keToolOpenai(t: unknown): Record<string, unknown> {
-  const s = t as { nama?: string; deskripsi?: string; parameter?: Record<string, unknown> };
+  const s = (t ?? {}) as Record<string, unknown>;
+  const fn = s.function;
+  const sudahWire = s.type === "function" && typeof fn === "object" && fn !== null;
+  const f = (sudahWire ? fn : s) as Record<string, unknown>;
+
+  const nama = String((sudahWire ? f.name : f.nama) ?? "").trim();
+  const deskripsi = String((sudahWire ? f.description : f.deskripsi) ?? "");
+  const params = sudahWire ? f.parameters : f.parameter;
+
   return {
     type: "function",
     function: {
-      name: String(s.nama ?? ""),
-      description: String(s.deskripsi ?? ""),
-      parameters: s.parameter ?? { type: "object", properties: {} },
+      name: nama === "" ? "tool" : nama,
+      description: deskripsi,
+      parameters:
+        typeof params === "object" && params !== null ? params : { type: "object", properties: {} },
     },
   };
 }

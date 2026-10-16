@@ -37,6 +37,11 @@ export type Konteks = {
 /** Provider OpenAI-compatible = semua kecuali gemini. */
 const PROVIDER_OPENAI: ProviderNama[] = ["groq", "kenari", "openai", "openrouter"];
 
+/** Satu-satunya definisi himpunan provider yang dikenal; jangan disalin ke tempat lain. */
+function providerSah(p: string): p is ProviderNama {
+  return (PROVIDER_OPENAI as string[]).concat("gemini").includes(p);
+}
+
 /**
  * Batas waktu SATU percobaan model teks.
  * Model penalaran (reasoning `high`/`xhigh`/`max`, apalagi varian `:free` yang mengantre
@@ -307,17 +312,20 @@ async function kandidatTeks(
 ): Promise<{ kandidat: Kandidat[]; rantai: string[] }> {
   const set = await ambilPengaturanAI(ctx.db, ctx.env);
   const rantaiTeks = (set.chainTeks.length > 0 ? set.chainTeks : [set.textProvider || "groq"]).filter(
-    (p): p is ProviderNama => (PROVIDER_OPENAI as string[]).concat("gemini").includes(p)
+    (p): p is ProviderNama => providerSah(p)
   );
   const peta = jenis === "vision" ? set.modelVision : set.modelTeks;
-  // Provider pembawa `modelDiminta` (bila pemanggil menyebutkannya). Provider itu DIPINDAH
-  // ke depan rantai: `modelDiminta` di bawah hanya sah untuk pemiliknya, jadi kalau
-  // pemiliknya tidak berada di urutan pertama, model yang DIMINTA user tidak pernah masuk
-  // kandidat sama sekali (hanya provider pertama yang membacanya) — permintaan user
-  // diabaikan tanpa pesan. Urutan sisa rantai tidak berubah, jadi fallback tetap apa adanya.
+  // Provider pembawa `modelDiminta` (bila pemanggil menyebutkannya). `modelDiminta` di bawah
+  // hanya sah untuk pemiliknya, jadi provider itu harus berada di urutan pertama rantai:
+  //  - provider sudah ada di rantai → DIPINDAH ke depan (tanpa duplikat);
+  //  - provider SAH tapi TIDAK ada di rantai (mis. `model_editor` user menunjuk provider yang
+  //    tidak ikut dikonfigurasi di `chainTeks`) → DITAMBAHKAN di depan. Tanpa cabang kedua ini
+  //    permintaan user diabaikan diam-diam: rantai mulai dari provider lain yang tidak mengenal
+  //    `modelDiminta`, dan model pilihan user tidak pernah masuk daftar kandidat sama sekali.
+  // Provider yang tidak dikenal (bukan providerSah) tidak pernah ditambahkan — rantai apa adanya.
   const rantaiUrut =
-    providerDiminta && rantaiTeks.includes(providerDiminta as ProviderNama)
-      ? [providerDiminta as ProviderNama, ...rantaiTeks.filter((p) => p !== providerDiminta)]
+    providerDiminta && providerSah(providerDiminta)
+      ? [providerDiminta, ...rantaiTeks.filter((p) => p !== providerDiminta)]
       : rantaiTeks;
   // Izin model per role+jenis, diambil SEKALI untuk seluruh rantai: satu kueri, bukan satu
   // kueri per model. `null` = owner (tanpa batas) — lihat himpunanIzin. Non-owner tanpa izin

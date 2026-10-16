@@ -4,10 +4,11 @@
 // Fetch LANGSUNG /api/order (kontrak DataSource beku Wave 3a).
 import { useCallback, useDeferredValue, useEffect, useState } from "react";
 import { toast } from "sonner";
-import { FileDown, FileUp, PackageSearch, RotateCcw } from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronsUpDown, FileDown, FileUp, PackageSearch, RotateCcw } from "lucide-react";
 
 import { DialogImportExcel } from "@/components/dashboard/dialog-import-excel";
 import { DialogImportOrder } from "@/components/dashboard/dialog-import-order";
+import { FooterPaginasi } from "@/components/dashboard/footer-paginasi";
 import {
   Dialog,
   DialogContent,
@@ -108,6 +109,38 @@ const LABEL_EKSPOR: Record<string, string> = {
 };
 const URUTAN_EKSPOR = ["per_paket", "pisah", "gabung", "gabung-order"];
 
+// Kolom yang boleh diurutkan SERVER (cermin KOLOM_URUT_ORDER lib/d1/order.ts). Kolom Item/
+// Total/Pengiriman TIDAK ada di sini: tiga kolom itu agregat SUM / gabungan string yang
+// dihitung dari order_items, jadi mengurutkannya butuh kolom turunan di SQL — bukan urutan
+// yang bisa dijamin konsisten dengan paginasi. Kolom tsb sengaja TIDAK diberi tombol sama
+// sekali supaya tidak ada kontrol mati yang bisa diklik user tapi tidak mengubah apa pun.
+type KolomUrut = "marketplace" | "no_pesanan" | "no_resi" | "tanggal" | "status_fulfill";
+type ArahUrut = "asc" | "desc";
+
+// Ukuran halaman. 200 = angka yang SUDAH dipakai halaman ini sebelum paginasi (`limit=200`)
+// sekaligus plafon server (MAKS_UKURAN_HALAMAN). Dipilih 200 supaya tidak ada regresi
+// perilaku: pada hari sibuk satu hari penuh masih sering < 200 order, jadi user yang dulu
+// melihat semua order hari ini tetap melihat semuanya di halaman 1 tanpa klik tambahan.
+const UKURAN_HALAMAN = 200;
+
+/**
+ * Tanggal hari ini WIB (UTC+7) sebagai YYYY-MM-DD.
+ *
+ * Konvensi yang SAMA dengan server, dan itu bukan pilihan bebas:
+ * `orders.tanggal` di-anchor ke tengah malam UTC dari STRING tanggal di berkas impor
+ * (`tanggalKeEpoch` = `Date.UTC(y, m-1, d)`), dan `filterDariQuery` membangun jendela
+ * satu hari dari helper yang sama. Artinya tanggal order adalah tanggal KALENDER apa adanya.
+ * Yang menentukan kalender siapa adalah pengguna WMS: order marketplace masuk malam WIB
+ * (mis. 22:00 WIB = 15:00 UTC di hari yang sama), dan admin mencatatnya dengan tanggal WIB.
+ * Karena itu default "hari ini" HARUS tanggal WIB — memakai `toISOString()` UTC akan
+ * menggeser default 7 jam dan pada pagi hari WIB menampilkan tanggal kemarin, membuat
+ * daftar "hari ini" kosong padahal order baru saja diimpor.
+ * (Satu sumber dengan `tanggalWib` lib/ai/provider.ts dan `tanggalHariIni` lib/d1/permintaan.ts.)
+ */
+function tanggalHariIniWib(): string {
+  return new Date(Date.now() + 7 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
 export default function HalamanOrder() {
   return (
     <ButuhAkses href="/order">
@@ -153,6 +186,18 @@ function DaftarOrder() {
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState("semua");
   const [mp, setMp] = useState("");
+  // Filter satu hari, default HARI INI (WIB). Tanggal dikirim apa adanya sebagai string
+  // `tanggal=` ke server; jendela harinya dihitung server dengan helper yang sama seperti
+  // jalur impor, jadi klien tidak boleh menebak batas epoch sendiri.
+  const [tanggal, setTanggal] = useState(tanggalHariIniWib);
+  const [halaman, setHalaman] = useState(1);
+  const [kolomUrut, setKolomUrut] = useState<KolomUrut>("tanggal");
+  const [arah, setArah] = useState<ArahUrut>("desc");
+  // Metadata paginasi dari server: `total` = COUNT(*) himpunan yang difilter (bukan panjang
+  // array halaman), `jumlah_halaman` = max(1, ceil(total/ukuran)).
+  const [total, setTotal] = useState(0);
+  const [jumlahHalaman, setJumlahHalaman] = useState(1);
+  const [memuatHalaman, setMemuatHalaman] = useState(false);
   const [target, setTarget] = useState<Target | null>(null);
   const [hapusTarget, setHapusTarget] = useState<Target[] | null>(null);
   const [rincian, setRincian] = useState<RincianOrder | null>(null);
@@ -254,6 +299,25 @@ function DaftarOrder() {
       if (!lanjut) return;
     }
     const q = new URLSearchParams({ aksi: "picklist-pdf", targets: JSON.stringify(targets), mode: modePicklist });
+    // Urutan layar ikut ke kertas. PDF disusun ULANG di server dari `order_items`, jadi tanpa
+    // parameter ini "urutkan per nama produk" hanya mengubah layar — picker tetap menyisir rak
+    // urut lokasi. Allowlist server `default|sku|nama|lokasi`, dan HANYA kolom itu yang punya
+    // padanan di baris picklist (marketplace/resi/tanggal/status bukan atribut barang).
+    //
+    // Pemetaan:
+    //   no_pesanan → sku    (kolom yang ditampilkan sudah per baris barang; SKU adalah
+    //                        padanan terdekat yang benar-benar ada di lembar picklist)
+    //   lainnya    → TIDAK dikirim sama sekali, sehingga server memakai `default` =
+    //                urutan LAMA persis seperti sebelum fitur sort ada.
+    // Arah hanya ikut bila kuncinya ikut; mengirim `arah` sendirian berarti meminta `desc`
+    // atas urutan default lama — regresi yang tidak diminta siapa pun.
+    if (kolomUrut === "no_pesanan") {
+      q.set("urut", "sku");
+      q.set("arah", arah);
+    } else if (kolomUrut === "no_resi") {
+      q.set("urut", "lokasi");
+      q.set("arah", arah);
+    }
     // Mode gabung-order juga menyisir rak untuk booking advance aktif.
     if (modePicklist === "gabung-order") q.set("status", "menunggu");
     // `inline=1` = PDF tampil di viewer tab baru (pratinjau cetak), bukan langsung terunduh.
@@ -270,8 +334,19 @@ function DaftarOrder() {
   const muat = useCallback(async () => {
     setError(null);
     setOrders(null);
+    setMemuatHalaman(true);
     try {
-      const q = new URLSearchParams({ aksi: "daftar", limit: "200" });
+      const q = new URLSearchParams({
+        aksi: "daftar",
+        halaman: String(halaman),
+        ukuran: String(UKURAN_HALAMAN),
+        urut: kolomUrut,
+        arah,
+      });
+      // `tanggal` mengirim SATU hari penuh; server mengubahnya jadi jendela
+      // (dari = awal hari, sampai = +86399) lewat helper yang sama dengan impor.
+      // Kosong = tanpa batas tanggal (semua tanggal), untuk melihat riwayat lama.
+      if (tanggal) q.set("tanggal", tanggal);
       if (status !== "semua") q.set("status", status);
       if (mpTertunda) q.set("mp", mpTertunda);
       const res = await fetch(`/api/order?${q}`, { credentials: "include" });
@@ -280,18 +355,53 @@ function DaftarOrder() {
         error?: string;
         orders?: RincianOrder[];
         ekspor?: Record<string, string[]>;
+        total?: number;
+        jumlah_halaman?: number;
       } | null;
       if (!res.ok || !data?.ok) throw new Error(data?.error ?? `Gagal (${res.status}).`);
+      const jml = data.jumlah_halaman ?? 1;
+      // Halaman terakhir bisa menyusut (mis. baris halaman ini baru saja dihapus/ditransisi
+      // lewat aksi massal) sehingga `halaman` kini menunjuk halaman yang tidak ada. Server
+      // mengembalikan daftar kosong + jumlah_halaman yang lebih kecil; jepit di sini supaya
+      // user tidak terjebak di halaman kosong tanpa tahu harus kembali. `total` tetap 0 di
+      // render ini, jadi tidak ada permintaan kedua kecuali memang perlu.
+      if (halaman > jml) {
+        setHalaman(jml);
+        return;
+      }
       setOrders(data.orders ?? []);
       setEkspor(data.ekspor ?? {});
+      setTotal(data.total ?? 0);
+      setJumlahHalaman(jml);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Gagal memuat order.");
+    } finally {
+      setMemuatHalaman(false);
     }
-  }, [status, mpTertunda]);
+  }, [status, mpTertunda, tanggal, halaman, kolomUrut, arah]);
 
   useEffect(() => {
     void muat();
   }, [muat]);
+
+  /** Klik header: kolom sama → balik arah; kolom lain → kolom itu, mulai asc.
+   *  Selalu kembali ke halaman 1: server mengurutkan SELURUH himpunan lalu memotong
+   *  per halaman, jadi nomor halaman lama menunjuk potongan yang sama sekali lain. */
+  function urutkan(kolom: KolomUrut): void {
+    setHalaman(1);
+    if (kolom === kolomUrut) setArah((a) => (a === "asc" ? "desc" : "asc"));
+    else {
+      setKolomUrut(kolom);
+      setArah("asc");
+    }
+  }
+
+  /** Ganti tanggal → halaman 1, kalau tidak user mendarat di halaman kosong (hari baru
+   *  biasanya hanya punya 1 halaman). */
+  function gantiTanggal(nilai: string): void {
+    setTanggal(nilai);
+    setHalaman(1);
+  }
 
   async function kirim() {
     if (!target) return;
@@ -357,7 +467,16 @@ function DaftarOrder() {
         <div className="flex flex-wrap items-end gap-3">
           <Field className="w-full sm:max-w-52">
             <FieldLabel htmlFor="filter-status-order">Status</FieldLabel>
-            <Select value={status} onValueChange={(v) => typeof v === "string" && setStatus(v)}>
+            <Select
+              value={status}
+              onValueChange={(v) => {
+                if (typeof v !== "string") return;
+                // Filter berubah = himpunan berubah = halaman lama bisa melewati ujung
+                // daftar baru. Sama seperti tanggal dan urutan, kembali ke halaman 1.
+                setStatus(v);
+                setHalaman(1);
+              }}
+            >
               <SelectTrigger id="filter-status-order" className="h-11 w-full md:h-8" data-testid="filter-status-order">
                 <SelectValue>{(v: string | null) => v ?? "Semua"}</SelectValue>
               </SelectTrigger>
@@ -380,7 +499,25 @@ function DaftarOrder() {
               data-testid="filter-mp-order"
               placeholder="cth. shopee"
               value={mp}
-              onChange={(e) => setMp(e.target.value)}
+              onChange={(e) => {
+                setMp(e.target.value);
+                // Sama seperti filter lain: himpunan berubah, halaman lama tidak lagi bermakna.
+                setHalaman(1);
+              }}
+            />
+          </Field>
+          <Field className="w-full sm:max-w-44">
+            {/* Label menyebut WIB karena `tanggal` = tanggal KALENDER berkas impor; default
+                hari ini dihitung dengan pergeseran WIB (lihat tanggalHariIniWib). Menghapus
+                isinya = tanpa batas tanggal, berguna untuk melihat order lama. */}
+            <FieldLabel htmlFor="filter-tanggal-order">Tanggal (WIB)</FieldLabel>
+            <Input
+              id="filter-tanggal-order"
+              type="date"
+              className="h-11 md:h-8"
+              data-testid="filter-tanggal-order"
+              value={tanggal}
+              onChange={(e) => gantiTanggal(e.target.value)}
             />
           </Field>
         </div>
@@ -489,11 +626,26 @@ function DaftarOrder() {
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-10">Pilih</TableHead>
-                  <TableHead>No Pesanan</TableHead>
-                  <TableHead>MP</TableHead>
-                  <TableHead>No Resi</TableHead>
-                  <TableHead>Tanggal</TableHead>
-                  <TableHead>Status</TableHead>
+                  <TableHead>
+                    <TombolUrut kolom="no_pesanan" label="No Pesanan" aktif={kolomUrut} arah={arah} onUrut={urutkan} />
+                  </TableHead>
+                  <TableHead>
+                    <TombolUrut kolom="marketplace" label="MP" aktif={kolomUrut} arah={arah} onUrut={urutkan} />
+                  </TableHead>
+                  <TableHead>
+                    <TombolUrut kolom="no_resi" label="No Resi" aktif={kolomUrut} arah={arah} onUrut={urutkan} />
+                  </TableHead>
+                  <TableHead>
+                    <TombolUrut kolom="tanggal" label="Tanggal" aktif={kolomUrut} arah={arah} onUrut={urutkan} />
+                  </TableHead>
+                  <TableHead>
+                    <TombolUrut kolom="status_fulfill" label="Status" aktif={kolomUrut} arah={arah} onUrut={urutkan} />
+                  </TableHead>
+                  {/* Item / Total / Pengiriman: TANPA tombol urut. Nilainya agregat SUM dari
+                      order_items dan gabungan string jasa kirim — jendela urut server adalah
+                      kolom header orders, jadi kolom ini tidak bisa diurutkan konsisten dengan
+                      paginasi. Tombol yang diklik tapi tidak mengubah urutan lebih buruk
+                      daripada tidak ada tombol. */}
                   <TableHead className="text-right">Item</TableHead>
                   <TableHead className="text-right">Total</TableHead>
                   <TableHead>Pengiriman</TableHead>
@@ -600,6 +752,21 @@ function DaftarOrder() {
             </Table>
           </div>
         )}
+
+        {/* Footer paginasi: komponen BERSAMA components/dashboard/footer-paginasi.tsx (sama
+            dengan /stok dan /histori), presentasi saja — pemanggil yang mengambil datanya.
+            Ia memakai `total` dari COUNT(*) server, bukan panjang array halaman. */}
+        {orders !== null && orders.length > 0 ? (
+          <FooterPaginasi
+            halaman={halaman}
+            jumlahHalaman={jumlahHalaman}
+            barisTampil={orders.length}
+            mulai={(halaman - 1) * UKURAN_HALAMAN}
+            total={total}
+            onHalaman={setHalaman}
+            sibuk={memuatHalaman}
+          />
+        ) : null}
       </div>
 
       <AlertDialog
@@ -715,5 +882,56 @@ function DaftarOrder() {
         </DialogContent>
       </Dialog>
     </>
+  );
+}
+
+/**
+ * Tombol urut di header tabel.
+ *
+ * Kenapa tombol, bukan ikon pasif yang bisa diklik: area klik header `<th>` sulit dijangkau
+ * di mobile, sedangkan Button membawa fokus keyboard + `aria-sort` dari induknya. Ikon
+ * ChevronsUpDown tampil saat kolom TIDAK aktif supaya user tahu kolom ini bisa diurutkan,
+ * ArrowUp/ArrowDown saat aktif supaya arahnya terbaca tanpa menebak.
+ *
+ * Satu tombol SEDERHANA menggantikan tombol asc + desc terpisah: itu satu kontrol per kolom,
+ * dan arahnya dibalik oleh klik berikutnya (pola yang sama dengan sortir tabel biasa).
+ */
+function TombolUrut({
+  kolom,
+  label,
+  aktif,
+  arah,
+  onUrut,
+}: {
+  kolom: KolomUrut;
+  label: string;
+  aktif: KolomUrut;
+  arah: ArahUrut;
+  onUrut: (k: KolomUrut) => void;
+}) {
+  const ini = kolom === aktif;
+  return (
+    <Button
+      size="sm"
+      variant="ghost"
+      className="-ml-2 h-8 gap-1 px-2 font-medium"
+      data-testid={`urut-${kolom}`}
+      // aria-sort harus di elemen kolom; Button di dalam <th> bukan pemilik peran kolom,
+      // jadi nilainya ditulis sebagai data-* untuk pengujian dan aria-label untuk pembaca
+      // layar — menggantungkan aria-sort di sini akan berbohong soal perannya.
+      aria-label={`Urutkan ${label}${ini ? (arah === "asc" ? " menaik" : " menurun") : ""}`}
+      onClick={() => onUrut(kolom)}
+    >
+      {label}
+      {ini ? (
+        arah === "asc" ? (
+          <ArrowUp data-icon="inline-end" data-testid={`urut-${kolom}-asc`} />
+        ) : (
+          <ArrowDown data-icon="inline-end" data-testid={`urut-${kolom}-desc`} />
+        )
+      ) : (
+        <ChevronsUpDown className="opacity-40" data-icon="inline-end" />
+      )}
+    </Button>
   );
 }

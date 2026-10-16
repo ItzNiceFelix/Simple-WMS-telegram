@@ -32,78 +32,92 @@ export const NAMA_TOOL_EDITOR = "terapkan_operasi_kanvas";
  * dipakai (field itu diabaikan validator), sedangkan menolaknya membuat seluruh
  * pemanggilan gagal hanya karena satu properti tambahan.
  */
-export const SKEMA_TOOL_EDITOR: Record<string, unknown> = {
-  type: "function",
-  function: {
-    name: NAMA_TOOL_EDITOR,
-    description:
-      "Ubah kanvas desain banner lewat daftar operasi. Operasi dijalankan berurutan dari atas ke bawah.",
-    parameters: {
-      type: "object",
-      additionalProperties: true,
-      properties: {
-        operasi: {
-          type: "array",
-          description: "Daftar operasi, urut. Kosong berarti tidak ada perubahan.",
-          items: {
-            type: "object",
-            additionalProperties: true,
-            properties: {
-              op: {
-                type: "string",
-                description:
-                  "Jenis operasi. Salah satu dari: " + OP_DIKENAL.join(", ") + ".",
-              },
-              id: { type: "string", description: "Id satu elemen pada kanvas (dari daftar elemen di pesan)." },
-              ids: {
-                type: "array",
-                items: { type: "string" },
-                description: "Beberapa id elemen (untuk kelompok/sejajar/distribusi/hapus banyak).",
-              },
-              teks: { type: "string", description: "Isi teks baru (op tambah_teks / ubah_gaya)." },
-              font: { type: "string", description: "Nama font. Salah satu dari: " + FONT_AMAN.join(", ") + "." },
-              ukuran: { type: "number", description: "Ukuran font dalam piksel dokumen (bukan 0..1)." },
-              warna: {
-                type: "string",
-                description: "Warna hex dari palet ini saja: " + PALET_WARNA.join(", ") + ".",
-              },
-              x: { type: "number", description: "Posisi kiri, piksel dokumen." },
-              y: { type: "number", description: "Posisi atas, piksel dokumen." },
-              w: { type: "number", description: "Lebar, piksel dokumen." },
-              h: { type: "number", description: "Tinggi, piksel dokumen." },
-              rotasi: { type: "number", description: "Sudut putar derajat, 0-359." },
-              tebal: { type: "boolean", description: "Teks tebal." },
-              miring: { type: "boolean", description: "Teks miring." },
-              garisBawah: { type: "boolean", description: "Teks bergaris bawah." },
-              opasitas: { type: "number", description: "Transparansi 0..1." },
-              arah: { type: "string", description: "Untuk op lapisan: atas, bawah, depan, atau belakang." },
-              sisi: {
-                type: "string",
-                description: "Untuk op sejajar: kiri, tengah, kanan, atas, tengah_v, atau bawah.",
-              },
-              sumbu: { type: "string", description: "Untuk op distribusi: horizontal atau vertikal." },
-              latarBelakang: {
-                type: "string",
-                description: "Warna latar kanvas, hex dari palet: " + PALET_WARNA.join(", ") + ".",
-              },
-              elemen_id: {
-                type: "integer",
-                description: "Untuk op sisipkan_elemen: id dari daftar PUSTAKA ELEMEN di pesan.",
-              },
-              layout: {
-                type: "object",
-                additionalProperties: true,
-                description:
-                  "HANYA untuk op bangun_ulang: satu banner utuh {versi:1, latarBelakang, elemen:[...]}. Mengganti SELURUH isi kanvas (kecuali latar terkunci).",
-              },
+const TOOL_EDITOR: { name: string; description: string; parameters: Record<string, unknown> } = {
+  name: NAMA_TOOL_EDITOR,
+  description:
+    "Ubah kanvas desain banner lewat daftar operasi. Operasi dijalankan berurutan dari atas ke bawah.",
+  parameters: {
+    type: "object",
+    additionalProperties: true,
+    properties: {
+      operasi: {
+        type: "array",
+        description: "Daftar operasi, urut. Kosong berarti tidak ada perubahan.",
+        items: {
+          type: "object",
+          additionalProperties: true,
+          properties: {
+            op: {
+              type: "string",
+              description:
+                "Jenis operasi. Salah satu dari: " + OP_DIKENAL.join(", ") + ".",
             },
-            required: ["op"],
+            id: { type: "string", description: "Id satu elemen pada kanvas (dari daftar elemen di pesan)." },
+            ids: {
+              type: "array",
+              items: { type: "string" },
+              description: "Beberapa id elemen (untuk kelompok/sejajar/distribusi/hapus banyak).",
+            },
+            teks: { type: "string", description: "Isi teks baru (op tambah_teks / ubah_gaya)." },
+            font: { type: "string", description: "Nama font. Salah satu dari: " + FONT_AMAN.join(", ") + "." },
+            ukuran: { type: "number", description: "Ukuran font dalam piksel dokumen (bukan 0..1)." },
+            warna: {
+              type: "string",
+              description: "Warna hex dari palet ini saja: " + PALET_WARNA.join(", ") + ".",
+            },
+            x: { type: "number", description: "Posisi kiri, piksel dokumen." },
+            y: { type: "number", description: "Posisi atas, piksel dokumen." },
+            w: { type: "number", description: "Lebar, piksel dokumen." },
+            h: { type: "number", description: "Tinggi, piksel dokumen." },
+            rotasi: { type: "number", description: "Sudut putar derajat, 0-359." },
+            tebal: { type: "boolean", description: "Teks tebal." },
+            miring: { type: "boolean", description: "Teks miring." },
+            garisBawah: { type: "boolean", description: "Teks bergaris bawah." },
+            opasitas: { type: "number", description: "Transparansi 0..1." },
+            arah: { type: "string", description: "Untuk op lapisan: atas, bawah, depan, atau belakang." },
+            sisi: {
+              type: "string",
+              description: "Untuk op sejajar: kiri, tengah, kanan, atas, tengah_v, atau bawah.",
+            },
+            sumbu: { type: "string", description: "Untuk op distribusi: horizontal atau vertikal." },
+            latarBelakang: {
+              type: "string",
+              description: "Warna latar kanvas, hex dari palet: " + PALET_WARNA.join(", ") + ".",
+            },
+            elemen_id: {
+              type: "integer",
+              description: "Untuk op sisipkan_elemen: id dari daftar PUSTAKA ELEMEN di pesan.",
+            },
+            layout: {
+              type: "object",
+              additionalProperties: true,
+              description:
+                "HANYA untuk op bangun_ulang: satu banner utuh {versi:1, latarBelakang, elemen:[...]}. Mengganti SELURUH isi kanvas (kecuali latar terkunci).",
+            },
           },
+          required: ["op"],
         },
       },
-      required: ["operasi"],
     },
+    required: ["operasi"],
   },
+};
+
+/**
+ * Dua bentuk dari SATU skema: adapter provider memakai bentuk internal yang rata
+ * (`{nama, deskripsi, parameter}`), sedangkan provider bergaya OpenAI menerima
+ * `{type:"function", function:{…}}`. Keduanya dibangun dari objek kanonik yang sama
+ * supaya isinya tidak bisa menyimpang satu sama lain.
+ */
+export const SKEMA_TOOL_EDITOR: Record<string, unknown> = {
+  type: "function",
+  function: TOOL_EDITOR,
+};
+
+export const SPESIFIKASI_TOOL_EDITOR: { nama: string; deskripsi: string; parameter: Record<string, unknown> } = {
+  nama: NAMA_TOOL_EDITOR,
+  deskripsi: TOOL_EDITOR.description,
+  parameter: TOOL_EDITOR.parameters,
 };
 
 /** Satu elemen kanvas yang boleh dirujuk AI; bentuknya sengaja ramping. */
