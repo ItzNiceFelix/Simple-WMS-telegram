@@ -12,9 +12,9 @@ export function sekarang() {
 }
 
 /**
- * Vars AI dari binding Worker. Route `/api/order` tidak memakainya, tetapi
- * `app/api/baca/route.ts` (yang diimpor berkas uji order untuk menguji scope produk-total)
- * mengimpornya di tingkat modul — tanpa stub ini bundel esbuild gagal sebelum satu uji pun
+ * Vars AI dari binding Worker. Berkas uji yang mengimpor route Next (mis. yang menarik
+ * `app/api/baca/route.ts`) memicunya di tingkat modul — tanpa stub ini bundel esbuild gagal
+ * sebelum satu uji pun
  * jalan. Nilai kosong = perilaku "AI belum dikonfigurasi", cukup untuk uji yang tidak AI.
  */
 export function getEnvAi() {

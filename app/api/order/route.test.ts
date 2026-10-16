@@ -13,7 +13,6 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { inflateSync } from "node:zlib";
 import { GET, POST } from "./route";
-import { GET as GET_BACA } from "../baca/route";
 
 type Row = Record<string, unknown>;
 
@@ -593,7 +592,9 @@ type HasilPreview = {
   ok: boolean; mode: string; urut: string; arah: string; kolom: string[]; judul: string;
   baris: { no: number; nama: string; sku: string; lokasi: string; qty: number; perluSku: boolean; skuAsal: string; grup?: string }[];
   total_baris: number; total_unit: number; ada_bermasalah: number;
-  total_order: number; total_advance: number; error?: string;
+  total_order: number; total_advance: number;
+  total_baris_order: number; total_baris_advance: number;
+  error?: string;
 };
 
 /**
@@ -656,7 +657,28 @@ describe("preview-picklist — bentuk respons", () => {
     assert.deepEqual(r.body.baris.map((b) => b.no), [1, 2, 3], "nomor 1-based berurutan setelah urut");
   });
 
-  it("lokasi adalah NAMA gudang, bukan id/kode (regresi /produk-total)", async () => {
+  it("gabung-order: total_baris_order = BARIS (sama dengan header PDF), beda dari total_order = ENTITAS", async () => {
+    // Cacat yang dikunci: layar dulu hanya punya `total_order` (order UNIK) sementara
+    // header PDF menghitung BARIS. Fixture ini punya 2 order (O-1, O-2) tetapi 4 baris item
+    // order (O-1: A+B, O-2: A+C), jadi angka-angkanya HARUS berbeda — kalau uji ini lulus
+    // dengan `total_baris_order === total_order`, ia tidak membuktikan apa pun.
+    const { db } = buatDbBaca(fixtureBaca());
+    const r = await panggilPreview(db, { targets: TARGETS, mode: "gabung-order" });
+    assert.equal(r.status, 200, `harus 200: ${r.body.error ?? ""}`);
+
+    assert.equal(r.body.total_order, 2, "2 order unik");
+    assert.equal(r.body.total_baris_order, 4, "4 baris item order (2 per order)");
+    assert.notEqual(
+      r.body.total_baris_order,
+      r.body.total_order,
+      "baris order HARUS beda dari order unik — inilah beda layar vs kertas yang diperbaiki"
+    );
+    // 2 booking, satu baris masing-masing — jadi kedua satuan sama di sisi advance.
+    assert.equal(r.body.total_advance, 2, "2 booking advance");
+    assert.equal(r.body.total_baris_advance, 2, "2 baris advance");
+  });
+
+  it("lokasi adalah NAMA gudang, bukan id/kode (regresi kolom Lokasi Gudang)", async () => {
     const { db } = buatDbBaca(fixtureBaca());
     const r = await panggilPreview(db, { targets: TARGETS, mode: "gabung-order" });
     const a = r.body.baris.find((b) => b.sku === "A");
@@ -1038,86 +1060,6 @@ describe("preview-picklist — total_order dihitung dari target UNIK", () => {
       const r = await panggilPreview(db, { targets: kembar, mode });
       assert.equal(r.body.total_order, 2, `${mode}: total_order harus distinct`);
       assert.equal(r.body.total_advance, 0, `${mode}: tidak ada advance di mode order-only`);
-    }
-  });
-});
-
-describe("produk-total — regresi: kolom Lokasi Gudang berisi NAMA, bukan ID", () => {
-  /**
-   * Mock D1 untuk scope `produk-total` di `app/api/baca/route.ts`.
-   *
-   * Menjawab kueri halaman itu apa adanya (termasuk subquery kode gudang), lalu uji membaca
-   * `lokasi_gudang` yang benar-benar dikirim ke klien. Itu satu-satunya pembuktian yang
-   * bernilai untuk cacat ini: owner melihat 'GMV0LJYS5' di layar, jadi ujinya harus melihat
-   * nilai yang sama seperti yang dilihat owner.
-   */
-  function buatDbProdukTotal() {
-    const produk = [
-      { sku: "A", nama_accurate: "Piring Melamin" },
-      { sku: "B", nama_accurate: "Gelas Kaca" },
-    ];
-    const stok: StokBaris[] = [
-      { sku: "A", warehouse_id: "GMV0LJYS5", qty: 5 },
-      { sku: "A", warehouse_id: "AZQ9K7WP1", qty: 2 },
-      { sku: "B", warehouse_id: "AZQ9K7WP1", qty: 3 },
-    ];
-    const kodeGudang = (id: string) => FIX_GUDANG.find((g) => g.id === id)?.code ?? id;
-    /** Terapkan `ORDER BY` minimal: cukup memastikan tidak ada urutan acak di fixture. */
-    const urutSku = <T extends { sku: string; lokasi_utama: string | null }>(baris: T[]): T[] =>
-      baris.slice().sort((a, b) => (a.lokasi_utama ?? "").localeCompare(b.lokasi_utama ?? "", "id") || a.sku.localeCompare(b.sku, "id"));
-
-    const db = {
-      prepare(sql: string) {
-        let args: unknown[] = [];
-        const st = {
-          _sql: sql,
-          _args: args,
-          bind(...a: unknown[]) { args = a; st._args = a; return st; },
-          async first<T>(): Promise<T | null> {
-            if (sql.includes("COUNT(*) AS total")) return { total: produk.length } as T;
-            return null;
-          },
-          async all<T>() {
-            if (!sql.includes("FROM products p")) return { results: [] as T[] };
-            // Halaman ini TIDAK mengirim daftar SKU; yang dibatasi LIMIT di akhir.
-            const baris = produk.map((p) => {
-              const positif = stok.filter((s) => s.sku === p.sku && s.qty > 0)
-                .sort((a, b) => b.qty - a.qty || a.warehouse_id.localeCompare(b.warehouse_id));
-              const total = stok.filter((s) => s.sku === p.sku).reduce((n, s) => n + s.qty, 0);
-              return {
-                sku: p.sku,
-                nama_accurate: p.nama_accurate,
-                total_qty: total,
-                lokasi_utama: positif[0] ? kodeGudang(positif[0].warehouse_id) : null,
-                lokasi_semua: positif.length > 0 ? positif.map((s) => kodeGudang(s.warehouse_id)).join("\t") : null,
-              };
-            });
-            return { results: urutSku(baris) as T[] };
-          },
-          async run() { return { meta: { changes: 0 } }; },
-        };
-        return st;
-      },
-      async batch() { return []; },
-    };
-    return db;
-  }
-
-  it("lokasi_gudang = KODE terbaca (D12), bukan id D1 (GMV0LJYS5)", async () => {
-    (globalThis as unknown as { __TMA_TEST_DB__?: unknown }).__TMA_TEST_DB__ = buatDbProdukTotal();
-    // Route baca memakai `getDb()` yang sama; alias-nya (test/alias-db.mjs) membaca global
-    // yang sama pula, jadi satu penugasan cukup untuk kedua route di berkas ini.
-    const res = await GET_BACA(new Request(`${ASAL}/api/baca?scope=produk-total&ukuran=50`));
-    assert.equal(res.status, 200);
-    const body = (await res.json()) as { ok: boolean; rows: { kode_barang: string; lokasi_gudang: string; gudang_lain: string }[] };
-    const a = body.rows.find((r) => r.kode_barang === "A");
-    assert.equal(a?.lokasi_gudang, "D12", "gudang dominan harus kode pendek, bukan id");
-    assert.equal(a?.gudang_lain, "+D19", "gudang lain tetap disebut sebagai penanda");
-    const b = body.rows.find((r) => r.kode_barang === "B");
-    assert.equal(b?.lokasi_gudang, "D19");
-    assert.equal(b?.gudang_lain, "", "satu gudang saja → tanpa penanda");
-    for (const r of body.rows) {
-      assert.ok(!/^GMV0LJYS5$|^AZQ9K7WP1$/.test(r.lokasi_gudang), `ID gudang bocor: ${r.lokasi_gudang}`);
     }
   });
 });

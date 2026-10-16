@@ -938,6 +938,13 @@ export async function GET(request: Request) {
     // mentah akan menulis "12 order" di atas tabel yang isinya 11 order.
     let totalOrder = hitungOrderUnik(targets);
     let totalAdvance = 0;
+    // Jumlah BARIS (bukan order) dari `barisGabung` — basis hitung yang PERSIS sama dengan
+    // header PDF (`picklistGabungPdf.ts`: `baris.filter(jenis === "order").length`). Satu
+    // order dengan 3 item menyumbang 3 di sini tetapi 1 di `totalOrder`; itulah beda yang
+    // membuat layar dan kertas tidak bisa dicocokkan sebelum ini. Hanya mode `gabung-order`
+    // yang memisah order/advance; mode lain mengisi keduanya 0 (lihat catatan di respons).
+    let totalBarisOrder = 0;
+    let totalBarisAdvance = 0;
 
     if (mode === "gabung-order") {
       // Cabang ini MENGULANG perakitan baris milik picklist-pdf karena butuh
@@ -1003,6 +1010,11 @@ export async function GET(request: Request) {
           };
         }),
       ];
+      // Basis hitung yang SAMA dengan header PDF — dari array mentah ini, bukan dari `baris`
+      // yang sudah digabung per SKU. Memakai `baris` akan menghitung SKU unik, sehingga
+      // angkanya beda dari kertas justru saat order punya item berulang.
+      totalBarisOrder = barisGabung.filter((b) => b.jenis === "order").length;
+      totalBarisAdvance = barisGabung.filter((b) => b.jenis === "advance").length;
       kolom = ["No", "Nama Produk", "SKU", "Lokasi Gudang", "Quantity Total"];
       // SEKALI urut saja: `gabungPerSku` sudah mengurutkan hasilnya (lewat
       // `urutkanBarisGabung` di lib) dan lembar PDF memakai fungsi yang sama, jadi urutan
@@ -1078,8 +1090,16 @@ export async function GET(request: Request) {
       total_unit: baris.reduce((s, b) => s + b.qty, 0),
       ada_bermasalah: perluSku,
       // Isi lembar terlihat sebelum dicetak: berapa order dan berapa booking yang ikut.
+      // `total_order`/`total_advance` = entitas UNIK (order/booking), angka yang dipakai
+      // kepala "12 order + 40 advance". `total_baris_order`/`total_baris_advance` = BARIS
+      // yang dicetak, angka yang dipakai header PDF ("40 baris order, 3 baris advance") —
+      // dua-duanya sengaja dikirim supaya layar dan kertas bisa dicocokkan. Mode bukan
+      // `gabung-order` tidak memisah order/advance, jadi keduanya 0; barisnya sudah
+      // dilaporkan `total_baris` (dipakai klien sebagai "N baris SKU").
       total_order: totalOrder,
       total_advance: totalAdvance,
+      total_baris_order: totalBarisOrder,
+      total_baris_advance: totalBarisAdvance,
       judul: judul[mode],
     });
   }

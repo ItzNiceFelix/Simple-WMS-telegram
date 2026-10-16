@@ -141,25 +141,6 @@ export interface BarisKekurangan {
   alasan: AlasanKekurangan;
 }
 
-/**
- * Satu baris halaman "Produk Total" (`GET /api/baca?scope=produk-total`).
- * Hanya kolom yang dirender: identitas + lokasi + angka total. Tanpa hpp/biaya —
- * halaman ini boleh dibuka admin, bukan cuma owner.
- */
-export interface ProdukTotalRow {
-  kode_barang: string;
-  nama_accurate: string | null;
-  /** Gudang positif dengan qty terbesar. "" = tidak ada stok positif di gudang mana pun. */
-  lokasi_gudang: string;
-  /** "+KODE2, KODE3" — gudang positif lain setelah yang dominan. "" bila tidak ada. */
-  gudang_lain: string;
-  /** SUM(stock_by_bin.qty) seluruh gudang. Bisa negatif. */
-  quantity_total: number;
-}
-
-/** Kunci urut yang DIIZINKAN server untuk scope `produk-total`. Kunci asing -> server pakai "nama". */
-export type UrutProdukTotal = "nama" | "sku" | "lokasi" | "qty";
-
 /** v5 (F1): koleksi gudang/{gudang_id}. */
 export interface GudangDoc {
   gudang_id: string;

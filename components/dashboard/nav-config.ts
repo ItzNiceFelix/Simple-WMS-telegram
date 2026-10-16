@@ -6,7 +6,6 @@ import {
   ClipboardList,
   History,
   LayoutDashboard,
-  ListOrdered,
   Package,
   PackageSearch,
   Send,
@@ -38,9 +37,6 @@ export interface NavItem {
 export const NAV_ITEMS: NavItem[] = [
   { href: "/", label: "Ringkasan", icon: LayoutDashboard, roles: ["owner", "high_admin", "admin", "designer", "guest"], utama: true },
   { href: "/stok", label: "Stok", icon: PackageSearch, roles: ["owner", "high_admin", "admin"], utama: true },
-  // `ListOrdered` (bukan PackageSearch lagi) supaya dua entri bersebelahan tidak tampak
-  // sama di sidebar; ikon hanya beda tampilan — hak akses ditentukan `roles` di bawah.
-  { href: "/produk-total", label: "Produk Total", icon: ListOrdered, roles: ["owner", "high_admin", "admin"] },
   { href: "/histori", label: "Histori", icon: History, roles: ["owner", "high_admin", "admin"], utama: true },
   { href: "/draft", label: "Draft", icon: ClipboardList, roles: ["owner", "high_admin", "admin"], utama: true },
   { href: "/order", label: "Order", icon: Package, roles: ["owner", "high_admin", "admin"], utama: true },

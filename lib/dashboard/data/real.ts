@@ -11,7 +11,6 @@ import { adalahProviderAi } from "../providerAi.mjs";
 import type {
   BarisKekurangan,
   DailyRequestDoc,
-  ProdukTotalRow,
   Role,
   StockFilter,
   StockRow,
@@ -20,7 +19,6 @@ import type {
   DataSource,
   MovementFilter,
   ProdukDetail,
-  ProdukTotalFilter,
   RingkasanIrisan,
 } from "./index";
 
@@ -133,25 +131,6 @@ export function makeRealDataSource(_getRole: () => Role): DataSource {
     return { rows: baris as unknown as StockRow[], total: data.total ?? baris.length };
   }
 
-  /**
-   * Halaman "Produk Total": urutan + paginasi dikerjakan server.
-   *
-   * Klien sengaja TIDAK mengurutkan ulang hasil — kalau ia mengurutkan halaman yang baru
-   * diterima, yang terurut cuma 50 baris yang tampil sementara sisanya tetap urutan SQL,
-   * dan tombol halaman berikutnya akan menampilkan lompatan tak masuk akal.
-   */
-  async function rowsProdukTotal(
-    opts: ProdukTotalFilter = {}
-  ): Promise<{ rows: ProdukTotalRow[]; total: number }> {
-    const data = await bacaServer<{ rows: ProdukTotalRow[]; total: number }>("produk-total", {
-      ...(opts.halaman ? { halaman: String(opts.halaman) } : {}),
-      ...(opts.ukuran ? { ukuran: String(opts.ukuran) } : {}),
-      ...(opts.urut ? { urut: opts.urut } : {}),
-      ...(opts.arah ? { arah: opts.arah } : {}),
-    });
-    return { rows: data.rows ?? [], total: data.total ?? 0 };
-  }
-
   return {
     async getSession() {
       const s = await sesi();
@@ -212,10 +191,6 @@ export function makeRealDataSource(_getRole: () => Role): DataSource {
     async listKekurangan(): Promise<BarisKekurangan[]> {
       const data = await bacaServer<{ rows: BarisKekurangan[] }>("kekurangan", {});
       return data.rows;
-    },
-
-    async listProdukTotal(filter) {
-      return rowsProdukTotal(filter);
     },
 
     async getProduk(kode: string): Promise<ProdukDetail | null> {

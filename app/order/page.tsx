@@ -175,6 +175,13 @@ type DataPreviewPicklist = {
   // booking_sn masih `menunggu` dan membuang yang tidak), jadi angka server yang benar.
   total_order?: number;
   total_advance?: number;
+  // BARIS yang dicetak di sisi order/advance — angka yang dipakai header PDF ("N baris
+  // order, M baris advance"). `total_order` menghitung ENTITAS unik, jadi satu order
+  // berisi 3 item = 1 di `total_order` tetapi 3 di sini. Dikirim terpisah supaya picker
+  // bisa mencocokkan layar dengan kertas yang sudah tercetak. Hanya terisi di mode
+  // `gabung-order` (satu-satunya yang memisah order/advance); mode lain 0.
+  total_baris_order?: number;
+  total_baris_advance?: number;
   // Urutan yang DIMINTA saat data ini dimuat. Ditulis klien saat respons dipasang, bukan
   // dikirim server: server hanya mengabari urut/arah EFEKTIF-nya, dan yang dibutuhkan Export
   // adalah pasangan "isi tabel ini dimuat untuk sort apa" — supaya lembar selalu mengikuti
@@ -1305,17 +1312,38 @@ function DaftarOrder() {
             <>
               {/* Ringkasan teks, bukan cuma angka di dalam tabel: baris & unit adalah dua angka
                   yang dipakai picker untuk memutuskan lembar ini masuk akal, dan keduanya harus
-                  terbaca di HP tanpa menggulir tabel ke bawah. */}
-              {/* Apa yang IKUT, disebut eksplisit. Keluhan pemilik berakar pada mode yang
+                  terbaca di HP tanpa menggulir tabel ke bawah.
+
+                  Apa yang IKUT, disebut eksplisit. Keluhan pemilik berakar pada mode yang
                   diam-diam memasukkan barang yang tidak dia pilih; satu baris ini membuat
                   perilaku itu mustahil disalahpahami tanpa membuka daftar di belakang.
                   Angka sisi order/advance diambil dari SERVER, bukan dari centang klien:
                   server memverifikasi tiap booking_sn masih `menunggu` dan membuang yang
-                  tidak, jadi centang klien bisa lebih banyak daripada yang benar-benar ikut. */}
+                  tidak, jadi centang klien bisa lebih banyak daripada yang benar-benar ikut.
+
+                  Dua satuan angka, karena kertas memakai yang kedua:
+                  - "order/advance"  = ENTITAS unik (server, `hitungOrderUnik`) — yang dipilih user.
+                  - "baris order/advance" = BARIS yang dicetak, SAMA dengan header PDF
+                    ("N baris order, M baris advance"). Satu order berisi 3 item = 1 order,
+                    3 baris; tanpa angka kedua ini layar tak bisa dicocokkan dengan kertas.
+                  `total_baris` (baris tabel, sudah digabung per SKU) tetap ditampilkan
+                  sebagai "N baris SKU" agar tidak tertukar dengan jumlah baris cetak. */}
               <p className="text-sm text-muted-foreground" data-testid="isi-preview-picklist">
-                {(preview.total_order ?? terpilih.size)} order
-                {modePicklist === "gabung-order" ? ` + ${preview.total_advance ?? bookingTerpilih.size} advance` : ""} ·{" "}
-                {preview.total_baris} baris · {preview.total_unit} unit
+                {modePicklist === "gabung-order" ? (
+                  <>
+                    {preview.total_order ?? terpilih.size} order
+                    {" · "}
+                    {preview.total_baris_order ?? preview.total_baris} baris
+                    {" + "}
+                    {preview.total_advance ?? bookingTerpilih.size} advance
+                    {" · "}
+                    {preview.total_baris_advance ?? 0} baris
+                    {" · "}
+                  </>
+                ) : (
+                  <>{preview.total_order ?? terpilih.size} order · </>
+                )}
+                {preview.total_baris} baris SKU · {preview.total_unit} unit
               </p>
               {preview.ada_bermasalah > 0 ? (
                 <Alert data-testid="peringatan-perlu-sku-preview-picklist">

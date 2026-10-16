@@ -70,14 +70,11 @@ import type {
   UbahRoleAdminResponse,
   UbahNamaAdminRequest,
   UbahNamaAdminResponse,
-  ProdukTotalRow,
-  UrutProdukTotal,
 } from "../types";
 import type {
   DataSource,
   MovementFilter,
   ProdukDetail,
-  ProdukTotalFilter,
   RingkasanIrisan,
 } from "./index";
 import { guardHapusMock, superAdminMock, validasiHppMock } from "./mock-paritas.mjs";
@@ -752,74 +749,6 @@ export function makeMockDataSource(getRole: () => Role): DataSource {
       const offset = filter?.offset ?? 0;
       const limit = filter?.limit ?? urut.length;
       return { rows: urut.slice(offset, offset + limit), total: urut.length };
-    },
-
-    async listProdukTotal(filter: ProdukTotalFilter): Promise<{ rows: ProdukTotalRow[]; total: number }> {
-      await delay();
-      // Paritas real.ts: lokasi = gudang positif terbesar, sisanya penanda "+KODE";
-      // quantity_total = jumlah seluruh gudang. Urutan + irisan dilakukan di sini
-      // ("sisi server" mock) supaya halaman tidak perlu tahu bedanya.
-      //
-      // `totalQty` menyimpan NULL bila produk TIDAK punya baris stock_by_bin sama sekali,
-      // persis seperti `agg.total_qty` di SQL. Baris null itulah yang HARUS terurut sama
-      // dengan SQLite (NULL terkecil: pertama saat ASC, terakhir saat DESC). Kalau di sini
-      // ia diganti 0, mock menaruh produk tanpa stok di tengah daftar dan uji UI membuktikan
-      // urutan yang tidak pernah terjadi di produksi — sementara payload yang dirender tetap
-      // "0", jadi bedanya tidak kelihatan sampai ada yang memperhatikan posisinya.
-      type BarisDalam = Omit<ProdukTotalRow, "quantity_total"> & { totalQty: number | null };
-      const semua: BarisDalam[] = store.produk.map((p) => {
-        const qty = bacaQtyPerGudangMock(stokByKode(p.kode_barang));
-        const positif = Object.entries(qty)
-          .filter(([, n]) => n > 0)
-          .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-        const nilai = Object.values(qty);
-        return {
-          kode_barang: p.kode_barang,
-          nama_accurate: p.nama_accurate ?? null,
-          lokasi_gudang: positif[0]?.[0] ?? "",
-          gudang_lain: positif.length > 1 ? `+${positif.slice(1).map(([id]) => id).join(", ")}` : "",
-          totalQty: nilai.length === 0 ? null : nilai.reduce((n, v) => n + v, 0),
-        };
-      });
-
-      const arah = filter.arah === "desc" ? -1 : 1;
-      const kunci: UrutProdukTotal = filter.urut ?? "nama";
-      // Nilai urut: number | null untuk qty (null = tanpa stok), string untuk sisanya.
-      const nilai = (r: BarisDalam): string | number | null =>
-        kunci === "sku" ? r.kode_barang
-        : kunci === "lokasi" ? r.lokasi_gudang
-        : kunci === "qty" ? r.totalQty
-        : r.nama_accurate ?? "";
-      const urut = semua.slice().sort((a, b) => {
-        const x = nilai(a);
-        const y = nilai(b);
-        // Lokasi kosong selalu di bawah, sama seperti server; lalu tiebreaker `sku` agar
-        // paginasi tidak bisa menampilkan baris yang sama dua kali.
-        if (kunci === "lokasi") {
-          const kosong = Number(x === "") - Number(y === "");
-          if (kosong !== 0) return kosong;
-        }
-        // NULL lebih kecil dari apa pun (aturan SQLite), jadi ASC menaruhnya di depan dan
-        // DESC di belakang — sama dengan `agg.total_qty` di server.
-        const nullX = x === null;
-        const nullY = y === null;
-        if (nullX || nullY) return nullX === nullY ? 0 : (nullX ? -1 : 1) * arah;
-        const cmp =
-          typeof x === "number" && typeof y === "number"
-            ? x - y
-            : String(x).localeCompare(String(y), "id");
-        return cmp !== 0 ? cmp * arah : a.kode_barang.localeCompare(b.kode_barang);
-      });
-
-      const ukuran = Math.min(Math.max(1, filter.ukuran ?? 50), 200);
-      const halaman = Math.max(1, filter.halaman ?? 1);
-      const offset = (halaman - 1) * ukuran;
-      // Payload memakai `?? 0` sama seperti server (`r.total_qty ?? 0`): yang dirender
-      // selalu angka. NULL hanya penting untuk URUTAN, dan itu sudah selesai di atas.
-      const rows: ProdukTotalRow[] = urut
-        .slice(offset, offset + ukuran)
-        .map(({ totalQty, ...sisa }) => ({ ...sisa, quantity_total: totalQty ?? 0 }));
-      return { rows, total: urut.length };
     },
 
     async listKekurangan(): Promise<BarisKekurangan[]> {

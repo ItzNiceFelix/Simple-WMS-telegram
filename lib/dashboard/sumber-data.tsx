@@ -227,7 +227,6 @@ function dataKosong(): DataSource {
     listStock: tolak,
     listStockHalaman: tolak,
     listKekurangan: tolak,
-    listProdukTotal: tolak,
     getProduk: tolak,
     listMovements: tolak,
     listDailyRequests: tolak,

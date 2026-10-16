@@ -63,6 +63,13 @@ function balasan(mode: string, urut: string, arah: string, adaBermasalah: number
     total_baris: 2,
     total_unit: 19,
     ada_bermasalah: adaBermasalah,
+    // Angka sisi order/advance dari server. `total_order` = ENTITAS unik, `total_baris_order`
+    // = BARIS cetak (dua nilai SENGAJA beda, seperti di produksi saat satu order berisi
+    // beberapa item) — uji ini memastikan UI menampilkan KEDUANYA.
+    total_order: 2,
+    total_baris_order: 4,
+    total_advance: 1,
+    total_baris_advance: 1,
     judul: `PICKLIST ${mode.toUpperCase()} — PRATINJAU`,
   };
 }
@@ -145,7 +152,10 @@ test("pratinjau merender kolom DARI server + ringkasan baris/unit", async ({ pag
   await expect(page.getByTestId("tabel-preview-picklist").locator("th")).toHaveText([
     "No", "Nama Produk", "SKU", "Lokasi Gudang", "Quantity Total",
   ]);
-  await expect(page.getByTestId("isi-preview-picklist")).toContainText("2 baris · 19 unit");
+  // Satuan "baris SKU" menyebut baris TABEL (agregat per SKU) supaya tidak tertukar dengan
+  // jumlah baris cetak di sisi kiri ("4 baris" + "1 baris").
+  await expect(page.getByTestId("isi-preview-picklist")).toContainText("2 baris SKU · 19 unit");
+  await expect(page.getByTestId("isi-preview-picklist")).toContainText("2 order · 4 baris + 1 advance · 1 baris");
 });
 
 test("mode pisah tidak menampilkan kolom Lokasi Gudang", async ({ page }) => {
@@ -227,7 +237,7 @@ test("hanya booking_sn yang dicentang yang dikirim sebagai `booking`", async ({ 
   await expect.poll(() => permintaanPreview.length).toBeGreaterThan(0);
   const booking = new URL(permintaanPreview.at(-1)!).searchParams.get("booking");
   expect(booking).toBe('["ADV-2"]');
-  await expect(page.getByTestId("isi-preview-picklist")).toContainText("2 order + 1 advance");
+  await expect(page.getByTestId("isi-preview-picklist")).toContainText("2 order · 4 baris + 1 advance · 1 baris");
 });
 
 test("tanpa order tapi ada advance terpilih: pratinjau tetap bisa dibuka", async ({ page }) => {
