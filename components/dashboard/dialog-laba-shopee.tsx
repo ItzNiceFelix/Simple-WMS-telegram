@@ -175,6 +175,21 @@ export function DialogLabaShopee({
       }
       // Jumlah tanggal, bukan satu tanggal: satu berkas bisa menjadi banyak snapshot.
       toast.success(`Perhitungan tersimpan untuk ${raw.tanggal.length} tanggal.`);
+      // Riwayat impor dicatat di sini, bukan di route: route /api/laba melayani hitung DAN
+      // simpan, dan hanya "simpan" yang layak muncul di halaman Sinkronisasi.
+      void fetch("/api/sinkronisasi", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          presetId: preset.id,
+          jenis: "laba",
+          file: file?.name ?? "",
+          baris: raw.tanggal.length,
+          gagal: 0,
+          ringkas: `${raw.tanggalPenuh.length} penuh, ${raw.tanggalParsial.length} sebagian`,
+        }),
+      }).catch(() => undefined);
       tutup(false);
       onSukses?.();
     } catch {

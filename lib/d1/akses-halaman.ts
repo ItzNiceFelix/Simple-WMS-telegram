@@ -28,6 +28,8 @@ const SEMUA_HALAMAN = [
   "/permintaan-gudang",
   "/permintaan",
   "/analisa",
+  "/sinkronisasi",
+  "/printing",
   "/admin",
   "/pengaturan",
   "/profil",
@@ -45,7 +47,7 @@ export const AKSES_HALAMAN: Record<Role, readonly string[]> = {
   // selain AI tetap cek is_owner sendiri di servernya).
   admin: [
     "/", "/stok", "/histori", "/draft", "/order", "/laba", "/harga-jual",
-    "/opname-gudang", "/permintaan-gudang", "/permintaan", "/analisa", "/admin",
+    "/opname-gudang", "/permintaan-gudang", "/permintaan", "/analisa", "/sinkronisasi", "/printing", "/admin",
     "/pengaturan", "/profil", "/ai-gambar", "/advance",
   ],
   designer: ["/", "/profil", "/ai-gambar"],

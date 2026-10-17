@@ -18,7 +18,7 @@
 import { getDb } from "@/lib/d1/db";
 import { ambilProduk, ambilProdukBanyak, normalisasiNama } from "@/lib/d1/produk";
 import {
-  ambilOrderBanyak, imporPesanan, labaPerOrder, listOrder, listOrderBerSku, transisiFulfill,
+  ambilOrderBanyak, imporPesanan, labaPerOrder, listOrder, listOrderBerSku, petaCetak, transisiFulfill,
   KOLOM_URUT_ORDER, type ArahUrut, type BarisPesanan, type KolomUrutOrder,
 } from "@/lib/d1/order";
 import { transisiFulfillBatch, type KeFulfill } from "@/lib/d1/orderTransisi";
@@ -228,6 +228,25 @@ type HasilSusun = {
  * satu SKU yang muncul di 50 baris cukup satu kueri, dan itulah yang menjaga jalur bertahap
  * tetap di bawah anggaran subrequest.
  */
+/**
+ * Ekspresi SQL untuk `status_fulfill` saat order SUDAH ada.
+ *
+ * DUA ATURAN YANG MENGIKAT:
+ *   1. Batal/retur adalah keadaan TERMINAL: sekali batal, impor mana pun tidak boleh
+ *      menghidupkannya kembali. Menghidupkan order batal akan membuat picklist meminta barang
+ *      yang sudah tidak dijual dan laba menghitung omzet yang batal.
+ *   2. Tanpa `perbaruiStatus`, status lama DIPERTAHANKAN kecuali masih 'pending'. Impor ulang
+ *      berkas lama (mis. file minggu lalu) tidak boleh memundurkan order yang sudah dikirim.
+ * Dengan `perbaruiStatus`, status mengikuti berkas KECUALI kasus batal di atas — arah maju
+ * maupun koreksi (kirim -> belum dikirim) diperbolehkan, karena itu keputusan user.
+ */
+function aturStatusFulfill(perbarui: boolean): string {
+  if (!perbarui) {
+    return "CASE WHEN orders.status_fulfill = 'pending' THEN excluded.status_fulfill ELSE orders.status_fulfill END";
+  }
+  return "CASE WHEN orders.status_fulfill = 'batal' THEN 'batal' ELSE excluded.status_fulfill END";
+}
+
 async function susunPernyataanOrder(
   db: D1Database,
   batchId: number,
@@ -237,6 +256,11 @@ async function susunPernyataanOrder(
     skuManual: Map<string, string>;
     kunciBelumMp: Set<string>;
     ambilProdukCache: Map<string, { hpp: number } | null>;
+    /**
+     * Perbarui `status_fulfill` dari berkas untuk order yang SUDAH ada. Default false:
+     * impor ulang berkas lama tidak boleh memundurkan order yang sudah dikirim.
+     */
+    perbaruiStatus?: boolean;
   },
 ): Promise<HasilSusun> {
   const stmts: StmtOrder[] = [];
@@ -280,7 +304,7 @@ async function susunPernyataanOrder(
              jasa_kirim = excluded.jasa_kirim, tipe_layanan = excluded.tipe_layanan, cod = excluded.cod, preorder = excluded.preorder, item_json = excluded.item_json,
              preset_id = excluded.preset_id,
              asal_import = CASE WHEN orders.asal_import = '' THEN excluded.asal_import ELSE orders.asal_import END,
-             status_fulfill = CASE WHEN orders.status_fulfill = 'pending' THEN excluded.status_fulfill ELSE orders.status_fulfill END`,
+             status_fulfill = ${aturStatusFulfill(opsi.perbaruiStatus === true)}`,
         )
         .bind(
           o.no_pesanan, o.tanggal, o.buyer, o.statusAwal, o.noResi,
@@ -1144,6 +1168,11 @@ export async function GET(request: Request) {
   const laba = f.filter.presetId
     ? await labaPerOrder(db, f.filter.presetId, daftar.map((h) => h.no_pesanan))
     : null;
+  // Status cetak: sama aturannya dengan laba — hanya saat preset dikirim, dan hanya untuk
+  // nomor di halaman ini. Satu query per halaman, bukan per baris.
+  const cetak = f.filter.presetId
+    ? await petaCetak(db, f.filter.presetId, daftar.map((h) => h.no_pesanan))
+    : null;
   // `undefined` (bukan 0) saat tak ada baris: JSON membuang kuncinya, klien merender "—".
   const orders = laba
     ? rinci.map((o) => {
@@ -1154,6 +1183,7 @@ export async function GET(request: Request) {
         margin: l?.margin,
         biaya: l?.biaya,
         laba_tanggal: l?.tanggal_snapshot,
+        dicetak_at: cetak?.get(o.no_pesanan)?.dicetak_at,
       };
     })
     : rinci;
@@ -1317,6 +1347,9 @@ export async function POST(request: Request) {
       skuManual,
       kunciBelumMp,
       ambilProdukCache: new Map(),
+      // Hanya jalur potongan yang menerimanya: dialog impor mengirim satu opsi untuk seluruh
+      // berkas, dan setiap potongan HARUS memakai aturan yang sama.
+      perbaruiStatus: body.perbaruiStatus === true,
     });
     if (susunan.pesanKurangSku) return json({ ok: false, error: susunan.pesanKurangSku }, 400);
     if (susunan.produkPenanda.length > 0) {
@@ -1628,6 +1661,7 @@ export async function POST(request: Request) {
       skuManual,
       kunciBelumMp,
       ambilProdukCache: new Map(),
+      perbaruiStatus: body.perbaruiStatus === true,
     });
     if (susunan.pesanKurangSku) return json({ ok: false, error: susunan.pesanKurangSku }, 400);
     const stmts = susunan.stmts;

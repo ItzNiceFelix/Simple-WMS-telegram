@@ -8,6 +8,7 @@
 //
 // Analisa cepat langsung tampil tanpa tombol dan tanpa AI — angka benar harus selalu
 // bisa didapat tanpa menunggu model dan tanpa biaya token.
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ChartNoAxesCombined, ChevronRight, Info, Lightbulb, Megaphone, SlidersHorizontal, Sparkles, TriangleAlert,
@@ -730,36 +731,21 @@ function Analisa() {
 
             {/* ══ TAB SARAN IKLAN ══ */}
             <TabsContent value="iklan" className="flex flex-col gap-4">
-              {/* Impor CSV iklan — supaya biaya iklan nyata bisa dipakai, bukan hanya titik impas */}
+              {/* Impor iklan DIPINDAH ke /sinkronisasi: satu tempat untuk semua impor.
+                  Kartu ini tinggal memberi jalan, bukan menjadi jalur kedua yang bisa
+                  menyimpang aturannya. */}
               <Card data-testid="kartu-impor-iklan">
                 <CardHeader>
-                  <CardTitle className="text-base">Impor data iklan</CardTitle>
+                  <CardTitle className="text-base">Data iklan</CardTitle>
                   <CardDescription>
-                    Unggah <b>Laporan Iklan</b> dari Shopee (CSV). Tanpa data ini, halaman hanya bisa
-                    menghitung titik impas teoretis — belum bisa menilai apakah iklan yang berjalan
-                    menguntungkan.
+                    Unggah <b>Laporan Iklan</b> Shopee (CSV) di halaman Sinkronisasi. Tanpa data ini,
+                    halaman hanya bisa menghitung titik impas teoretis.
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="flex flex-wrap items-center gap-3">
-                  <input
-                    ref={berkasIklanRef}
-                    type="file"
-                    accept=".csv"
-                    className="hidden"
-                    data-testid="berkas-iklan"
-                    onChange={(e) => {
-                      const f = e.target.files?.[0];
-                      if (f) void unggahIklan(f);
-                    }}
-                  />
-                  <Button
-                    variant="outline"
-                    className="h-11 md:h-8"
-                    onClick={() => berkasIklanRef.current?.click()}
-                    data-testid="tombol-pilih-iklan"
-                  >
+                  <Button variant="outline" className="h-11 md:h-8" render={<Link href="/sinkronisasi" />} data-testid="tombol-pilih-iklan">
                     <Megaphone className="size-4" aria-hidden />
-                    Pilih berkas Iklan
+                    Buka Sinkronisasi
                   </Button>
                   <span className="text-xs text-muted-foreground">
                     Baris iklan dipetakan lewat tab <b>Peta SKU</b>; yang belum dipetakan akan dilewati.

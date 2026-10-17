@@ -159,6 +159,12 @@ export function DialogImportOrder({ open, onOpenChange, onSukses, preset }: Prop
   const [hasil, setHasil] = useState<HasilBerkas[] | null>(null)
   const [mengirim, setMengirim] = useState(false)
   const [progres, setProgres] = useState<{ nama: string; ke: number; dari: number } | null>(null)
+  /**
+   * Perbarui `status_fulfill` dari berkas. Default MATI: impor ulang berkas lama tidak boleh
+   * memundurkan order yang sudah dikirim. Saat dicentang, status mengikuti berkas — kecuali
+   * order yang sudah batal, yang tetap batal (aturan server).
+   */
+  const [perbaruiStatus, setPerbaruiStatus] = useState(false)
   const [manual, setManual] = useState<Record<string, string>>({})
   const [master, setMaster] = useState<OpsiSku[]>([])
   const [tandai, setTandai] = useState<Set<string>>(new Set())
@@ -457,6 +463,22 @@ export function DialogImportOrder({ open, onOpenChange, onSukses, preset }: Prop
       )
       // Daftar order di belakang dialog perlu disegarkan walau dialog tetap terbuka: order
       // yang sehat SUDAH tersimpan walau ada baris dilewati.
+      // Riwayat impor Order dicatat di halaman Sinkronisasi; kegagalan mencatat tidak
+      // membatalkan impor yang sudah tersimpan.
+      void fetch("/api/sinkronisasi", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        // `total.order` = order yang benar-benar tersimpan; `dilewati` = baris yang ditolak.
+        body: JSON.stringify({
+          presetId: preset?.id ?? 0,
+          jenis: "order",
+          file: sukses.join(", ").slice(0, 200),
+          baris: total.order,
+          gagal: dilewati.length,
+          ringkas: `${sukses.length} berkas${gagal.length > 0 ? `, ${gagal.length} gagal` : ""}`,
+        }),
+      }).catch(() => undefined);
       onSukses?.()
       // Ada baris ditolak → JANGAN tutup dialog; user harus melihat mana yang perlu diperbaiki.
       if (dilewati.length === 0) tutup(false)
@@ -575,6 +597,7 @@ export function DialogImportOrder({ open, onOpenChange, onSukses, preset }: Prop
         aksi: "impor-potong",
         batchId,
         presetId,
+        perbaruiStatus,
         nomorPotong,
         potongan: bagian,
         skuManual: skuManual.filter((m) => noPesananPotong.has(m.order_ref)),
@@ -970,6 +993,15 @@ export function DialogImportOrder({ open, onOpenChange, onSukses, preset }: Prop
                   melanjutkan. Pilih "Mulai dari awal" untuk mengimpor ulang berkas ini dari nol.
                 </p>
               )}
+              <label className="mr-auto flex items-center gap-1.5 text-xs" data-testid="perbarui-status-import-order">
+                <input
+                  type="checkbox"
+                  checked={perbaruiStatus}
+                  onChange={(e) => setPerbaruiStatus(e.target.checked)}
+                  disabled={mengirim}
+                />
+                Perbarui status dari berkas
+              </label>
               <Button
                 variant="outline"
                 onClick={mulaiDariAwal}

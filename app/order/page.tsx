@@ -70,6 +70,8 @@ type RincianOrder = OrderDetail & {
   margin?: number | null;
   biaya?: number;
   laba_tanggal?: string;
+  /** Epoch detik cetak TERAKHIR (tabel `order_cetak`). Tidak ada = belum pernah dicetak. */
+  dicetak_at?: number;
 };
 type Target = { mp: string; no: string; ke: string };
 
@@ -1157,6 +1159,7 @@ function DaftarOrder() {
                       <TableHead className="text-right">Estimasi laba</TableHead>
                       <TableHead className="text-right">Margin</TableHead>
                       <TableHead className="text-right">Biaya</TableHead>
+                      <TableHead>Cetak</TableHead>
                     </>
                   )}
                   <TableHead>Pengiriman</TableHead>
@@ -1218,6 +1221,20 @@ function DaftarOrder() {
                           title={o.laba_tanggal ? `Impor laba ${o.laba_tanggal}` : undefined}
                         >
                           {o.biaya == null ? <span className="text-muted-foreground">—</span> : formatRupiah(o.biaya)}
+                        </TableCell>
+                        {/* Badge cetak: waktu terakhir resi ini keluar dari printer. Nomor resi
+                            yang sudah dibuat tapi belum dicetak ditandai terpisah — dua keadaan
+                            itu berbeda dan hanya yang kedua berarti label sudah di tangan. */}
+                        <TableCell className="whitespace-nowrap text-xs" data-testid={`cetak-${o.no_pesanan}`}>
+                          {o.dicetak_at ? (
+                            <Badge variant="secondary">
+                              {formatTanggalJamWibBagian(o.dicetak_at, "tanggal")} {formatTanggalJamWibBagian(o.dicetak_at, "jam")}
+                            </Badge>
+                          ) : o.no_resi ? (
+                            <span className="text-muted-foreground">resi ada</span>
+                          ) : (
+                            <span className="text-muted-foreground">—</span>
+                          )}
                         </TableCell>
                       </>
                     )}

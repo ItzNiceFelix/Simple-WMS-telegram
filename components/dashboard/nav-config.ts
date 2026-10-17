@@ -8,6 +8,8 @@ import {
   LayoutDashboard,
   Package,
   PackageSearch,
+  Printer,
+  RefreshCw,
   Send,
   Settings,
   ShieldCheck,
@@ -47,6 +49,8 @@ export const NAV_ITEMS: NavItem[] = [
   { href: "/permintaan-gudang", label: "Permintaan Gudang", icon: Send, roles: ["owner", "high_admin", "admin"] },
   { href: "/permintaan", label: "Permintaan", icon: Send, roles: ["owner", "high_admin", "admin"] },
   { href: "/analisa", label: "Analisa", icon: ChartNoAxesCombined, roles: ["owner", "high_admin", "admin"] },
+  { href: "/sinkronisasi", label: "Sinkronisasi", icon: RefreshCw, roles: ["owner", "high_admin", "admin"] },
+  { href: "/printing", label: "Printing", icon: Printer, roles: ["owner", "high_admin", "admin"] },
   { href: "/admin", label: "Admin", icon: ShieldCheck, roles: ["owner", "high_admin", "admin"] },
   // high_admin sengaja TIDAK di sini: /pengaturan berisi konfigurasi AI (kredensial/model/prompt).
   { href: "/pengaturan", label: "Pengaturan", icon: Settings, roles: ["owner", "admin"], utama: true },

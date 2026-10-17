@@ -224,6 +224,32 @@ export async function listOrder(
 }
 
 /**
+ * Waktu cetak terakhir per order (tabel `order_cetak`).
+ *
+ * Hanya menerima nomor dari SATU halaman daftar: tabel tumbuh seiring jumlah resi yang
+ * dicetak, dan memindai seluruhnya untuk menampilkan 25 baris akan membayar biaya baca yang
+ * tidak sepadan. Nomor tanpa baris tidak masuk Map — klien merender "—", bukan 0.
+ */
+export async function petaCetak(
+  db: D1Database,
+  presetId: number,
+  noPesanan: string[]
+): Promise<Map<string, { dicetak_at: number; no_resi: string }>> {
+  const peta = new Map<string, { dicetak_at: number; no_resi: string }>();
+  const unik = [...new Set(noPesanan.filter(Boolean))];
+  for (let i = 0; i < unik.length; i += 90) {
+    const bagian = unik.slice(i, i + 90);
+    const tanda = bagian.map(() => "?").join(",");
+    const { results } = await db
+      .prepare(`SELECT no_pesanan, no_resi, dicetak_at FROM order_cetak WHERE preset_id = ? AND no_pesanan IN (${tanda})`)
+      .bind(presetId, ...bagian)
+      .all<{ no_pesanan: string; no_resi: string; dicetak_at: number }>();
+    for (const r of results ?? []) peta.set(r.no_pesanan, { dicetak_at: r.dicetak_at, no_resi: r.no_resi });
+  }
+  return peta;
+}
+
+/**
  * Daftar order yang PUNYA `sku` tertentu — jalur filter SKU halaman order.
  *
  * Kenapa terpisah dari listOrder, bukan "ambil 200 lalu saring di memori": menyaring setelah
