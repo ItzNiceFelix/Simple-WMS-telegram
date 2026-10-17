@@ -217,10 +217,27 @@ export async function simpanPerforma(
   periode: string,
   baris: BarisPeta[],
 ): Promise<void> {
-  const sah = baris.filter((b) => b.sku !== "");
-  if (sah.length === 0) return;
+  // Satu SKU bisa muncul di BANYAK baris (beberapa variasi / kode produk memakai SKU yang
+  // sama). Upsert per (preset, periode, sku) tidak idempoten untuk kasus itu: pernyataan
+  // yang sama dikirim dua kali dalam satu batch → bentrok UNIQUE → impor gagal. Jumlahkan
+  // metriknya per SKU, karena performa produk memang dilaporkan per SKU, bukan per variasi.
+  const perSku = new Map<string, BarisPeta>();
+  for (const b of baris) {
+    if (b.sku === "") continue;
+    const lama = perSku.get(b.sku);
+    if (!lama) { perSku.set(b.sku, { ...b }); continue; }
+    lama.dilihat += b.dilihat;
+    lama.klik += b.klik;
+    lama.kunjungan += b.kunjungan;
+    lama.keranjang += b.keranjang;
+    lama.pesanan += b.pesanan;
+    lama.omzet += b.omzet;
+    lama.tanpaBeli += b.tanpaBeli;
+  }
+  if (perSku.size === 0) return;
   const at = sekarang();
-  const stmts = sah.map((b) =>
+  // Kunci unik dijamin oleh Map: tidak ada pernyataan kembar dalam satu batch.
+  const stmts = [...perSku.values()].map((b) =>
     db
       .prepare(
         "INSERT INTO performa_produk (preset_id, periode, sku, dilihat, klik, kunjungan, keranjang, pesanan, omzet, melihat_tanpa_beli, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) " +

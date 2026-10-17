@@ -127,7 +127,14 @@ export async function imporPerforma(
   // sehingga riwayat hilang dan delta/ranking antar periode mustahil dihitung.
   const periode = periodeDariTanggal(rows);
 
-  await simpanPetaProduk(db, hasil.baris);
+  // Satu kode produk bisa menghasilkan BANYAK baris (satu per variasi). Upsert per
+  // (kode_produk, sku) tidak idempoten untuk kasus itu: D1 menjalankan pernyataan yang
+  // sama dua kali dalam satu batch/D1 → bentrok UNIQUE → error. Dedup per kunci dulu;
+  // baris terakhir menang, yang juga membuat impor ulang tidak menghapus peta lama.
+  const unik = new Map<string, (typeof hasil.baris)[number]>();
+  for (const b of hasil.baris) unik.set(`${b.kodeProduk}\u0000${b.sku}`, b);
+
+  await simpanPetaProduk(db, [...unik.values()]);
   await simpanPertanyaan(db, hasil.pertanyaan);
   // Hanya baris ber-SKU sah yang masuk `performa_produk` (lihat catatan di `simpanPerforma`).
   await simpanPerforma(db, presetId, periode, hasil.baris);

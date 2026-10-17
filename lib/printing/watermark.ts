@@ -8,10 +8,15 @@
 //   Label resi memuat barcode. Merender ke gambar lalu mencetak ulang menurunkan tepi barcode
 //   dan bisa membuatnya tidak ter-scan. `pdf-lib` menempel halaman ASLI (embedPage) sehingga
 //   barcode tetap vektor, dan hanya menambah lapisan watermark.
-import { PDFDocument, StandardFonts, rgb, type PDFEmbeddedPage, type PDFFont, type PDFImage, type PDFPage } from "pdf-lib";
+//
+// WATERMARK = IKON/MOTIF + NAMA TOKO, bukan kotak teks. Kotak strip lama menghabiskan 20 mm
+// tepi label; label termal 100×150 mm tidak punya ruang untuk itu. Ikon dan tulisan ditaruh
+// sebagai lapisan transparan di atas kiriman, sehingga resi tetap terbaca utuh.
+import { PDFDocument, StandardFonts, degrees, rgb, type PDFEmbeddedPage, type PDFFont, type PDFImage, type PDFPage } from "pdf-lib";
 
 const MM = 72 / 25.4;
 
+/** Posisi lapisan watermark. `tengah` = cap besar sekali; `atas`/`bawah` = motif berulang. */
 export type PosisiWatermark = "bawah" | "atas" | "tengah";
 
 export type OpsiCetak = {
@@ -19,30 +24,27 @@ export type OpsiCetak = {
   tinggiMm: number;
   /** Ukuran kertas lain (A4 dst) memakai lebar sendiri; null = 100 mm. */
   lebarMm?: number | null;
-  /** Tinggi strip watermark (mm). */
-  stripMm: number;
   posisi: PosisiWatermark;
-  teks1: string;
-  teks2: string;
-  teks3: string;
-  /** 0..1 — 1 = hitam penuh. */
+  /** Nama toko yang dicetak di bawah ikon. Kosong = tanpa teks. */
+  namaToko: string;
+  /** 0..1 — 1 = hitam penuh. Berpengaruh ke ikon DAN teks. */
   opacity: number;
-  /** Derajat; hanya dipakai posisi "tengah". */
+  /** Derajat miring. Negatif membalik arah. */
   rotasi: number;
+  /** Ukuran ikon/tulisan (mm). */
+  ikonMm: number;
+  /** Jarak antar-titik motif (mm). Diabaikan untuk cap tengah. */
+  jarakMm: number;
   /** Potong bagian bawah halaman asli (mm) — untuk membuang ruang kosong. */
   cropBawahMm: number;
   /** Geser seluruh halaman asli (mm), ke kanan/atas. */
   geserXMm: number;
   geserYMm: number;
-  /** Logo PNG (sudah hitam-putih) + rasio lebar/tinggi. */
-  logo?: { png: Uint8Array; rasio: number } | null;
-};
-
-export type HalamanSumber = {
-  /** Halaman asli yang akan ditempel. */
-  halaman: PDFJsPageLike;
-  /** Halaman ini ikut dicetak? false = dilewati (halaman kosong yang dihapus user). */
-  cetak: boolean;
+  /**
+   * PNG hitam-putih (dikonversi pemanggil). Logo toko dan gambar watermark unggahan user
+   * memakai jalur render yang sama — hanya sumber berkasnya yang berbeda.
+   */
+  ikon?: { png: Uint8Array; rasio: number } | null;
 };
 
 /** Bagian API pdf.js yang dipakai — cukup sempit untuk diuji tanpa memuat pdf.js. */
@@ -58,28 +60,31 @@ type SumberPdf = { bytes: Uint8Array; halaman: (PDFJsPageLike | null)[] };
  * Susun PDF keluaran.
  *
  * Setiap halaman sumber menjadi SATU halaman keluaran berukuran `lebarMm × tinggiMm`.
- * Halaman asli diperkecil agar muat di area di atas strip (atau di bawahnya untuk posisi
- * "atas"), lalu strip digambar. Ringkasan hasil dikembalikan agar pemanggil bisa memberi
- * tahu user berapa halaman benar-benar tercetak.
+ * Halaman asli memenuhi kertas, lalu watermark digambar di atasnya. Ringkasan hasil
+ * dikembalikan agar pemanggil bisa memberi tahu user berapa halaman benar-benar tercetak.
+ *
+ * `hanyaHalamanPertamaDigambar`: untuk pratinjau. SEMUA halaman tetap disusun dan dihitung
+ * (supaya "N halaman akan dicetak" benar), hanya watermark yang digambar sekali — menggambar
+ * motif 300 kali untuk pratinjau satu halaman membekukan tab.
  */
 export async function bangunPdf(
   sumber: SumberPdf[],
   opsi: OpsiCetak,
-  hanyaPratinjauHalamanPertama = false
+  hanyaHalamanPertamaDigambar = false
 ): Promise<{ bytes: Uint8Array; halaman: number; dilewati: number }> {
   const out = await PDFDocument.create();
   const tebal = await out.embedFont(StandardFonts.HelveticaBold);
-  const biasa = await out.embedFont(StandardFonts.Helvetica);
-  const logo = opsi.logo ? await out.embedPng(opsi.logo.png) : null;
+  const ikon = opsi.ikon ? await out.embedPng(opsi.ikon.png) : null;
+  // Rasio diambil dari gambar yang BENAR-BENAR tertanam: `rasio` kiriman klien hanya
+  // perkiraan dari canvas, dan gambar cacat akan menghasilkan tinggi 0 (tidak tampil).
+  const rasio = ikon ? ikon.width / Math.max(1, ikon.height) : 1;
 
   const lebarMm = opsi.lebarMm ?? 100;
   const W = lebarMm * MM;
   const H = opsi.tinggiMm * MM;
-  const strip = Math.max(10, Math.min(45, opsi.stripMm)) * MM;
-  // Area untuk halaman asli: sisa setelah strip. Posisi "tengah" memakai seluruh tinggi
-  // (strip menimpa konten seperti cap, bukan mengambil ruang) — itu pilihan sadar: label
-  // yang sudah penuh tidak boleh dipaksa mengecil hanya untuk menyediakan ruang watermark.
-  const tinggiArea = opsi.posisi === "tengah" ? H : H - strip;
+  const alfa = Math.max(0.03, Math.min(1, opsi.opacity));
+  const nama = opsi.namaToko.trim().slice(0, 28);
+  const sudut = Math.max(-90, Math.min(90, opsi.rotasi));
 
   let halaman = 0;
   let dilewati = 0;
@@ -92,28 +97,29 @@ export async function bangunPdf(
       // `s.halaman` (mis. informasi halaman gagal dibaca) TETAP dicetak: lebih baik
       // mencetak satu halaman berlebih daripada label pelanggan hilang.
       if (s.halaman[i] === null) { dilewati += 1; continue; }
-      if (hanyaPratinjauHalamanPertama && halaman >= 1) break;
 
       const sp = halamanAsli[i];
       const { width: w, height: h } = sp.getSize();
       const crop = Math.max(0, Math.min(opsi.cropBawahMm * MM, h - 40));
       const emb: PDFEmbeddedPage = await out.embedPage(sp, { left: 0, bottom: crop, right: w, top: h });
       const ch = h - crop;
-      const skala = Math.min(W / w, tinggiArea / ch);
+      // Halaman asli memenuhi kertas. Watermark adalah lapisan, bukan pengambil ruang —
+      // tidak ada isi resi yang dipotong atau mengecil karena watermark.
+      const skala = Math.min(W / w, H / ch);
       const dw = w * skala;
       const dh = ch * skala;
       const x = (W - dw) / 2 + opsi.geserXMm * MM;
-      const yArea = opsi.posisi === "bawah" ? strip : 0;
-      const y = yArea + (tinggiArea - dh) / 2 + opsi.geserYMm * MM;
+      const y = (H - dh) / 2 + opsi.geserYMm * MM;
 
       const p = out.addPage([W, H]);
       p.drawPage(emb, { x, y, width: dw, height: dh });
 
-      if (opsi.posisi === "tengah") gambarTengah(p, W, H, opsi, tebal);
-      else gambarStrip(p, W, strip, opsi.posisi === "atas", opsi, tebal, biasa, logo);
+      if (!hanyaHalamanPertamaDigambar || halaman === 0) {
+        if (opsi.posisi === "tengah") cap(p, W, H, { ikon, rasio, nama, alfa, ikonMm: opsi.ikonMm, sudut, tebal });
+        else motif(p, W, H, { ikon, rasio, nama, alfa, ikonMm: opsi.ikonMm, jarakMm: opsi.jarakMm, sudut, tebal });
+      }
       halaman += 1;
     }
-    if (hanyaPratinjauHalamanPertama && halaman >= 1) break;
   }
 
   return { bytes: await out.save(), halaman, dilewati };
@@ -127,80 +133,105 @@ function ukuranMuat(teks: string, font: PDFFont, maks: number, mulai: number): n
 }
 
 /**
- * Strip kotak seperti referensi: kotak kiri terisi hitam (teks putih), kotak kanan bergaris,
- * teks kecil di bawahnya. Strip ditempel di tepi halaman, bukan di tengah konten, supaya
- * alamat penerima dan barcode tidak tertutup.
+ * Satu motif = ikon di atas, nama toko di bawahnya, keduanya miring `sudut` derajat.
+ * Digambar mengelilingi titik (cx, cy) dengan pensil pusat.
+ *
+ * pdf-lib memutar di sekitar pojok kiri-bawah, jadi setiap bentuk digeser setengah ukurannya
+ * lebih dulu lalu diputar di sekitar (cx, cy) — hasilnya benar tanpa matriks manual.
  */
-function gambarStrip(
+function gambarMotifDi(
   p: PDFPage,
-  W: number,
-  strip: number,
-  diAtas: boolean,
-  opsi: OpsiCetak,
-  tebal: PDFFont,
-  biasa: PDFFont,
-  logo: PDFImage | null
+  cx: number,
+  cy: number,
+  ikon: PDFImage | null,
+  rasio: number,
+  nama: string,
+  ukuran: number,
+  fontTeks: number,
+  sudut: number,
+  alfa: number,
+  tebal: PDFFont
 ): void {
-  const H = p.getHeight();
-  const dasar = diAtas ? H - strip : 0;
-  const pad = 1.5 * MM;
-  const kiri = rgb(0, 0, 0);
-  const putih = rgb(1, 1, 1);
-  const alfa = Math.max(0.1, Math.min(1, opsi.opacity));
+  const tinggiIkon = ikon ? ukuran / Math.max(0.05, rasio) : 0;
+  const ruangTeks = nama ? fontTeks * 1.2 : 0;
+  const total = tinggiIkon + ruangTeks;
 
-  // Latar putih supaya teks di bawah tidak tembus (label termal, tanpa warna).
-  p.drawRectangle({ x: 0, y: dasar, width: W, height: strip, color: putih, opacity: 1 });
-
-  const barisY = dasar + 5 * MM;
-  const bh = strip - 5 * MM - pad;
-  const bw = (W - 3 * pad) / 2;
-
-  // Kotak kiri: isi hitam, teks putih. Kotak kanan: putih, teks hitam.
-  p.drawRectangle({ x: pad, y: barisY, width: bw, height: bh, color: kiri, opacity: alfa });
-  p.drawRectangle({ x: 2 * pad + bw, y: barisY, width: bw, height: bh, borderColor: kiri, borderWidth: 1.2, opacity: alfa });
-
-  const t1 = (opsi.teks1 || " ").slice(0, 24);
-  const t2 = (opsi.teks2 || " ").slice(0, 28);
-  const s1 = ukuranMuat(t1, tebal, bw - 2 * pad, bh * 0.6);
-  const s2 = ukuranMuat(t2, tebal, bw - 2 * pad, bh * 0.6);
-  p.drawText(t1, { x: pad + (bw - tebal.widthOfTextAtSize(t1, s1)) / 2, y: barisY + (bh - s1 * 0.72) / 2, size: s1, font: tebal, color: putih, opacity: alfa });
-  p.drawText(t2, { x: 2 * pad + bw + (bw - tebal.widthOfTextAtSize(t2, s2)) / 2, y: barisY + (bh - s2 * 0.72) / 2, size: s2, font: tebal, color: kiri, opacity: alfa });
-
-  let x0 = pad;
-  if (logo) {
-    const lh = 4.4 * MM;
-    const lw = Math.min(lh * opsi.logo!.rasio, W / 3);
-    p.drawImage(logo, { x: pad, y: dasar + 0.7 * MM, width: lw, height: lh, opacity: alfa });
-    x0 = pad + lw + pad;
+  if (ikon) {
+    const x0 = cx - ukuran / 2;
+    const y0 = cy + total / 2 - tinggiIkon;
+    // Putar titik pusat ikon mengelilingi (cx, cy):
+    const t = sudut * (Math.PI / 180);
+    const px = cx + (x0 + ukuran / 2 - cx) * Math.cos(t) - (y0 + tinggiIkon / 2 - cy) * Math.sin(t);
+    const py = cy + (x0 + ukuran / 2 - cx) * Math.sin(t) + (y0 + tinggiIkon / 2 - cy) * Math.cos(t);
+    p.drawImage(ikon, {
+      x: px - ukuran / 2,
+      y: py - tinggiIkon / 2,
+      width: ukuran,
+      height: tinggiIkon,
+      opacity: alfa,
+      rotate: degrees(sudut),
+    });
   }
-  const t3 = (opsi.teks3 || " ").slice(0, 70);
-  const maksTeks3 = W - pad - x0;
-  const s3 = ukuranMuat(t3, biasa, maksTeks3, 7);
-  p.drawText(t3, {
-    x: x0 + (maksTeks3 - biasa.widthOfTextAtSize(t3, s3)) / 2,
-    y: dasar + 1.8 * MM,
-    size: s3,
-    font: biasa,
-    color: kiri,
-    opacity: alfa,
-  });
+  if (nama) {
+    const lebarTeks = tebal.widthOfTextAtSize(nama, fontTeks);
+    const x0 = cx - lebarTeks / 2;
+    const y0 = cy - total / 2;
+    const t = sudut * (Math.PI / 180);
+    const px = cx + (x0 - cx) * Math.cos(t) - (y0 - cy) * Math.sin(t);
+    const py = cy + (x0 - cx) * Math.sin(t) + (y0 - cy) * Math.cos(t);
+    p.drawText(nama, {
+      x: px,
+      y: py,
+      size: fontTeks,
+      font: tebal,
+      color: rgb(0, 0, 0),
+      opacity: alfa,
+      rotate: degrees(sudut),
+    });
+  }
 }
 
-/** Cap miring di tengah halaman — untuk label yang tidak diberi strip. */
-function gambarTengah(p: PDFPage, W: number, H: number, opsi: OpsiCetak, tebal: PDFFont): void {
-  const teks = (opsi.teks1 || " ").slice(0, 30);
-  const alfa = Math.max(0.05, Math.min(1, opsi.opacity));
-  const sudut = (opsi.rotasi * Math.PI) / 180;
-  const maks = Math.hypot(W, H) * 0.75;
-  const s = ukuranMuat(teks, tebal, maks, opsi.stripMm * MM * 1.6);
-  const tw = tebal.widthOfTextAtSize(teks, s);
-  p.drawText(teks, {
-    x: (W - tw * Math.cos(sudut)) / 2,
-    y: (H - s * 0.72) / 2,
-    size: s,
-    font: tebal,
-    color: rgb(0, 0, 0),
-    opacity: alfa,
-    rotate: { type: "degrees", angle: opsi.rotasi } as never,
-  });
+/** Motif berulang menutupi halaman; baris ganjil digeser setengah jarak agar tidak bergaris. */
+function motif(
+  p: PDFPage,
+  W: number,
+  H: number,
+  o: { ikon: PDFImage | null; rasio: number; nama: string; alfa: number; ikonMm: number; jarakMm: number; sudut: number; tebal: PDFFont }
+): void {
+  const ukuran = Math.max(5, Math.min(40, o.ikonMm)) * MM;
+  const jarak = Math.max(10, Math.min(90, o.jarakMm)) * MM;
+  const fontTeks = o.nama ? Math.min(ukuran * 0.3, Math.max(4, ukuran * 0.22)) : 0;
+  const lebarMotif = Math.max(ukuran, o.nama ? o.tebal.widthOfTextAtSize(o.nama, fontTeks) : 0);
+  const tinggiMotif = (o.ikon ? ukuran / Math.max(0.05, o.rasio) : 0) + (o.nama ? fontTeks * 1.2 : 0);
+
+  // Sel motif miring punya kotak pembungkus lebih besar; jarak minimum mengikuti pembungkus
+  // itu supaya motif tidak bertumpuk saat rotasi besar.
+  const t = Math.abs(Math.sin((o.sudut * Math.PI) / 180));
+  const c = Math.abs(Math.cos((o.sudut * Math.PI) / 180));
+  const langkahX = Math.max(jarak, lebarMotif * c + tinggiMotif * t + 4);
+  const langkahY = Math.max(jarak, lebarMotif * t + tinggiMotif * c + 4);
+  const kolom = Math.max(1, Math.ceil(W / langkahX) + 1);
+  const baris = Math.max(1, Math.ceil(H / langkahY) + 1);
+
+  for (let b = 0; b < baris; b++) {
+    for (let k = 0; k < kolom; k++) {
+      const cx = k * langkahX + (b % 2 === 0 ? langkahX / 2 : langkahX);
+      const cy = b * langkahY + langkahY / 2;
+      gambarMotifDi(p, cx, cy, o.ikon, o.rasio, o.nama, ukuran, fontTeks, o.sudut, o.alfa, o.tebal);
+    }
+  }
+}
+
+/** Satu cap besar di tengah halaman. */
+function cap(
+  p: PDFPage,
+  W: number,
+  H: number,
+  o: { ikon: PDFImage | null; rasio: number; nama: string; alfa: number; ikonMm: number; sudut: number; tebal: PDFFont }
+): void {
+  const ukuran = Math.max(10, Math.min(70, o.ikonMm * 2.2)) * MM;
+  const fontTeks = o.nama
+    ? ukuranMuat(o.nama, o.tebal, Math.hypot(W, H) * 0.7, ukuran * 0.32)
+    : 0;
+  gambarMotifDi(p, W / 2, H / 2, o.ikon, o.rasio, o.nama, ukuran, fontTeks, o.sudut, o.alfa, o.tebal);
 }

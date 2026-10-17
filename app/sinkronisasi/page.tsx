@@ -54,10 +54,16 @@ function Sinkronisasi() {
     void (async () => {
       try {
         const res = await fetch("/api/preset", { credentials: "include" });
-        const d = (await res.json().catch(() => null)) as { ok?: boolean; preset?: Toko[] } | null;
-        const daftar = d?.preset ?? [];
+        // `presets`, bukan `preset`: salah kunci membuat daftar kosong TANPA error, sehingga
+        // pemicu tampak mati dan riwayat tidak pernah dimuat (skeleton berputar terus).
+        const d = (await res.json().catch(() => null)) as { ok?: boolean; presets?: Toko[]; error?: string } | null;
+        if (!res.ok || !d?.ok) throw new Error(d?.error ?? `Gagal memuat toko (${res.status}).`);
+        const daftar = d.presets ?? [];
         setToko(daftar);
         setPresetId(daftar[0]?.id ?? null);
+        // Tanpa toko, tidak ada yang bisa dimuat: selesaikan loading agar kartu tidak
+        // menampilkan skeleton selamanya.
+        if (daftar.length === 0) setLog({});
       } catch {
         tampilkanGagalTulis("Gagal memuat daftar toko.");
       }
@@ -113,11 +119,25 @@ function Sinkronisasi() {
         body: JSON.stringify({ aksi: "impor-performa", file, presetId }),
       });
       const d = (await res.json().catch(() => null)) as
-        | { ok?: boolean; terpetakan?: number; kodeProdukTotal?: number; periode?: string; error?: string }
+        | {
+            ok?: boolean;
+            ringkas?: { kodeProdukTotal?: number; terpetakan?: number; pesananTotal?: number; pesananTerpetakan?: number };
+            jumlahBaris?: number;
+            jumlahPertanyaan?: number;
+            periode?: string;
+            error?: string;
+          }
         | null;
       if (!res.ok || !d?.ok) throw new Error(d?.error ?? `Impor performa gagal (${res.status}).`);
-      toast.success(`Performa diimpor: ${d.terpetakan}/${d.kodeProdukTotal} produk (periode ${d.periode ?? "-"}).`);
-      await catat("performa", f.name, d.terpetakan ?? 0, 0, `periode ${d.periode ?? "-"} · ${d.kodeProdukTotal ?? 0} kode produk`);
+      // Angka ada di `ringkas`; `terpetakan` di akar JSON tidak ada dan dulu tercetak
+      // "undefined/undefined" padahal impor sukses.
+      const r = d.ringkas ?? {};
+      const jumlah = d.jumlahBaris ?? 0;
+      toast.success(
+        `Performa diimpor: ${r.terpetakan ?? 0}/${r.kodeProdukTotal ?? 0} produk terpetakan` +
+          ` (${jumlah} baris${d.jumlahPertanyaan ? `, ${d.jumlahPertanyaan} perlu keputusan` : ""}, periode ${d.periode ?? "-"}).`
+      );
+      await catat("performa", f.name, jumlah, 0, `periode ${d.periode ?? "-"} · ${r.kodeProdukTotal ?? 0} kode produk`);
     } catch (e) {
       tampilkanGagalTulis(e instanceof Error ? e.message : "Impor performa gagal.");
     } finally {
