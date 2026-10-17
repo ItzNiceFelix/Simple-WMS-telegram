@@ -816,6 +816,12 @@ function Analisa() {
                             <TableHead className="text-right">Harga</TableHead>
                             <TableHead className="text-right">Margin/unit</TableHead>
                             <TableHead className="text-right">ROAS impas</TableHead>
+                            {/* Traffic ORGANIK: dari impor Performa Produk. Tanpa kolom ini
+                                halaman terlihat "tidak membaca traffic" padahal angkanya ada
+                                di tabel Semua Produk — dua tab harus menjawab pertanyaan sama. */}
+                            <TableHead className="text-right">Kunjungan<br />organik</TableHead>
+                            <TableHead className="text-right">Pesanan<br />organik</TableHead>
+                            <TableHead className="text-right">CR<br />organik</TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -826,6 +832,11 @@ function Analisa() {
                               <TableCell className="text-right tabular-nums">{formatRupiah(b.hargaJual)}</TableCell>
                               <TableCell className="text-right tabular-nums">{formatRupiah(b.marginSatuan)}</TableCell>
                               <TableCell className="text-right font-semibold tabular-nums">{b.roasImpas}</TableCell>
+                              <TableCell className="text-right tabular-nums">{metrik(b.organikKunjungan)}</TableCell>
+                              <TableCell className="text-right tabular-nums">{metrik(b.organikPesanan)}</TableCell>
+                              <TableCell className="text-right tabular-nums">
+                                {organikCr(b) === null ? "—" : `${organikCr(b)}%`}
+                              </TableCell>
                             </TableRow>
                           ))}
                         </TableBody>

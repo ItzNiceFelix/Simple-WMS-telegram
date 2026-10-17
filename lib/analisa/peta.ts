@@ -272,12 +272,22 @@ export function bangunPeta(rows: unknown[][], master: Set<string>, mesin?: Kandi
     const jenis: PertanyaanPeta["jenis"] = sku !== "" ? "sku_tak_ada_master" : "tanpa_sku";
     const pesananBaris = iniInduk ? bacaAngka(row[kol.pesanan]) : 0;
     const omzetBaris = iniInduk ? bacaAngka(row[kol.omzet]) : 0;
-    const kunci = `${jenis}|${kodeProduk}`;
-    const ada = petaPertanyaan.get(kunci);
+    // SATU PRODUK = SATU PERTANYAAN.
+    //
+    // Kunci dedup adalah kode produk saja, bukan (jenis, kode). Satu produk punya baris
+    // induk tanpa SKU DAN baris variasi ber-SKU asing; dengan kunci per jenis, keduanya
+    // muncul sebagai dua pertanyaan untuk produk yang sama — user diminta memutuskan dua
+    // kali, dan daftarnya jadi dua kali lebih panjang dari kenyataan.
+    // Jenis yang menang: `sku_tak_ada_master` (ada SKU yang bisa dicocokkan ke master),
+    // karena itu informasi yang lebih berguna daripada "tidak ada SKU sama sekali".
+    const ada = petaPertanyaan.get(kodeProduk);
     if (ada) {
-      // Dedup per (jenis, kodeProduk) — satu produk bisa punya banyak baris variasi.
       ada.pesanan += pesananBaris;
       ada.omzet += omzetBaris;
+      if (jenis === "sku_tak_ada_master" && ada.jenis !== "sku_tak_ada_master") {
+        ada.jenis = "sku_tak_ada_master";
+        ada.variasi = variasi;
+      }
       continue;
     }
     const baru: PertanyaanPeta = {
@@ -287,7 +297,7 @@ export function bangunPeta(rows: unknown[][], master: Set<string>, mesin?: Kandi
       // Kandidat murni bantuan mata manusia; maks 5 agar kartu tidak banjir.
       kandidat: mesin ? mesin.cari(namaShopee).slice(0, 5) : [],
     };
-    petaPertanyaan.set(kunci, baru);
+    petaPertanyaan.set(kodeProduk, baru);
     pertanyaan.push(baru);
   }
 

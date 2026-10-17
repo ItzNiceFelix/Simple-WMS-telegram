@@ -141,6 +141,24 @@ describe("bangunPeta", () => {
     assert.equal(h.pertanyaan[0].omzet, 1000000);
   });
 
+  it("satu produk dengan baris induk DAN variasi asing hanya jadi SATU pertanyaan", () => {
+    // Bentuk nyata: baris induk tanpa SKU, lalu variasi yang SKU-nya tidak ada di master.
+    // Dulu kunci dedup memakai (jenis, kodeProduk), sehingga produk yang sama muncul DUA
+    // kali di Peta SKU — user diminta memutuskan produk yang sama dua kali.
+    const rows = [
+      HEADER,
+      baris({ kodeProduk: "P4990", produk: "Nama produk 4990", kodeVariasiShopee: "-", namaVariasi: "-", skuVariasi: "-", skuInduk: "-", omzet: "19.990", pesanan: "7" }),
+      baris({ kodeProduk: "P4990", produk: "Nama produk 4990", kodeVariasiShopee: "V1", namaVariasi: "Merah", skuVariasi: "SKU-ASING", skuInduk: "-", omzet: "19.990", pesanan: "7" }),
+    ];
+    const h = bangunPeta(rows, master);
+    assert.equal(h.pertanyaan.length, 1, "satu produk = satu pertanyaan");
+    // Jenis yang menang: yang punya SKU (lebih berguna untuk dicocokkan ke master).
+    assert.equal(h.pertanyaan[0].jenis, "sku_tak_ada_master");
+    assert.equal(h.pertanyaan[0].kodeProduk, "P4990");
+    // Pesanan dihitung sekali (dari baris induk), tidak dobel.
+    assert.equal(h.pertanyaan[0].pesanan, 7);
+  });
+
   it("kolom 6 kosong tapi kolom 7 terisi -> tingkat induk", () => {
     const rows = [
       HEADER,

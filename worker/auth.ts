@@ -137,10 +137,18 @@ export async function catatLogin(
   ua: string | null,
   alasan: string | null
 ): Promise<void> {
-  await db
-    .prepare("INSERT INTO login_audit (tg_id, ip, ua, sukses, alasan) VALUES (?, ?, ?, ?, ?)")
-    .bind(tgId, ip, ua, sukses ? 1 : 0, alasan)
-    .run();
+  // Audit adalah CATATAN, bukan gerbang. D1 bisa menolak tulis (kuota harian habis,
+  // database terkunci) dan dulu penolakan itu naik sebagai 500 — user yang passwordnya
+  // BENAR tidak bisa masuk sama sekali hanya karena baris log gagal disimpan.
+  // Kegagalan audit dibiarkan lewat; keamanan tetap dijaga rate-limit baca (loginTerkunci).
+  try {
+    await db
+      .prepare("INSERT INTO login_audit (tg_id, ip, ua, sukses, alasan) VALUES (?, ?, ?, ?, ?)")
+      .bind(tgId, ip, ua, sukses ? 1 : 0, alasan)
+      .run();
+  } catch (e) {
+    console.error("[login_audit]", e instanceof Error ? e.message : e);
+  }
 }
 
 /** Buat sesi baru; mengembalikan token mentah (hanya hash disimpan). */

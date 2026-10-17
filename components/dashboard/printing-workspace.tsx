@@ -24,7 +24,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { Spinner } from "@/components/ui/spinner";
 import { tampilkanGagalTulis } from "@/components/dashboard/umpan-tulis";
 import { bacaNomorDariHalaman, type NomorLabel } from "@/lib/printing/ekstraksi";
-import { bangunPdf, type OpsiCetak, type PosisiWatermark } from "@/lib/printing/watermark";
+import { bangunPdf, type IkonGaris, type OpsiCetak, type PosisiWatermark } from "@/lib/printing/watermark";
 
 /**
  * Ikon preset. URL-nya dibangun saat modul dimuat (bukan saat render), jadi `BASE_PATH`
@@ -36,18 +36,32 @@ const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
  * Preset watermark. Gambarnya ada di `public/wm/*.svg` (Tabler Icons, MIT) dan digambar
  * mandiri di klien — bukan unggahan, bukan aset pihak ketiga saat runtime.
  */
-const PRESET: Record<
-  string,
-  { label: string; gambar: string; posisi: PosisiWatermark; ikonMm: number; jarakMm: number; rotasi: number; opacity: number }
-> = {
-  fragile: { label: "Fragile — gelas pecah", gambar: `${BASE_PATH}/wm/fragile.svg`, posisi: "bawah", ikonMm: 14, jarakMm: 34, rotasi: 20, opacity: 0.5 },
-  unboxing: { label: "Video Unboxing", gambar: `${BASE_PATH}/wm/video-unboxing.svg`, posisi: "bawah", ikonMm: 13, jarakMm: 42, rotasi: 20, opacity: 0.45 },
-  jangan: { label: "Jangan Dibanting", gambar: `${BASE_PATH}/wm/jangan-dibanting.svg`, posisi: "bawah", ikonMm: 14, jarakMm: 34, rotasi: 20, opacity: 0.5 },
-  hati: { label: "Hati-hati", gambar: `${BASE_PATH}/wm/hati-hati.svg`, posisi: "bawah", ikonMm: 14, jarakMm: 36, rotasi: 20, opacity: 0.5 },
-  cod: { label: "COD — bayar di tempat", gambar: `${BASE_PATH}/wm/cod.svg`, posisi: "tengah", ikonMm: 24, jarakMm: 40, rotasi: 25, opacity: 0.4 },
-  terima: { label: "Terima kasih", gambar: `${BASE_PATH}/wm/terima-kasih.svg`, posisi: "bawah", ikonMm: 12, jarakMm: 44, rotasi: 20, opacity: 0.35 },
-  buka: { label: "Dilarang buka sebelum dibayar", gambar: `${BASE_PATH}/wm/dilarang-buka.svg`, posisi: "tengah", ikonMm: 22, jarakMm: 40, rotasi: 25, opacity: 0.4 },
-  tanpa: { label: "Tanpa ikon (teks saja)", gambar: "", posisi: "bawah", ikonMm: 14, jarakMm: 34, rotasi: 20, opacity: 0.5 },
+type PresetWm = {
+  label: string;
+  gambar: string;
+  posisi: PosisiWatermark;
+  ikonMm: number;
+  jarakMm: number;
+  rotasi: number;
+  opacity: number;
+  /** Isi pita: dua kotak teks + baris kecil di bawahnya. */
+  teks1: string;
+  teks2: string;
+  teksBawah: string;
+  ikonKiri: IkonGaris;
+  ikonKanan: IkonGaris;
+};
+
+/** Teks pita sesuai referensi cetak: kotak kiri HITAM, kotak kanan bergaris. */
+const PRESET: Record<string, PresetWm> = {
+  fragile: { label: "Fragile — gelas pecah", gambar: `${BASE_PATH}/wm/fragile.svg`, posisi: "bawah", ikonMm: 14, jarakMm: 34, rotasi: 20, opacity: 0.5 , teks1: "FRAGILE", teks2: "VIDEO UNBOXING", teksBawah: "Tanpa video unboxing, komplain tidak diproses", ikonKiri: "gelas", ikonKanan: "kamera" },
+  unboxing: { label: "Video Unboxing", gambar: `${BASE_PATH}/wm/video-unboxing.svg`, posisi: "bawah", ikonMm: 13, jarakMm: 42, rotasi: 20, opacity: 0.45 , teks1: "VIDEO UNBOXING", teks2: "WAJIB", teksBawah: "Rekam saat paket dibuka. Tanpa video, klaim tidak dilayani.", ikonKiri: "kamera", ikonKanan: "kamera" },
+  jangan: { label: "Jangan Dibanting", gambar: `${BASE_PATH}/wm/jangan-dibanting.svg`, posisi: "bawah", ikonMm: 14, jarakMm: 34, rotasi: 20, opacity: 0.5 , teks1: "JANGAN DIBANTING", teks2: "PECAH BELAH", teksBawah: "Barang mudah pecah. Simpan di tempat aman.", ikonKiri: "gelas", ikonKanan: "gelas" },
+  hati: { label: "Hati-hati", gambar: `${BASE_PATH}/wm/hati-hati.svg`, posisi: "bawah", ikonMm: 14, jarakMm: 36, rotasi: 20, opacity: 0.5 , teks1: "HATI-HATI", teks2: "SIMPAN RAPI", teksBawah: "Jangan ditumpuk barang berat.", ikonKiri: "gelas", ikonKanan: "gelas" },
+  cod: { label: "COD — bayar di tempat", gambar: `${BASE_PATH}/wm/cod.svg`, posisi: "tengah", ikonMm: 24, jarakMm: 40, rotasi: 25, opacity: 0.4 , teks1: "COD", teks2: "BAYAR DI TEMPAT", teksBawah: "Barang dikirim setelah pembayaran diterima kurir.", ikonKiri: "kamera", ikonKanan: "gelas" },
+  terima: { label: "Terima kasih", gambar: `${BASE_PATH}/wm/terima-kasih.svg`, posisi: "bawah", ikonMm: 12, jarakMm: 44, rotasi: 20, opacity: 0.35 , teks1: "TERIMA KASIH", teks2: "SUDAH DICEK", teksBawah: "Barang sudah diperiksa sebelum dikirim.", ikonKiri: "gelas", ikonKanan: "kamera" },
+  buka: { label: "Dilarang buka sebelum dibayar", gambar: `${BASE_PATH}/wm/dilarang-buka.svg`, posisi: "tengah", ikonMm: 22, jarakMm: 40, rotasi: 25, opacity: 0.4 , teks1: "DILARANG BUKA", teks2: "SEBELUM DIBAYAR", teksBawah: "Paket berisi barang berharga.", ikonKiri: "gelas", ikonKanan: "kamera" },
+  tanpa: { label: "Tanpa ikon (teks saja)", gambar: "", posisi: "bawah", ikonMm: 14, jarakMm: 34, rotasi: 20, opacity: 0.5 , teks1: "", teks2: "", teksBawah: "", ikonKiri: "gelas", ikonKanan: "kamera" },
 };
 const LABEL_PRESET: Record<string, string> = Object.fromEntries(
   Object.entries(PRESET).map(([k, v]) => [k, v.label])
@@ -365,6 +379,12 @@ export function PrintingWorkspace() {
   const [progres, setProgres] = useState("");
   const [preset, setPreset] = useState<keyof typeof PRESET>("fragile");
   const [posisi, setPosisi] = useState<PosisiWatermark>(PRESET.fragile.posisi);
+  const [stripMm, setStripMm] = useState(20);
+  const [teks1, setTeks1] = useState(PRESET.fragile.teks1);
+  const [teks2, setTeks2] = useState(PRESET.fragile.teks2);
+  const [teksBawah, setTeksBawah] = useState(PRESET.fragile.teksBawah);
+  const [ikonKiri, setIkonKiri] = useState<IkonGaris>(PRESET.fragile.ikonKiri);
+  const [ikonKanan, setIkonKanan] = useState<IkonGaris>(PRESET.fragile.ikonKanan);
   const [tinggiMm, setTinggiMm] = useState(150);
   const [ikonMm, setIkonMm] = useState(PRESET.fragile.ikonMm);
   const [jarakMm, setJarakMm] = useState(PRESET.fragile.jarakMm);
@@ -386,10 +406,14 @@ export function PrintingWorkspace() {
 
   const opsi: OpsiCetak = useMemo(
     () => ({
-      tinggiMm, posisi, namaToko, opacity, rotasi, ikonMm, jarakMm,
+      tinggiMm, posisi, namaToko, opacity, rotasi, ikonMm, jarakMm, stripMm,
+      teks1, teks2, teksBawah, ikonKiri, ikonKanan,
       cropBawahMm: crop, geserXMm: geserX, geserYMm: geserY, ikon,
     }),
-    [tinggiMm, posisi, namaToko, opacity, rotasi, ikonMm, jarakMm, crop, geserX, geserY, ikon]
+    [
+      tinggiMm, posisi, namaToko, opacity, rotasi, ikonMm, jarakMm, stripMm,
+      teks1, teks2, teksBawah, ikonKiri, ikonKanan, crop, geserX, geserY, ikon,
+    ]
   );
 
   // Daftar toko: bukan syarat mencetak. Kegagalan memuatnya hanya membuat pencatatan
@@ -627,7 +651,10 @@ export function PrintingWorkspace() {
       for (let i = 1; i <= doc.numPages; i++) {
         setProgres(`Menyiapkan halaman ${i}/${doc.numPages}…`);
         const page = await doc.getPage(i);
-        const vp = page.getViewport({ scale: 3 });
+        // Lebar raster 800 px untuk halaman 100 mm ≈ 203 dpi — angka yang SAMA dengan alat
+        // referensi yang dipakai user, dan ambang minimum pembaca barcode termal. Skala lebih
+        // besar hanya menambah memori tanpa membuat barcode lebih mudah dipindai.
+        const vp = page.getViewport({ scale: 800 / (page.view[2] - page.view[0]) });
         const c = document.createElement("canvas");
         c.width = Math.round(vp.width);
         c.height = Math.round(vp.height);
@@ -659,7 +686,7 @@ export function PrintingWorkspace() {
         // `width:100mm` pada <img> tidak akan tampak bila induknya selebar 0.
         `#area-cetak-printing{display:block!important;visibility:visible!important;position:static!important;` +
         `width:100mm!important;height:auto!important;overflow:visible!important}` +
-        `#area-cetak-printing img{display:block;width:100mm!important;height:${tinggiMm}mm!important;` +
+        `#area-cetak-printing img{display:block;width:100%!important;height:${tinggiMm}mm!important;` +
         `page-break-after:always;break-after:page;margin:0!important;border:0!important}` +
         `#area-cetak-printing img:last-child{page-break-after:auto;break-after:auto}}`;
       await catatCetak();
@@ -700,7 +727,11 @@ export function PrintingWorkspace() {
     setJarakMm(p.jarakMm);
     setRotasi(p.rotasi);
     setOpacity(p.opacity);
-    if (inputIkonRef.current) inputIkonRef.current.value = "";
+    setTeks1(p.teks1);
+    setTeks2(p.teks2);
+    setTeksBawah(p.teksBawah);
+    setIkonKiri(p.ikonKiri);
+    setIkonKanan(p.ikonKanan);
   }
 
   async function pilihIkon(f: File | null) {
@@ -937,6 +968,56 @@ export function PrintingWorkspace() {
                 Nama toko di watermark (kosong = tanpa teks)
                 <Input value={namaToko} maxLength={28} onChange={(e) => setNamaToko(e.target.value)} className="h-9" data-testid="nama-toko-wm" />
               </label>
+
+              {/* ── Pita watermark (bentuk utama di label) ── */}
+              <div className="rounded-lg border border-border p-2">
+                <p className="mb-2 text-xs font-medium">Pita di tepi label</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                    Teks kotak hitam (kiri)
+                    <Input value={teks1} maxLength={28} onChange={(e) => setTeks1(e.target.value)} className="h-9" data-testid="teks1" />
+                  </label>
+                  <label className="flex flex-col gap-1 text-xs text-muted-foreground">
+                    Teks kotak bergaris (kanan)
+                    <Input value={teks2} maxLength={28} onChange={(e) => setTeks2(e.target.value)} className="h-9" data-testid="teks2" />
+                  </label>
+                </div>
+                <div className="mt-2 flex flex-col gap-1 text-xs text-muted-foreground">
+                  Ikon kotak
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Select value={ikonKiri} onValueChange={(v) => { if (typeof v === "string" && v) setIkonKiri(v as IkonGaris); }}>
+                      <SelectTrigger className="h-9 w-40" data-testid="ikon-kiri">
+                        <SelectValue>{(v: string | null) => (v === "kamera" ? "Kiri: kamera" : v === "gelas" ? "Kiri: gelas pecah" : "Kiri: tanpa ikon")}</SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value="gelas">Gelas pecah</SelectItem>
+                          <SelectItem value="kamera">Kamera</SelectItem>
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                    <Select value={ikonKanan} onValueChange={(v) => { if (typeof v === "string" && v) setIkonKanan(v as IkonGaris); }}>
+                      <SelectTrigger className="h-9 w-40" data-testid="ikon-kanan">
+                        <SelectValue>{(v: string | null) => (v === "kamera" ? "Kanan: kamera" : v === "gelas" ? "Kanan: gelas pecah" : "Kanan: tanpa ikon")}</SelectValue>
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectGroup>
+                          <SelectItem value="gelas">Gelas pecah</SelectItem>
+                          <SelectItem value="kamera">Kamera</SelectItem>
+                        </SelectGroup>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <label className="mt-2 flex flex-col gap-1 text-xs text-muted-foreground">
+                  Baris kecil di bawah pita (kosong = tidak dicetak)
+                  <Input value={teksBawah} maxLength={70} onChange={(e) => setTeksBawah(e.target.value)} className="h-9" data-testid="teks-bawah" />
+                </label>
+                <label className="mt-2 flex flex-col gap-1 text-xs text-muted-foreground">
+                  Tinggi pita (mm) — 0 = tanpa pita
+                  <Input type="number" min={0} max={45} value={stripMm} onChange={(e) => setStripMm(Math.max(0, Number(e.target.value) || 0))} className="h-9" data-testid="tinggi-pita" />
+                </label>
+              </div>
 
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 <label className="flex flex-col gap-1 text-xs text-muted-foreground">

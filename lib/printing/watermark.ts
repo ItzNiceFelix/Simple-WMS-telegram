@@ -16,6 +16,15 @@ import { PDFDocument, StandardFonts, degrees, rgb, type PDFEmbeddedPage, type PD
 
 const MM = 72 / 25.4;
 
+/**
+ * Ikon GARIS (bukan raster). Referensi cetak yang dipakai user menggambar ikon dengan
+ * `drawLine` supaya tajam di printer 1-bit; PNG hasil rasterisasi SVG akan bergerigi di
+ * ukuran kecil. Karena itu strip memakai ikon vektor, sedangkan `ikon` PNG tetap dipakai
+ * untuk logo toko / gambar unggahan pada motif.
+ */
+export type IkonGaris = "gelas" | "kamera";
+
+
 /** Posisi lapisan watermark. `tengah` = cap besar sekali; `atas`/`bawah` = motif berulang. */
 export type PosisiWatermark = "bawah" | "atas" | "tengah";
 
@@ -25,14 +34,25 @@ export type OpsiCetak = {
   /** Ukuran kertas lain (A4 dst) memakai lebar sendiri; null = 100 mm. */
   lebarMm?: number | null;
   posisi: PosisiWatermark;
-  /** Nama toko yang dicetak di bawah ikon. Kosong = tanpa teks. */
+  /** Teks kotak HITAM (kiri) pada pita. */
+  teks1: string;
+  /** Teks kotak BERGARIS (kanan) pada pita. */
+  teks2: string;
+  /** Teks kecil di bawah strip (kiri) — dulu "Tanpa video unboxing, komplain tidak diproses". */
+  teksBawah: string;
+  /** Ikon garis di kotak kiri & kanan strip. */
+  ikonKiri: IkonGaris;
+  ikonKanan: IkonGaris;
+  /** Nama toko yang dicetak miring di tengah area resi. Kosong = tanpa teks. */
   namaToko: string;
   /** 0..1 — 1 = hitam penuh. Berpengaruh ke ikon DAN teks. */
   opacity: number;
   /** Derajat miring. Negatif membalik arah. */
   rotasi: number;
-  /** Ukuran ikon/tulisan (mm). */
+  /** Ukuran ikon/tulisan (mm) — dipakai motif & cap. */
   ikonMm: number;
+  /** Tinggi pita watermark di tepi label (mm). 0 = tanpa pita. */
+  stripMm: number;
   /** Jarak antar-titik motif (mm). Diabaikan untuk cap tengah. */
   jarakMm: number;
   /** Potong bagian bawah halaman asli (mm) — untuk membuang ruang kosong. */
@@ -74,6 +94,7 @@ export async function bangunPdf(
 ): Promise<{ bytes: Uint8Array; halaman: number; dilewati: number }> {
   const out = await PDFDocument.create();
   const tebal = await out.embedFont(StandardFonts.HelveticaBold);
+  const biasa = await out.embedFont(StandardFonts.Helvetica);
   const ikon = opsi.ikon ? await out.embedPng(opsi.ikon.png) : null;
   // Rasio diambil dari gambar yang BENAR-BENAR tertanam: `rasio` kiriman klien hanya
   // perkiraan dari canvas, dan gambar cacat akan menghasilkan tinggi 0 (tidak tampil).
@@ -115,14 +136,128 @@ export async function bangunPdf(
       p.drawPage(emb, { x, y, width: dw, height: dh });
 
       if (!hanyaHalamanPertamaDigambar || halaman === 0) {
-        if (opsi.posisi === "tengah") cap(p, W, H, { ikon, rasio, nama, alfa, ikonMm: opsi.ikonMm, sudut, tebal });
-        else motif(p, W, H, { ikon, rasio, nama, alfa, ikonMm: opsi.ikonMm, jarakMm: opsi.jarakMm, sudut, tebal });
+        // PITA adalah watermark utama: ia yang dilihat kurir/pembeli saat paket tiba.
+        // Motif/nama toko adalah lapisan kedua di badan label.
+        const strip = Math.max(0, Math.min(45, opsi.stripMm)) * MM;
+        if (strip > 0) gambarPita(p, W, strip, opsi.posisi === "atas", opsi, tebal, biasa);
+        const namaBadan = nama;
+        if (namaBadan || ikon) {
+          if (opsi.posisi === "tengah") cap(p, W, H, { ikon, rasio, nama: namaBadan, alfa: Math.min(alfa, 0.25), ikonMm: opsi.ikonMm, sudut, tebal });
+          else motif(p, W, H, opsi.posisi, strip, { ikon, rasio, nama: namaBadan, alfa: Math.min(alfa, 0.25), ikonMm: opsi.ikonMm, jarakMm: opsi.jarakMm, sudut, tebal });
+        }
       }
       halaman += 1;
     }
   }
 
   return { bytes: await out.save(), halaman, dilewati };
+}
+
+/**
+ * Pita watermark di tepi label — bentuk yang dipakai referensi cetak user:
+ * kotak HITAM berisi ikon garis + teks kapital, kotak BERGANIS di sebelahnya, lalu baris
+ * kecil di bawahnya. Digambar di atas strip putih supaya barcode di badan label tidak
+ * tertutup.
+ *
+ * KENAPA IKON GARIS, BUKAN PNG: printer label hanya 1 bit; ikon SVG yang diraster lalu
+ * diperkecil ke 5 mm menjadi titik-titik abu yang tercetak pudar. `drawLine` tetap tajam
+ * pada resolusi printer apa pun.
+ */
+/**
+ * Titik dasar pita (pt) untuk tinggi halaman tertentu.
+ *
+ * Diekspor supaya posisi "atas vs bawah" bisa diuji sebagai angka, bukan dengan membongkar
+ * stream PDF: satu-satunya yang menentukan pita menempel di tepi mana adalah angka ini.
+ */
+export function dasarPita(tinggiHalamanPt: number, stripPt: number, diAtas: boolean): number {
+  return diAtas ? tinggiHalamanPt - stripPt : 0;
+}
+
+function gambarPita(
+  p: PDFPage,
+  W: number,
+  strip: number,
+  diAtas: boolean,
+  opsi: OpsiCetak,
+  tebal: PDFFont,
+  biasa: PDFFont,
+): void {
+  const H = p.getHeight();
+  const dasar = dasarPita(H, strip, diAtas);
+  const pad = 1.5 * MM;
+  const kiri = rgb(0, 0, 0);
+  const putih = rgb(1, 1, 1);
+  const alfa = Math.max(0.1, Math.min(1, opsi.opacity));
+
+  // Latar putih: label termal tanpa warna, dan badan resi yang tembus pandang tidak boleh
+  // membuat teks pita bertumpuk dengan isi label.
+  p.drawRectangle({ x: 0, y: dasar, width: W, height: strip, color: putih, opacity: 1 });
+
+  const barisY = dasar + 6 * MM;
+  const bh = Math.max(6 * MM, strip - 6 * MM - pad);
+  const bw = (W - 3 * pad) / 2;
+
+  // Kotak kiri: hitam penuh, teks putih. Kotak kanan: putih bergaris, teks hitam.
+  p.drawRectangle({ x: pad, y: barisY, width: bw, height: bh, color: kiri, opacity: alfa });
+  p.drawRectangle({ x: 2 * pad + bw, y: barisY, width: bw, height: bh, borderColor: kiri, borderWidth: 1.5 });
+
+  const kotak = (x: number, teksMentah: string, isiHitam: boolean, ikon: IkonGaris) => {
+    const warnaTeks = isiHitam ? putih : kiri;
+    const ukuranIkon = Math.min(bh * 0.7, 7 * MM);
+    const ix = x + pad;
+    const iy = barisY + (bh - ukuranIkon) / 2;
+    gambarIkonGaris(p, ikon, ix, iy, ukuranIkon, warnaTeks, alfa);
+
+    const tx = ix + ukuranIkon * 1.15 + pad;
+    const mw = x + bw - pad - tx;
+    const teks = (teksMentah || " ").slice(0, 28);
+    const s = ukuranMuat(teks, tebal, mw, Math.min(bh * 0.55, 11));
+    p.drawText(teks, {
+      x: tx,
+      y: barisY + (bh - s * 0.72) / 2,
+      size: s,
+      font: tebal,
+      color: warnaTeks,
+      opacity: alfa,
+    });
+  };
+  kotak(pad, opsi.teks1, true, opsi.ikonKiri);
+  kotak(2 * pad + bw, opsi.teks2, false, opsi.ikonKanan);
+
+  // Baris kecil kiri (di bawah kotak) + nama toko kanan (rata kanan).
+  const t3 = (opsi.teksBawah || "").slice(0, 70);
+  if (t3) {
+    const s3 = ukuranMuat(t3, biasa, W * 0.62, 7);
+    p.drawText(t3, { x: pad, y: dasar + 2 * MM, size: s3, font: biasa, color: kiri, opacity: alfa });
+  }
+  const nama = opsi.namaToko.trim().slice(0, 28);
+  if (nama) {
+    const s = ukuranMuat(nama, tebal, W * 0.32, 7);
+    const tw = tebal.widthOfTextAtSize(nama, s);
+    p.drawText(nama, { x: W - pad - tw, y: dasar + 2 * MM, size: s, font: tebal, color: kiri, opacity: alfa });
+  }
+}
+
+/** Ikon garis sederhana: gelas pecah (fragile) dan kamera (video unboxing). */
+function gambarIkonGaris(p: PDFPage, jenis: IkonGaris, x: number, y: number, s: number, c: ReturnType<typeof rgb>, alfa: number): void {
+  const t = Math.max(0.6, s * 0.06);
+  const garis = (ax: number, ay: number, bx: number, by: number) =>
+    p.drawLine({ start: { x: x + ax * s, y: y + ay * s }, end: { x: x + bx * s, y: y + by * s }, thickness: t, color: c, opacity: alfa });
+  if (jenis === "gelas") {
+    garis(0.12, 0.9, 0.62, 0.9);
+    garis(0.62, 0.9, 0.37, 0.45);
+    garis(0.37, 0.45, 0.12, 0.9);
+    garis(0.37, 0.45, 0.37, 0.12);
+    garis(0.88, 0.55, 0.72, 0.3);
+    garis(0.72, 0.3, 0.94, 0.28);
+    return;
+  }
+  // kamera: badan + lensa + siku perekam
+  p.drawRectangle({ x, y: y + s * 0.12, width: s * 0.66, height: s * 0.62, borderColor: c, borderWidth: t, opacity: alfa });
+  p.drawCircle({ x: x + s * 0.33, y: y + s * 0.43, size: s * 0.09, color: c, opacity: alfa });
+  garis(0.66, 0.42, 0.98, 0.72);
+  garis(0.98, 0.72, 0.98, 0.2);
+  garis(0.98, 0.2, 0.66, 0.42);
 }
 
 /** Kecilkan font sampai muat; berhenti di 4 pt (lebih kecil dari itu tidak terbaca). */
@@ -191,11 +326,20 @@ function gambarMotifDi(
   }
 }
 
-/** Motif berulang menutupi halaman; baris ganjil digeser setengah jarak agar tidak bergaris. */
+/**
+ * Motif berulang di SATU tepi halaman.
+ *
+ * KENAPA TIDAK SELURUH HALAMAN: dulu `posisi` diabaikan dan motif digambar menutupi seluruh
+ * halaman, sehingga "Motif bawah" tetap terlihat di tengah. Sekarang area motif dibatasi
+ * sepertiga tepi yang dipilih, dan baris ganjil digeser setengah jarak agar tidak membentuk
+ * kolom lurus.
+ */
 function motif(
   p: PDFPage,
   W: number,
   H: number,
+  posisi: PosisiWatermark,
+  strip: number,
   o: { ikon: PDFImage | null; rasio: number; nama: string; alfa: number; ikonMm: number; jarakMm: number; sudut: number; tebal: PDFFont }
 ): void {
   const ukuran = Math.max(5, Math.min(40, o.ikonMm)) * MM;
@@ -210,13 +354,18 @@ function motif(
   const c = Math.abs(Math.cos((o.sudut * Math.PI) / 180));
   const langkahX = Math.max(jarak, lebarMotif * c + tinggiMotif * t + 4);
   const langkahY = Math.max(jarak, lebarMotif * t + tinggiMotif * c + 4);
+  // Area motif: sepertiga tepi yang dipilih, DI DALAM sisa ruang setelah pita. Tanpa
+  // pengurangan `strip`, motif bawah tergambar di bawah pita (tertutup kotak hitam) dan
+  // terlihat seperti tidak ada watermark sama sekali.
+  const tinggiArea = Math.max(langkahY, H * 0.34);
+  const yAwal = posisi === "atas" ? Math.max(strip, H - strip - tinggiArea) : strip;
   const kolom = Math.max(1, Math.ceil(W / langkahX) + 1);
-  const baris = Math.max(1, Math.ceil(H / langkahY) + 1);
+  const baris = Math.max(1, Math.ceil(tinggiArea / langkahY) + 1);
 
   for (let b = 0; b < baris; b++) {
     for (let k = 0; k < kolom; k++) {
       const cx = k * langkahX + (b % 2 === 0 ? langkahX / 2 : langkahX);
-      const cy = b * langkahY + langkahY / 2;
+      const cy = yAwal + b * langkahY + langkahY / 2;
       gambarMotifDi(p, cx, cy, o.ikon, o.rasio, o.nama, ukuran, fontTeks, o.sudut, o.alfa, o.tebal);
     }
   }

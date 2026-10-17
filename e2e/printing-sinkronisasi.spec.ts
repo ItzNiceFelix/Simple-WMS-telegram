@@ -5,6 +5,28 @@
 // dan skeleton riwayat yang tidak pernah selesai. Dialign ke perilaku yang terlihat user.
 import { test, expect } from "@playwright/test";
 import type { Page } from "@playwright/test";
+import { PDFDocument, StandardFonts, rgb } from "pdf-lib";
+
+/**
+ * PDF uji 3 halaman: 1 penuh teks, 2 KOSONG, 3 tipis. Halaman 2 sengaja kosong supaya
+ * deteksi "terlihat kosong" punya sesuatu untuk ditandai. Dibuat di dalam tes (bukan berkas
+ * fixture) agar spec tetap jalan walau berkas sementara dibersihkan.
+ */
+async function pdfUji(): Promise<Buffer> {
+  const d = await PDFDocument.create();
+  const f = await d.embedFont(StandardFonts.Helvetica);
+  const isi = [
+    "No. Pesanan: 261014JEHUR52M  No. Resi: SPXID06668320437A",
+    "",
+    "Penerima: Budi",
+  ];
+  for (const teks of isi) {
+    const p = d.addPage([283.46, 425.2]);
+    p.drawRectangle({ x: 0, y: 0, width: 283.46, height: 425.2, color: rgb(1, 1, 1) });
+    if (teks) p.drawText(teks, { x: 14, y: 300, size: 9, font: f });
+  }
+  return Buffer.from(await d.save());
+}
 
 const PRESETS = {
   ok: true,
@@ -55,8 +77,8 @@ test("printing: daftar toko termuat, pemicu bisa dibuka, tombol cetak membuka di
   // Tanpa berkas: tidak ada yang dicetak.
   await expect(page.getByTestId("tombol-cetak")).toBeDisabled();
 
-  await page.getByTestId("berkas-resi").setInputFiles(".tmp-resi.pdf");
-  await expect(page.getByTestId("daftar-berkas")).toContainText(".tmp-resi.pdf");
+  await page.getByTestId("berkas-resi").setInputFiles({ name: "resi-uji.pdf", mimeType: "application/pdf", buffer: await pdfUji() });
+  await expect(page.getByTestId("daftar-berkas")).toContainText("resi-uji.pdf");
   await expect(page.getByTestId("pratinjau-resi")).toBeVisible();
   // Berkas masuk → tombol aktif tanpa perlu memilih toko lagi.
   await expect(page.getByTestId("tombol-cetak")).toBeEnabled();

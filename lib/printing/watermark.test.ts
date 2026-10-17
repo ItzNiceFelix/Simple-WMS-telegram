@@ -5,10 +5,10 @@
 // halaman sehingga "N halaman akan dicetak" melaporkan 1).
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { deflateSync } from "node:zlib";
+import { deflateSync, inflateSync } from "node:zlib";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 
-import { bangunPdf, type OpsiCetak } from "./watermark";
+import { bangunPdf, dasarPita, type OpsiCetak } from "./watermark";
 
 /** PDF uji: satu halaman 100×150 mm berisi teks (halaman tanpa isi tidak bisa ditempel). */
 async function pdfAsli(jumlah = 1): Promise<Uint8Array> {
@@ -51,6 +51,12 @@ function pngHitam1px(): Uint8Array {
 const OPSI: OpsiCetak = {
   tinggiMm: 150,
   posisi: "bawah",
+  teks1: "FRAGILE",
+  teks2: "VIDEO UNBOXING",
+  teksBawah: "Tanpa video unboxing, komplain tidak diproses",
+  ikonKiri: "gelas",
+  ikonKanan: "kamera",
+  stripMm: 20,
   namaToko: "tokohanaa",
   opacity: 0.4,
   rotasi: 20,
@@ -111,6 +117,16 @@ describe("bangunPdf", () => {
       { ...OPSI, ikon: { png: pngHitam1px(), rasio: 1 } }
     );
     assert.ok(dengan.bytes.length > tanpa.bytes.length);
+  });
+
+  it("pita bawah menempel di tepi bawah, pita atas di tepi atas", () => {
+    // Angka ini satu-satunya penentu posisi pita; motif/nama toko hanya lapisan tambahan.
+    const tinggi = 150 * (72 / 25.4);
+    const strip = 20 * (72 / 25.4);
+    assert.equal(dasarPita(tinggi, strip, false), 0, "pita bawah harus mulai di y=0");
+    assert.ok(Math.abs(dasarPita(tinggi, strip, true) - (tinggi - strip)) < 1e-9, "pita atas di y=tinggi-strip");
+    // Pita tidak boleh melewati tepi atas halaman.
+    assert.ok(dasarPita(tinggi, strip, true) + strip <= tinggi + 1e-9);
   });
 
   it("posisi atas/bawah/tengah semuanya menghasilkan halaman sah", async () => {
