@@ -42,7 +42,13 @@ type Agregat = {
   sku_belum_terpetakan?: string[];
   estimasi_kasar?: boolean;
 };
-function isAgregatOk(v: unknown): v is { ok: true; agregat: Agregat; klasifikasi?: Klasifikasi; tanggal?: string } {
+/** Satu tanggal hasil potongan berkas (server memotong per `Waktu Pesanan Dibuat`). */
+type PotonganTanggal = { tanggal: string; jml_order: number; omzet: number; laba: number; parsial: boolean };
+type HasilHitung = {
+  ok: true; agregat: Agregat; klasifikasi?: Klasifikasi;
+  tanggal: PotonganTanggal[]; tanggalPenuh: string[]; tanggalParsial: string[]; tanpaTanggal: number;
+};
+function isAgregatOk(v: unknown): v is HasilHitung {
   return (
     !!v &&
     typeof v === "object" &&
@@ -50,7 +56,8 @@ function isAgregatOk(v: unknown): v is { ok: true; agregat: Agregat; klasifikasi
     v.ok === true &&
     "agregat" in v &&
     !!v.agregat &&
-    typeof v.agregat === "object"
+    typeof v.agregat === "object" &&
+    Array.isArray((v as { tanggal?: unknown }).tanggal)
   );
 };
 
@@ -71,9 +78,9 @@ export function DialogLabaShopee({
   const [klas, setKlas] = useState<Klasifikasi | null>(null);
   const [timpa, setTimpa] = useState(false);
   const [mengirim, setMengirim] = useState(false);
-  const [tanggal, setTanggal] = useState(() =>
-    new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Jakarta", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date())
-  );
+  /** Hasil potongan per tanggal dari server — tanggal TIDAK diketik user lagi. */
+  const [potongan, setPotongan] = useState<PotonganTanggal[]>([]);
+  const [tanpaTanggal, setTanpaTanggal] = useState(0);
 
   function tutup(v: boolean) {
     if (mengirim) return;
@@ -83,6 +90,8 @@ export function DialogLabaShopee({
       setAgregat(null);
       setKlas(null);
       setTimpa(false);
+      setPotongan([]);
+      setTanpaTanggal(0);
     }
     onOpenChange(v);
   }
@@ -128,6 +137,8 @@ export function DialogLabaShopee({
       }
       setAgregat(raw.agregat);
       setKlas(raw.klasifikasi ?? null);
+      setPotongan(raw.tanggal);
+      setTanpaTanggal(raw.tanpaTanggal);
     } catch {
       tampilkanGagalTulis("Jaringan gagal. Coba lagi.");
     } finally {
@@ -138,16 +149,19 @@ export function DialogLabaShopee({
   async function simpan() {
     if (!rows || !agregat) return;
     const sdh = klas ? klas.sama + klas.berubah : 0;
+    const daftar = potongan.map((p) => p.tanggal).join(", ");
+    // Konfirmasi WAJIB menyebut tanggal yang akan ditimpa: berkas 7 hari menjadi 7 snapshot,
+    // dan mode timpa menghapus order lama pada HANYA tanggal yang tercakup berkas ini.
     const pesan = timpa
-      ? `Simpan ke preset "${preset.nama}" tanggal ${tanggal} + TIMPA ${sdh} order lama?`
-      : `Simpan ke preset "${preset.nama}" tanggal ${tanggal}? (${klas?.baru ?? agregat.jml_order} baru, ${sdh} sudah tersimpan dilewati)`;
+      ? `Simpan ${potongan.length} tanggal (${daftar}) ke preset "${preset.nama}" + TIMPA ${sdh} order lama pada tanggal itu?`
+      : `Simpan ${potongan.length} tanggal (${daftar}) ke preset "${preset.nama}"? (${klas?.baru ?? agregat.jml_order} baru, ${sdh} sudah tersimpan dilewati)`;
     if (!window.confirm(pesan)) return;
     setMengirim(true);
     try {
       const res = await fetch("/api/laba", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ aksi: "simpan", presetId: preset.id, rows, file: file?.name ?? "", tanggal, mode: timpa ? "timpa_semua" : "tambah_baru" }),
+        body: JSON.stringify({ aksi: "simpan", presetId: preset.id, rows, file: file?.name ?? "", mode: timpa ? "timpa_semua" : "tambah_baru" }),
         credentials: "include",
       });
       const raw: unknown = await res.json().catch(() => null);
@@ -159,7 +173,8 @@ export function DialogLabaShopee({
         );
         return;
       }
-      toast.success(`Perhitungan tersimpan (tanggal ${raw.tanggal ?? "hari ini"}).`);
+      // Jumlah tanggal, bukan satu tanggal: satu berkas bisa menjadi banyak snapshot.
+      toast.success(`Perhitungan tersimpan untuk ${raw.tanggal.length} tanggal.`);
       tutup(false);
       onSukses?.();
     } catch {
@@ -175,7 +190,7 @@ export function DialogLabaShopee({
         <DialogHeader>
           <DialogTitle>Hitung Laba — {preset.nama}</DialogTitle>
           <DialogDescription>
-            Upload file export Order.all Shopee (.xlsx, sheet &quot;orders&quot;) untuk preset &quot;{preset.nama}&quot; → preview estimasi → pilih tanggal simpan → Simpan Perhitungan. Patokan = dasar resmi (Harga Awal − diskon/voucher penjual).
+            Upload file export Order.all Shopee (.xlsx, sheet &quot;orders&quot;) untuk preset &quot;{preset.nama}&quot; → sistem memotong berkas per tanggal pesanan (WIB) → periksa daftar tanggalnya → Simpan Perhitungan. Tanggal tidak diketik manual: itulah yang membuat snapshot lama tumpang-tindih. Patokan = dasar resmi (Harga Awal − diskon/voucher penjual).
           </DialogDescription>
         </DialogHeader>
         {!agregat ? (
@@ -194,6 +209,33 @@ export function DialogLabaShopee({
           </div>
         ) : (
           <div className="flex flex-col gap-3" data-testid="preview-laba-shopee">
+            {/* Daftar tanggal hasil potongan: inilah snapshot yang akan ditulis. Hari bertanda
+                "parsial" tetap disimpan (angkanya benar untuk order yang ada) tetapi tidak
+                dipakai grafik tren/delta — harinya tidak utuh di berkas ini. */}
+            <div className="rounded-lg border border-border p-2 text-sm" data-testid="potongan-tanggal-laba">
+              <p className="text-xs text-muted-foreground">
+                Akan ditulis {potongan.length} snapshot harian
+                {tanpaTanggal > 0 ? ` · ${tanpaTanggal} baris tanpa tanggal dilewati` : ""}
+              </p>
+              <div className="mt-1 max-h-40 overflow-y-auto">
+                <table className="w-full text-xs">
+                  <thead className="text-muted-foreground">
+                    <tr><th className="text-left font-normal">Tanggal</th><th className="text-right font-normal">Order</th><th className="text-right font-normal">Omzet</th><th className="text-right font-normal">Laba</th><th className="text-right font-normal">Cakupan</th></tr>
+                  </thead>
+                  <tbody className="tabular-nums">
+                    {potongan.map((p) => (
+                      <tr key={p.tanggal}>
+                        <td>{p.tanggal}</td>
+                        <td className="text-right">{p.jml_order}</td>
+                        <td className="text-right">{formatRupiah(p.omzet)}</td>
+                        <td className="text-right">{formatRupiah(p.laba)}</td>
+                        <td className="text-right">{p.parsial ? "sebagian" : "penuh"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
             <dl className="grid grid-cols-2 gap-2 text-sm">
               <div className="rounded-lg border border-border p-2">
                 <dt className="text-xs text-muted-foreground">Order</dt>
@@ -316,16 +358,7 @@ export function DialogLabaShopee({
                 />
                 Timpa order lama
               </label>
-              <Input
-                type="date"
-                className="h-11 md:h-8"
-                aria-label="Tanggal simpan"
-                data-testid="tanggal-simpan-laba"
-                value={tanggal}
-                onChange={(e) => setTanggal(e.target.value)}
-                disabled={mengirim}
-              />
-              <Button onClick={() => void simpan()} disabled={mengirim || !/^\d{4}-\d{2}-\d{2}$/.test(tanggal)} data-testid="simpan-laba-shopee">
+              <Button onClick={() => void simpan()} disabled={mengirim || potongan.length === 0} data-testid="simpan-laba-shopee">
                 {mengirim ? <Spinner data-icon="inline-start" /> : null}
                 {mengirim ? "Menyimpan…" : "Simpan Perhitungan"}
               </Button>

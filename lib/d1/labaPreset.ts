@@ -7,6 +7,14 @@ import { tanggalJakarta } from "./labaShopee";
 
 export type SiapHitung = {
   presetId: number; statusToko: string;
+  /**
+   * Batas atas tanggal yang sedang dihitung. Dipakai saat satu file diimpor sebagai
+   * BANYAK snapshot harian: syarat berbasis volume (`kuota_pesanan_gratis`,
+   * `min_pesanan_terselesaikan`) harus dinilai dengan volume kumulatif SAMPAI tanggal itu,
+   * bukan volume hari itu saja. Kosong = pakai penghitung tersimpan apa adanya (perilaku
+   * impor satu-tanggal yang lama tidak berubah).
+   */
+  sampaiTanggal?: string;
   rules: {
     id: number; jenis: string; kategori: string; status_toko: string | null;
     basis: "persen" | "flat"; unit: "per_baris" | "per_order"; nilai: number;
@@ -28,7 +36,12 @@ export type KlasOrder = { no_pesanan: string; status: StatusKlas; tanggal_lama: 
 export type Klasifikasi = { baru: number; sama: number; berubah: number; contoh: KlasOrder[] };
 export type ModeSimpan = "tambah_baru" | "timpa_semua";
 /** Muat semua data hitung untuk satu preset. Null bila preset tak ada/terhapus. */
-export async function siapkanHitung(db: D1Database, presetId: number): Promise<SiapHitung | null> {
+export async function siapkanHitung(
+  db: D1Database,
+  presetId: number,
+  sampaiTanggal?: string,
+  batasKumulatif = 0
+): Promise<SiapHitung | null> {
   const preset = await db.prepare(
     "SELECT id, status_toko FROM seller_presets WHERE id = ? AND dihapus_at IS NULL"
   ).bind(presetId).first<{ id: number; status_toko: string }>();
@@ -73,13 +86,31 @@ export async function siapkanHitung(db: D1Database, presetId: number): Promise<S
     ? Math.round((ads.total / jual.total) * 1000) / 10
     : null;
 
+  /**
+   * Volume kumulatif sampai `sampaiTanggal`. Dihitung dari registry laba_order (order
+   * status dihitung), bukan dari kolom tersimpan: kolom `pesanan_selesai_kumulatif`
+   * adalah angka SEPANJANG WAKTU dan tidak bisa dipakai menjawab "berapa sampai hari X"
+   * saat satu file dipecah menjadi beberapa tanggal. Kosong = pakai kolom tersimpan.
+   */
+  let pesananKumulatif = penghitung?.pesanan_selesai_kumulatif ?? null;
+  if (sampaiTanggal) {
+    // Dihitung dari registry sampai `sampaiTanggal` — bukan dari kolom tersimpan, yang hanya
+    // menyimpan angka sepanjang waktu dan tidak bisa menjawab "berapa sampai hari X" saat satu
+    // file dipecah menjadi beberapa tanggal. Saat tanggal itu dihitung, registry sudah memuat
+    // tanggal SEBELUMNYA; order hari ini ditambahkan oleh pemanggil (`batasKumulatif`).
+    const kum = await db.prepare(
+      "SELECT COUNT(*) AS n FROM laba_order WHERE preset_id = ? AND tanggal_snapshot < ?"
+    ).bind(presetId, sampaiTanggal).first<{ n: number }>();
+    pesananKumulatif = (kum?.n ?? 0) + batasKumulatif;
+  }
+
   return {
-    presetId, statusToko: preset.status_toko, rules: rulesAktif,
+    presetId, statusToko: preset.status_toko, sampaiTanggal, rules: rulesAktif,
     tierAdmin: new Map(tiers.map((t) => [t.tier, t.persen_final])),
     kategoriTabel: new Map(kats.map((k) => [k.kategori_path, k.tier])),
     grupGo: new Map(kats.filter((k) => k.grup_go).map((k) => [k.kategori_path, k.grup_go as string])),
     iklanPersen,
-    pesananKumulatif: penghitung?.pesanan_selesai_kumulatif ?? null,
+    pesananKumulatif,
     bergabungSejak: penghitung?.bergabung_sejak ?? null,
     uploadPertama: penghitung?.upload_produk_pertama ?? null,
   };

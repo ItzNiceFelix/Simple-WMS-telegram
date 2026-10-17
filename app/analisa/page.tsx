@@ -18,6 +18,8 @@ import { PageHeader } from "@/components/dashboard/page-header";
 import { ButuhAkses } from "@/components/dashboard/butuh-akses";
 import { AnalisaPetaSku } from "@/components/dashboard/analisa-peta-sku";
 import { AnalisaEstimasiIklan } from "@/components/dashboard/analisa-estimasi-iklan";
+import { AnalisaRingkasan } from "@/components/dashboard/analisa-ringkasan";
+import { AnalisaDetailProduk } from "@/components/dashboard/analisa-detail-produk";
 import { tampilkanGagalTulis } from "@/components/dashboard/umpan-tulis";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -140,7 +142,15 @@ function Analisa() {
   const [tanggalPerPreset, setTanggalPerPreset] = useState<Record<string, string[]>>({});
   const [hasil, setHasil] = useState<Hasil | null>(null);
   const [iklan, setIklan] = useState<SaranIklan | null>(null);
-  const [mendalam, setMendalam] = useState<{ narasi: string; model: string; reasoning: string } | null>(null);
+  const [mendalam, setMendalam] = useState<{ narasi: string; model: string; reasoning: string; bahan?: string } | null>(null);
+  /**
+   * Blok kondisi (tren harian/per jam/klasifikasi/komposisi) dari aksi `tren`. Dikirim
+   * bersama permintaan analisa mendalam supaya AI menafsirkan kondisi — bukan hanya
+   * temuan yang sudah dirumuskan sistem. `null` = belum termuat; analisa tetap jalan.
+   */
+  const [konteksAi, setKonteksAi] = useState<{
+    trenHarian: string; perJam: string; fastSlowDead: string; komposisiBiaya: string;
+  } | null>(null);
   /** Kegagalan analisa mendalam + rincian percobaan; disimpan sebagai state karena daftarnya
    *  panjang dan tidak terbaca di dalam toast. Toast hanya menunjukkan sebab utamanya. */
   const [mendalamGagal, setMendalamGagal] = useState<{ pesan: string; ringkas: RingkasanGagal } | null>(null);
@@ -253,6 +263,23 @@ function Analisa() {
     void muatAnalisa(presetId, tanggal);
   }, [presetId, tanggal, muatAnalisa]);
 
+  // Konteks tren diambil saat periode berubah; kegagalannya DIAM (bukan toast): tanpa konteks
+  // analisa mendalam tetap sah, dan toast akan mengganggu setiap kali halaman dibuka.
+  useEffect(() => {
+    if (!presetId || !tanggal) return;
+    let batal = false;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/analisa?aksi=tren&presetId=${presetId}&tanggal=${tanggal}&rentang=7`, { credentials: "include" });
+        const d = (await res.json().catch(() => null)) as { ok?: boolean; bahanAi?: typeof konteksAi } | null;
+        if (!batal && d?.ok && d.bahanAi) setKonteksAi(d.bahanAi);
+      } catch {
+        // diabaikan dengan sengaja
+      }
+    })();
+    return () => { batal = true; };
+  }, [presetId, tanggal]);
+
   // Saran iklan dimuat HANYA saat tab dibuka — tidak membebani tampilan awal.
   async function muatIklan() {
     if (iklan || memuatIklan || !presetId || !tanggal) return;
@@ -282,10 +309,10 @@ function Analisa() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ aksi: "mendalam", presetId, tanggal }),
+        body: JSON.stringify({ aksi: "mendalam", presetId, tanggal, ...(konteksAi ? { konteks: konteksAi } : {}) }),
       });
       const d = (await res.json().catch(() => null)) as {
-        ok?: boolean; narasi?: string; model?: string; reasoning?: string; error?: string;
+        ok?: boolean; narasi?: string; model?: string; reasoning?: string; bahan?: string; error?: string;
         upaya?: { provider: string; model: string; error: string }[];
       } | null;
       if (!res.ok || !d?.ok || !d.narasi) {
@@ -302,7 +329,7 @@ function Analisa() {
         tampilkanGagalTulis(pesan);
         return;
       }
-      setMendalam({ narasi: d.narasi, model: d.model ?? "—", reasoning: d.reasoning ?? "—" });
+      setMendalam({ narasi: d.narasi, model: d.model ?? "—", reasoning: d.reasoning ?? "—", bahan: d.bahan });
     } catch (e) {
       tampilkanGagalTulis(e instanceof Error ? e.message : "Analisa mendalam gagal.");
     } finally {
@@ -418,8 +445,10 @@ function Analisa() {
             </EmptyHeader>
           </Empty>
         ) : (
-          <Tabs defaultValue="temuan">
+          <Tabs defaultValue="ringkasan">
             <TabsList>
+              <TabsTrigger value="ringkasan" data-testid="tab-ringkasan">Ringkasan</TabsTrigger>
+              <TabsTrigger value="detail-produk" data-testid="tab-detail-produk">Detail Produk</TabsTrigger>
               <TabsTrigger value="temuan" data-testid="tab-temuan">Temuan</TabsTrigger>
               <TabsTrigger value="produk" data-testid="tab-produk">Semua Produk</TabsTrigger>
               <TabsTrigger value="iklan" onClick={() => void muatIklan()} data-testid="tab-iklan">
@@ -427,6 +456,16 @@ function Analisa() {
               </TabsTrigger>
               <TabsTrigger value="peta" data-testid="tab-peta">Peta SKU</TabsTrigger>
             </TabsList>
+
+            {/* ══ TAB RINGKASAN (default) ══ */}
+            {/* Grafik & klasifikasi produk. Semua angka dari aksi=tren; komponen hanya menggambar. */}
+            <TabsContent value="ringkasan" className="flex flex-col gap-4">
+              <AnalisaRingkasan presetId={presetId} tanggal={tanggal} />
+            </TabsContent>
+
+            <TabsContent value="detail-produk" className="flex flex-col gap-4">
+              <AnalisaDetailProduk presetId={presetId} tanggal={tanggal} />
+            </TabsContent>
 
             {/* ══ TAB TEMUAN ══ */}
             <TabsContent value="temuan" className="flex flex-col gap-4">
@@ -513,6 +552,18 @@ function Analisa() {
                       <p className="mt-2 text-[11px] text-muted-foreground">
                         {mendalam.model} · reasoning {mendalam.reasoning} · angka dari perhitungan di halaman ini
                       </p>
+                      {/* Bahan yang benar-benar dikirim ke model. Ditampilkan supaya angka yang
+                          dibaca AI bisa diperiksa, bukan hanya dipercaya. */}
+                      {mendalam.bahan ? (
+                        <details className="mt-2" data-testid="bahan-ai">
+                          <summary className="cursor-pointer text-[11px] text-muted-foreground">
+                            Lihat bahan yang dikirim ke AI
+                          </summary>
+                          <pre className="mt-1 max-h-64 overflow-auto whitespace-pre-wrap rounded border border-border bg-background p-2 text-[11px]">
+                            {mendalam.bahan}
+                          </pre>
+                        </details>
+                      ) : null}
                     </div>
                   ) : null}
 

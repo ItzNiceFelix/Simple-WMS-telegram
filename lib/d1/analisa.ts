@@ -9,6 +9,7 @@
 // Menyamakan keduanya membuat analisa mengklaim hal yang tidak ia ketahui.
 import { listGudang } from "./gudang";
 import { sekarang } from "./hasil";
+import type { SnapshotRinci } from "@/lib/analisa/tren";
 
 /** Baris rincian seperti tersimpan di `laba_snapshot.rincian_json`. */
 export type RincianSnapshot = {
@@ -216,6 +217,109 @@ export async function performaPerSku(
   return peta;
 }
 
+/**
+ * Daftar periode impor Performa Produk yang tersedia, terbaru dulu.
+ *
+ * `legacy`/`''` dibuang: baris lama tidak punya rentang tanggal, jadi tidak bisa dibandingkan
+ * dengan periode mana pun. Memasukkannya ke pilihan hanya menghasilkan kartu penuh "—".
+ *
+ * `at DESC` sebagai pengurut kedua karena teks ISO tidak selalu mencerminkan urutan impor
+ * (impor ulang periode lama yang sama harus tetap dianggap baru).
+ */
+export async function daftarPeriodePerforma(db: D1Database, presetId: number): Promise<string[]> {
+  const r = await db
+    .prepare(
+      "SELECT periode, MAX(at) AS at FROM performa_produk " +
+        "WHERE preset_id = ? AND periode <> '' AND periode <> 'legacy' GROUP BY periode " +
+        "ORDER BY periode DESC, at DESC"
+    )
+    .bind(presetId)
+    .all<{ periode: string }>()
+    .catch(() => null);
+  return (r?.results ?? []).map((x) => String(x.periode)).filter((p) => p !== "");
+}
+
+/**
+ * Performa seluruh SKU untuk SATU periode — versi `performaPerSku` yang benar-benar
+ * menyaring `periode = ?`.
+ *
+ * `performaPerSku` sengaja tidak menyaring (lihat catatannya: importer lama menulis '').
+ * Untuk tab Detail Produk filter itu WAJIB: tanpa filter, memilih periode lama tetap
+ * menampilkan angka impor terbaru, dan delta antar periode menjadi nol/salah.
+ * Kosong = data periode itu belum diimpor, bukan "semua nol".
+ */
+export async function performaSemuaSku(
+  db: D1Database,
+  presetId: number,
+  periode: string
+): Promise<Map<string, { dilihat: number; klik: number; kunjungan: number; keranjang: number; pesanan: number; omzet: number; tanpaBeli: number }>> {
+  const peta = new Map<string, { dilihat: number; klik: number; kunjungan: number; keranjang: number; pesanan: number; omzet: number; tanpaBeli: number }>();
+  if (periode === "" || periode === "legacy") return peta;
+  const r = await db
+    .prepare(
+      "SELECT sku, dilihat, klik, kunjungan, keranjang, pesanan, omzet, melihat_tanpa_beli " +
+        "FROM performa_produk WHERE preset_id = ? AND periode = ?"
+    )
+    .bind(presetId, periode)
+    .all<{
+      sku: string; dilihat: number; klik: number; kunjungan: number;
+      keranjang: number; pesanan: number; omzet: number; melihat_tanpa_beli: number;
+    }>()
+    .catch(() => null);
+  for (const x of r?.results ?? []) {
+    const sku = String(x.sku ?? "");
+    if (sku === "") continue;
+    const angka = [
+      Number(x.dilihat ?? 0), Number(x.klik ?? 0), Number(x.kunjungan ?? 0),
+      Number(x.keranjang ?? 0), Number(x.pesanan ?? 0), Number(x.omzet ?? 0),
+      Number(x.melihat_tanpa_beli ?? 0),
+    ];
+    if (!angka.every(Number.isFinite)) continue; // baris rusak dilewati, bukan meracuni tabel
+    peta.set(sku, {
+      dilihat: angka[0], klik: angka[1], kunjungan: angka[2],
+      keranjang: angka[3], pesanan: angka[4], omzet: angka[5], tanpaBeli: angka[6],
+    });
+  }
+  return peta;
+}
+
+/** Satu hari biaya iklan sebuah SKU — titik grafik di dialog detail. */
+export type BarisIklanHarian = {
+  tanggal: string; biaya: number; klik: number; dilihat: number; omzetIklan: number;
+};
+
+/**
+ * Riwayat iklan HARIAN satu SKU, urut tanggal menaik. Kosong bila SKU itu tidak diiklankan
+ * pada rentang tersebut — grafik dialog menampilkannya sebagai "tidak ada data", bukan nol.
+ */
+export async function iklanHarianPerSku(
+  db: D1Database,
+  presetId: number,
+  sku: string,
+  dari: string,
+  sampai: string
+): Promise<BarisIklanHarian[]> {
+  const r = await db
+    .prepare(
+      "SELECT tanggal, COALESCE(biaya, 0) AS biaya, COALESCE(klik, 0) AS klik, " +
+        "COALESCE(dilihat, 0) AS dilihat, COALESCE(omzet_iklan, 0) AS omzet " +
+        "FROM ads_produk WHERE preset_id = ? AND sku = ? AND tanggal BETWEEN ? AND ? ORDER BY tanggal ASC"
+    )
+    .bind(presetId, sku, dari, sampai)
+    .all<{ tanggal: string; biaya: number; klik: number; dilihat: number; omzet: number }>()
+    .catch(() => null);
+  const baris: BarisIklanHarian[] = [];
+  for (const x of r?.results ?? []) {
+    const angka = [Number(x.biaya ?? 0), Number(x.klik ?? 0), Number(x.dilihat ?? 0), Number(x.omzet ?? 0)];
+    if (!angka.every(Number.isFinite)) continue;
+    baris.push({
+      tanggal: String(x.tanggal ?? ""), biaya: angka[0], klik: angka[1],
+      dilihat: angka[2], omzetIklan: angka[3],
+    });
+  }
+  return baris;
+}
+
 /** Satu hari historis penjualan sebuah SKU, seperti dipakai `estimasiIklan`. */
 export type BarisHistoriSku = {
   tanggal: string; omzet: number; unit: number; marginSatuan: number; hargaJual: number;
@@ -297,4 +401,131 @@ export async function daftarPresetAnalisa(db: D1Database) {
 /** Stempel waktu untuk keperluan jejak di respons API. */
 export function waktuSekarang(): number {
   return sekarang();
+}
+
+// ── Masukan grafik tren (halaman Ringkasan Analisa) ──
+// Rentang di sini SELALU inklusif dua ujungnya, sama seperti `seriHarian`.
+
+/**
+ * Snapshot beberapa hari sekaligus untuk grafik tren.
+ *
+ * `pajak` SELALU ikut lewat COALESCE 0: kolomnya baru ditambahkan setelah snapshot lama
+ * tersimpan, dan di D1 lama itu NULL. Tanpa COALESCE, `biaya - pajak` jadi NaN dan seluruh
+ * komposisi biaya hilang hanya karena satu baris lama — nol di sini jujur: snapshot lama
+ * memang tidak mencatat pajak terpisah.
+ */
+export async function snapshotRentang(
+  db: D1Database,
+  presetId: number,
+  dari: string,
+  sampai: string
+): Promise<SnapshotRinci[]> {
+  const hasil = await db
+    .prepare(
+      "SELECT tanggal, omzet, hpp, biaya, COALESCE(pajak, 0) AS pajak, laba, jml_order " +
+        "FROM laba_snapshot WHERE preset_id = ? AND tanggal >= ? AND tanggal <= ? ORDER BY tanggal"
+    )
+    .bind(presetId, dari, sampai)
+    // Tabel/kolom belum ada (DB lama) → daftar kosong: grafik tampil "data belum ada",
+    // bukan halaman error. Gaya sama dengan `metrikIklanPerSku`.
+    .all<Record<string, unknown>>()
+    .catch(() => null);
+  const out: SnapshotRinci[] = [];
+  for (const r of hasil?.results ?? []) {
+    const tanggal = String(r["tanggal"] ?? "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(tanggal)) continue; // baris rusak dilewati, bukan meracuni seri
+    const angka = [
+      Number(r["omzet"] ?? 0), Number(r["hpp"] ?? 0), Number(r["biaya"] ?? 0),
+      Number(r["pajak"] ?? 0), Number(r["laba"] ?? 0), Number(r["jml_order"] ?? 0),
+    ];
+    if (!angka.every(Number.isFinite)) continue;
+    out.push({
+      tanggal,
+      omzet: angka[0], hpp: angka[1], biaya: angka[2],
+      pajak: angka[3], laba: angka[4], jml_order: angka[5],
+    });
+  }
+  return out;
+}
+
+/**
+ * Omzet & laba per JAM pesanan dibuat, dijumlah dari `laba_order` untuk tanggal snapshot
+ * yang dipilih. Selalu 24 elemen (jam 0–23), termasuk jam tanpa pesanan (omzet 0) —
+ * grafik per jam butuh sumbu 24 jam yang utuh, bukan hanya jam yang kebetulan ada isinya.
+ *
+ * Jam diambil dari `substr(tanggal_pesanan, 12, 2)`: format kolomnya `YYYY-MM-DD HH:MM`
+ * (WIB), jadi posisi 12–13 adalah jam. Baris tanpa jam valid dilewati.
+ */
+export async function orderPerJam(
+  db: D1Database,
+  presetId: number,
+  tanggal: string[]
+): Promise<{ jam: number; omzet: number; laba: number }[]> {
+  const out = Array.from({ length: 24 }, (_, jam) => ({ jam, omzet: 0, laba: 0 }));
+  const unik = [...new Set(tanggal)].filter((t) => /^\d{4}-\d{2}-\d{2}$/.test(t));
+  if (unik.length === 0) return out;
+  // D1 membatasi jumlah parameter per query; potong agar aman (gaya sama dengan petaHppMaster).
+  const UKURAN = 90;
+  for (let i = 0; i < unik.length; i += UKURAN) {
+    const bagian = unik.slice(i, i + UKURAN);
+    const tanda = bagian.map(() => "?").join(",");
+    const bagianHasil = await db
+      .prepare(
+        "SELECT substr(tanggal_pesanan, 12, 2) AS jam, COALESCE(SUM(omzet), 0) AS omzet, " +
+          "COALESCE(SUM(laba), 0) AS laba FROM laba_order " +
+          `WHERE preset_id = ? AND tanggal_snapshot IN (${tanda}) GROUP BY jam`
+      )
+      .bind(presetId, ...bagian)
+      .all<{ jam: string | null; omzet: number; laba: number }>()
+      .catch(() => null);
+    for (const r of bagianHasil?.results ?? []) {
+      const jam = Number(r.jam);
+      // Jam rusak/kosong (mis. baris tanpa Waktu Pesanan Dibuat) tidak bisa ditaruh di
+      // sumbu 24 jam; membuangnya lebih jujur daripada menaruhnya di jam tertentu.
+      if (!Number.isInteger(jam) || jam < 0 || jam > 23) continue;
+      out[jam].omzet += Number(r.omzet ?? 0) || 0;
+      out[jam].laba += Number(r.laba ?? 0) || 0;
+    }
+  }
+  return out;
+}
+
+/**
+ * Qty terjual per SKU dalam satu rentang tanggal, dari order NYATA (`orders` ⋈ `order_items`).
+ *
+ * Sumber berbeda dari snapshot disengaja: snapshot hanya memuat SKU yang menghasilkan laba,
+ * sedangkan klasifikasi fast/slow/dead butuh qty nol pun (dead stock). Order batal
+ * dikecualikan karena barangnya belum tentu keluar gudang — menghitungnya membuat SKU mati
+ * terlihat laku, justru kesalahan yang mau dicegah panel ini.
+ */
+export async function volumeSkuRentang(
+  db: D1Database,
+  presetId: number,
+  dari: string,
+  sampai: string
+): Promise<Map<string, { qty: number }>> {
+  // `orders.tanggal` adalah epoch detik (lihat migrasi 0006), bukan teks tanggal. Batas
+  // akhir memakai 23:59:59 di hari `sampai` supaya order siang hari terakhir ikut.
+  const epochDari = Math.floor(Date.parse(`${dari}T00:00:00Z`) / 1000);
+  const epochSampai = Math.floor(Date.parse(`${sampai}T23:59:59Z`) / 1000);
+  const peta = new Map<string, { qty: number }>();
+  if (!Number.isFinite(epochDari) || !Number.isFinite(epochSampai)) return peta;
+  const hasil = await db
+    .prepare(
+      "SELECT i.sku AS sku, COALESCE(SUM(i.qty), 0) AS qty " +
+        "FROM orders o JOIN order_items i ON i.marketplace = o.marketplace AND i.no_pesanan = o.no_pesanan " +
+        "WHERE o.preset_id = ? AND o.tanggal >= ? AND o.tanggal <= ? AND o.status_fulfill <> 'batal' " +
+        "GROUP BY i.sku"
+    )
+    .bind(presetId, epochDari, epochSampai)
+    .all<{ sku: string; qty: number }>()
+    .catch(() => null);
+  for (const r of hasil?.results ?? []) {
+    const sku = String(r.sku ?? "");
+    if (sku === "") continue;
+    const qty = Number(r.qty ?? 0);
+    if (!Number.isFinite(qty)) continue;
+    peta.set(sku, { qty });
+  }
+  return peta;
 }

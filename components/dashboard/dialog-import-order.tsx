@@ -139,6 +139,12 @@ interface Props {
   open: boolean
   onOpenChange: (open: boolean) => void
   onSukses?: () => void
+  /**
+   * Toko pemilik order yang diimpor. Wajib diisi (null = belum dipilih): satu D1 dipakai
+   * banyak toko, jadi tanpa preset order masuk ke toko yang salah tanpa terlihat di daftar
+   * maupun perhitungan laba. Server menolak `impor-potong` tanpa `presetId`.
+   */
+  preset: { id: number; nama: string } | null
 }
 
 /** Opsi SKU untuk 1 baris "Perlu SKU": kandidat tebakan (beri skor) lalu seluruh master. */
@@ -148,7 +154,7 @@ function opsiUntuk(b: BarisBelumSku, master: OpsiSku[]): OpsiSku[] {
   return [...dariTebakan, ...master.filter((m) => !ada.has(m.sku))]
 }
 
-export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
+export function DialogImportOrder({ open, onOpenChange, onSukses, preset }: Props) {
   const [files, setFiles] = useState<File[]>([])
   const [hasil, setHasil] = useState<HasilBerkas[] | null>(null)
   const [mengirim, setMengirim] = useState(false)
@@ -228,6 +234,9 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
   }
 
   async function unggah() {
+    // Preview belum menulis apa pun, tapi tombolnya ikut mati saat preset null: memaksa
+    // user memilih toko SEBELUM memilih berkas, bukan sesudah seluruh baris dipetakan.
+    if (!preset) return
     if (files.length === 0) return
     setMengirim(true)
     setHasil([])
@@ -366,6 +375,12 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
   async function konfirmasi() {
     const siap = (hasil ?? []).filter((h): h is Extract<HasilBerkas, { gagal: false }> => !h.gagal)
     if (siap.length === 0) return
+    // Payung terakhir: tombol memang sudah dimatikan saat preset null, tapi impor tanpa preset
+    // akan ditolak server 400 setelah seluruh berkas diparse — hentikan sebelum ada request.
+    if (!preset) {
+      tampilkanGagalTulis("Pilih preset/toko pemilik order dulu — impor tanpa preset masuk ke toko yang salah.")
+      return
+    }
     setMengirim(true)
     // Controller datang dari pemilihan berkas (lihat onChange input): Konfirmasi tidak pernah
     // berjalan tanpa controller. Cadangan di sini hanya untuk jaga-jaga bila berkas dipilih
@@ -408,7 +423,7 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
             }))
           )
         try {
-          const r = await imporBertahap(h, skuManual, tandaiBelumMp, batal.signal)
+          const r = await imporBertahap(h, preset.id, skuManual, tandaiBelumMp, batal.signal)
           if (r.batal) {
             // Dibatalkan user: batchId SUDAH tersimpan di state, jadi impor bisa dilanjutkan
             // nanti tanpa mengulang potongan yang sudah masuk.
@@ -468,6 +483,7 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
    */
   async function imporBertahap(
     h: Extract<HasilBerkas, { gagal: false }>,
+    presetId: number,
     skuManual: { order_ref: string; nama_shopee: string; variasi: string; sku: string }[],
     tandaiBelumMp: { order_ref: string; nama_shopee: string; variasi: string; sumber: string; sku_asal: string; qty_total: number }[],
     signal: AbortSignal,
@@ -558,6 +574,7 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
       const r = await kirim({
         aksi: "impor-potong",
         batchId,
+        presetId,
         nomorPotong,
         potongan: bagian,
         skuManual: skuManual.filter((m) => noPesananPotong.has(m.order_ref)),
@@ -663,6 +680,18 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
             seller) — diproses berurutan. File sama ditolak (fingerprint). Status yang sudah lebih maju di WMS
             tidak diturunkan.
           </DialogDescription>
+          {/* Satu D1 dipakai banyak toko: nama preset ditampilkan supaya user melihat toko tujuan
+              SEBELUM konfirmasi, bukan menemukan order nyasar di daftar setelah impor. */}
+          <p className="text-sm" data-testid="preset-import-order">
+            {preset ? (
+              <>Toko tujuan: <b>{preset.nama}</b></>
+            ) : (
+              <span className="text-red-600">
+                Preset/toko belum dipilih — pilih preset di halaman Order dulu. Impor tanpa preset tidak dijalankan
+                karena order akan masuk ke toko yang salah tanpa terlihat.
+              </span>
+            )}
+          </p>
         </DialogHeader>
 
         {/* Isi scroll sendiri (flex-1) supaya footer tetap terjangkau di HP. */}
@@ -909,8 +938,13 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
         </div>
 
         <DialogFooter className="shrink-0">
+          {!preset && (
+            <p className="mr-auto self-center text-xs text-red-600" data-testid="preset-kosong-import-order">
+              Preset/toko belum dipilih — impor dinonaktifkan. Tutup dialog, pilih preset di halaman Order, lalu buka lagi.
+            </p>
+          )}
           {daftarHasil.length === 0 ? (
-            <Button onClick={unggah} disabled={files.length === 0 || mengirim} data-testid="unggah-import-order">
+            <Button onClick={unggah} disabled={files.length === 0 || mengirim || !preset} data-testid="unggah-import-order">
               {mengirim && <Spinner />} Upload &amp; preview
             </Button>
           ) : (
@@ -939,7 +973,7 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
               <Button
                 variant="outline"
                 onClick={mulaiDariAwal}
-                disabled={!lanjutanBerkas || mengirim || !siapCommit()}
+                disabled={!lanjutanBerkas || mengirim || !siapCommit() || !preset}
                 data-testid="mulai-baru-import-order"
               >
                 Mulai dari awal
@@ -966,7 +1000,7 @@ export function DialogImportOrder({ open, onOpenChange, onSukses }: Props) {
                   Hentikan
                 </Button>
               )}
-              <Button onClick={konfirmasi} disabled={mengirim || !siapCommit()} data-testid="konfirmasi-import-order">
+              <Button onClick={konfirmasi} disabled={mengirim || !siapCommit() || !preset} data-testid="konfirmasi-import-order">
                 {mengirim && <Spinner />} Konfirmasi
               </Button>
             </>

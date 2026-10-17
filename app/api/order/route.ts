@@ -3,11 +3,13 @@
 // POST { aksi:'konfirmasi', batch_id } → imporPesanan → { ok, order, item }.
 // POST { aksi:'preview-shopee', ordersRows, advanceRows } → klasifikasi + tebak SKU → batch 'preview' (klien memegang barisnya).
 // POST { aksi:'mulai-impor', namaBerkas, totalBaris } → batch bertahap baru (atau lanjutkan yang belum selesai) → { batchId, sudahBaris }.
-// POST { aksi:'impor-potong', batchId, potongan, nomorPotong } → commit SATU potongan → { tersimpan, dilewati, progressBaris }.
+// POST { aksi:'impor-potong', batchId, presetId, potongan, nomorPotong } → commit SATU potongan → { tersimpan, dilewati, progressBaris }.
+// POST { aksi:'konfirmasi-shopee', batch_id, presetId, skuManual?, tandaiBelumMp? } → commit batch preview lama.
+//   `presetId` WAJIB di kedua jalur tulis: satu D1 dipakai banyak toko, tanpa preset order masuk ke toko yang salah tanpa terlihat.
 // POST { aksi:'selesai-impor', batchId } → tutup batch bertahap → { ok, order, item, batch_id, dilewati }.
 // POST { aksi:'transisi', marketplace, no_pesanan, ke } → transisiFulfill.
 // POST { aksi:'hapus', targets:[{ marketplace, no_pesanan }] } → hapus baris order (koreksi salah impor).
-// GET ?aksi=daftar&dari=&sampai=&tanggal=&mp=&status=&sku=&urut=&arah=&halaman=&ukuran=
+// GET ?aksi=daftar&dari=&sampai=&tanggal=&mp=&status=&sku=&presetId=&urut=&arah=&halaman=&ukuran=
 //   → { ok, orders, ekspor, total, halaman, ukuran, jumlah_halaman, urut, arah } (header+item+fee, tanpa laba).
 //   `tanggal=YYYY-MM-DD` = satu hari penuh (menang atas dari/sampai); urut ∈ {marketplace, no_pesanan,
 //   no_resi, tanggal, status_fulfill}, default tanggal desc.
@@ -16,7 +18,7 @@
 import { getDb } from "@/lib/d1/db";
 import { ambilProduk, ambilProdukBanyak, normalisasiNama } from "@/lib/d1/produk";
 import {
-  ambilOrderBanyak, imporPesanan, listOrder, listOrderBerSku, transisiFulfill,
+  ambilOrderBanyak, imporPesanan, labaPerOrder, listOrder, listOrderBerSku, transisiFulfill,
   KOLOM_URUT_ORDER, type ArahUrut, type BarisPesanan, type KolomUrutOrder,
 } from "@/lib/d1/order";
 import { transisiFulfillBatch, type KeFulfill } from "@/lib/d1/orderTransisi";
@@ -229,6 +231,7 @@ type HasilSusun = {
 async function susunPernyataanOrder(
   db: D1Database,
   batchId: number,
+  presetId: number,
   orders: GabunganOrder[],
   opsi: {
     skuManual: Map<string, string>;
@@ -265,19 +268,23 @@ async function susunPernyataanOrder(
       no: o.no_pesanan,
       stmt: db
         .prepare(
+          // Satu D1 dipakai banyak toko, jadi `preset_id` WAJIB ikut tertulis: tanpa penanda
+          // toko, order import masuk ke toko yang salah tanpa terlihat (fee/laba di /laba
+          // dihitung per preset, dan daftar order per preset akan mencampur akun).
           `INSERT INTO orders (marketplace, no_pesanan, tanggal, buyer, status_fulfill, pajak_pph, pajak_ppn_persen, stok_dikurangi, no_resi,
-            asal_import, opsi_kirim, antar_ke, status_mp, batch_import, jasa_kirim, tipe_layanan, cod, preorder, item_json)
-           VALUES ('shopee', ?, ?, ?, ?, 0, 0, 0, ?, 'orders_toship', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            asal_import, opsi_kirim, antar_ke, status_mp, batch_import, jasa_kirim, tipe_layanan, cod, preorder, item_json, preset_id)
+           VALUES ('shopee', ?, ?, ?, ?, 0, 0, 0, ?, 'orders_toship', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(marketplace, no_pesanan) DO UPDATE SET
              tanggal = excluded.tanggal, buyer = excluded.buyer, no_resi = CASE WHEN excluded.no_resi = '' THEN orders.no_resi ELSE excluded.no_resi END,
              opsi_kirim = excluded.opsi_kirim, antar_ke = excluded.antar_ke, status_mp = excluded.status_mp, batch_import = excluded.batch_import,
              jasa_kirim = excluded.jasa_kirim, tipe_layanan = excluded.tipe_layanan, cod = excluded.cod, preorder = excluded.preorder, item_json = excluded.item_json,
+             preset_id = excluded.preset_id,
              asal_import = CASE WHEN orders.asal_import = '' THEN excluded.asal_import ELSE orders.asal_import END,
              status_fulfill = CASE WHEN orders.status_fulfill = 'pending' THEN excluded.status_fulfill ELSE orders.status_fulfill END`,
         )
         .bind(
           o.no_pesanan, o.tanggal, o.buyer, o.statusAwal, o.noResi,
-          o.opsiKirim, o.antarKe, o.statusMp, batchId, o.jasaKirim, o.tipeLayanan, o.cod ? 1 : 0, o.preorder ? 1 : 0, JSON.stringify(o.items),
+          o.opsiKirim, o.antarKe, o.statusMp, batchId, o.jasaKirim, o.tipeLayanan, o.cod ? 1 : 0, o.preorder ? 1 : 0, JSON.stringify(o.items), presetId,
         ),
     });
     stmts.push({ no: o.no_pesanan, stmt: db.prepare("DELETE FROM order_items WHERE marketplace = 'shopee' AND no_pesanan = ?").bind(o.no_pesanan) });
@@ -625,7 +632,7 @@ async function validasiBarisPesanan(db: D1Database, row: Record<string, unknown>
 }
 
 type FilterDaftar = {
-  mp?: string; status?: string; sku?: string; dari?: number; sampai?: number;
+  mp?: string; status?: string; sku?: string; dari?: number; sampai?: number; presetId?: number;
   limit: number; offset: number; halaman: number;
   kolomUrut: KolomUrutOrder; arah: ArahUrut;
 };
@@ -672,6 +679,10 @@ function filterDariQuery(url: URL): { ok: true; filter: FilterDaftar } | { ok: f
   const kolomParam = url.searchParams.get("urut") ?? "";
   if ((KOLOM_URUT_ORDER as readonly string[]).includes(kolomParam)) filter.kolomUrut = kolomParam as KolomUrutOrder;
   if (url.searchParams.get("arah") === "asc") filter.arah = "asc";
+  // Filter toko. Bukan allowlist: nilainya id preset, jadi cukup divalidasi sebagai integer > 0;
+  // nilai tak sah diperlakukan seperti tidak dikirim (daftar tetap tampil) — alasan sama dengan `urut`.
+  const presetParam = Number(url.searchParams.get("presetId"));
+  if (Number.isInteger(presetParam) && presetParam > 0) filter.presetId = presetParam;
   if (dariTeks) {
     const d = tanggalKeEpoch(dariTeks);
     if (d === null) return { ok: false, error: "Param dari harus YYYY-MM-DD." };
@@ -1125,7 +1136,27 @@ export async function GET(request: Request) {
     : await listOrder(db, filter);
   const daftar = halaman.orders;
   // Header+item+fee SEMUA baris halaman dalam beberapa kueri, bukan 3 kueri per baris.
-  const orders = await ambilOrderBanyak(db, daftar.map((h) => ({ mp: h.marketplace, no: h.no_pesanan })));
+  const rinci = await ambilOrderBanyak(db, daftar.map((h) => ({ mp: h.marketplace, no: h.no_pesanan })));
+  // Laba hanya dilampirkan bila preset dikirim. Tanpa preset, `laba_order` milik toko LAIN
+  // bisa ikut terbaca kalau no_pesanan kebetulan sama — angka salah lebih berbahaya daripada
+  // angka kosong. Kueri-nya juga sengaja TIDAK dijalankan sama sekali supaya jalur tanpa
+  // preset tidak membayar biaya baca tabel laba.
+  const laba = f.filter.presetId
+    ? await labaPerOrder(db, f.filter.presetId, daftar.map((h) => h.no_pesanan))
+    : null;
+  // `undefined` (bukan 0) saat tak ada baris: JSON membuang kuncinya, klien merender "—".
+  const orders = laba
+    ? rinci.map((o) => {
+      const l = laba.get(o.no_pesanan);
+      return {
+        ...o,
+        laba: l?.laba,
+        margin: l?.margin,
+        biaya: l?.biaya,
+        laba_tanggal: l?.tanggal_snapshot,
+      };
+    })
+    : rinci;
   // Tag "sudah diekspor" per mode: satu gelombang kueri untuk SEMUA order di daftar, bukan
   // satu kueri per baris. Kunci `${mp}|${no}` sama dengan kunci `kunciOrder` di halaman order.
   const ekspor = Object.fromEntries(await petaEkspor(db, daftar.map((h) => ({ mp: h.marketplace, no: h.no_pesanan }))));
@@ -1226,6 +1257,12 @@ export async function POST(request: Request) {
     if (!Number.isFinite(batchId) || batchId <= 0) return json({ ok: false, error: "batchId wajib angka." }, 400);
     const nomorPotong = Number(body.nomorPotong);
     if (!Number.isFinite(nomorPotong) || nomorPotong <= 0) return json({ ok: false, error: "nomorPotong wajib angka > 0." }, 400);
+    // Satu D1 dipakai banyak toko: preset menentukan order ini milik akun mana. Tanpa nilai
+    // yang jelas, impor akan masuk ke toko yang salah tanpa terlihat di UI/daftar order.
+    const presetId = Number(body.presetId);
+    if (!Number.isInteger(presetId) || presetId <= 0) {
+      return json({ ok: false, error: "presetId wajib diisi — pilih toko/preset pemilik order sebelum impor." }, 400);
+    }
     const potongan = Array.isArray(body.potongan) ? (body.potongan as GabunganOrder[]) : [];
     if (potongan.length === 0) return json({ ok: false, error: "Potongan kosong." }, 400);
     if (potongan.length > UKURAN_POTONG) {
@@ -1276,7 +1313,7 @@ export async function POST(request: Request) {
     }
     // Cache SELECT produk per potongan: satu SKU yang muncul di puluhan baris cukup satu kueri.
     // Inilah penghemat utama yang membuat potongan 200 baris tetap di bawah anggaran subrequest.
-    const susunan = await susunPernyataanOrder(db, batch.id, potongan, {
+    const susunan = await susunPernyataanOrder(db, batch.id, presetId, potongan, {
       skuManual,
       kunciBelumMp,
       ambilProdukCache: new Map(),
@@ -1539,6 +1576,12 @@ export async function POST(request: Request) {
     } catch {
       return json({ ok: false, error: "Payload batch rusak." }, 500);
     }
+    // Sama seperti `impor-potong`: order harus jelas milik toko/preset mana. Satu D1 dipakai
+    // banyak toko, jadi tanpa preset order masuk ke toko yang salah tanpa terlihat.
+    const presetId = Number(body.presetId);
+    if (!Number.isInteger(presetId) || presetId <= 0) {
+      return json({ ok: false, error: "presetId wajib diisi — pilih toko/preset pemilik order sebelum impor." }, 400);
+    }
     const orders = Array.isArray(payload.orders) ? payload.orders : [];
     const advance = Array.isArray(payload.advance) ? payload.advance : [];
     if (orders.length === 0 && advance.length === 0) return json({ ok: false, error: "Tak ada order valid untuk disimpan." }, 400);
@@ -1581,7 +1624,7 @@ export async function POST(request: Request) {
     }
     // Penyusunan pernyataan dibagi dengan jalur bertahap (susunPernyataanOrder) supaya kedua
     // jalur tak pernah menyimpang aturannya.
-    const susunan = await susunPernyataanOrder(db, batch.id, orders, {
+    const susunan = await susunPernyataanOrder(db, batch.id, presetId, orders, {
       skuManual,
       kunciBelumMp,
       ambilProdukCache: new Map(),

@@ -264,8 +264,10 @@ async function panggil(db: unknown, body: Record<string, unknown>): Promise<{ st
   // global berasal dari uji route lain; di sini yang dipasang mock berbeda, jadi diset lewat
   // satu-satunya jalur yang memang menerima nilai apa pun.
   (globalThis as unknown as { __TMA_TEST_DB__?: unknown }).__TMA_TEST_DB__ = db;
+  // Body dibaca sebagai JSON lalu di-cast ke Jawaban: balasan 400 (`{ ok, error }`) tidak
+  // memuat `order`/`item`, jadi hanya field yang ada yang benar-benar terisi.
   const res = await POST(req(body));
-  return { status: res.status, body: (await res.json()) as Jawaban };
+  return { status: res.status, body: (await res.json().catch(() => ({}))) as Jawaban };
 }
 
 /**
@@ -373,7 +375,7 @@ describe("konfirmasi-shopee + FK order_items.sku", () => {
       orders: [order("O-1", [item("A", "Produk A"), item("ZZ", "Barang ZZ")]), order("O-2", [item("A", "Produk A")])],
       advance: [],
     });
-    const r = await panggil(db, { aksi: "konfirmasi-shopee", batch_id: 7 });
+    const r = await panggil(db, { aksi: "konfirmasi-shopee", batch_id: 7, presetId: 1 });
     assert.equal(r.status, 200, `harus 200, bukan 500: ${r.body.error ?? ""}`);
     assert.equal(r.body.ok, true);
     // Order sehat TETAP tersimpan.
@@ -395,7 +397,7 @@ describe("konfirmasi-shopee + FK order_items.sku", () => {
       advance: [],
     });
     const r = await panggil(db, {
-      aksi: "konfirmasi-shopee", batch_id: 7,
+      aksi: "konfirmasi-shopee", batch_id: 7, presetId: 1,
       tandaiBelumMp: [{ order_ref: "P-1", nama_shopee: "Belum di MP sama sekali", variasi: "", sumber: "order", qty_total: 1 }],
     });
     assert.equal(r.status, 200, `harus 200: ${r.body.error ?? ""}`);
@@ -418,7 +420,7 @@ describe("konfirmasi-shopee + FK order_items.sku", () => {
     tahanProduk(true);
 
     const r = await panggil(db, {
-      aksi: "konfirmasi-shopee", batch_id: 7,
+      aksi: "konfirmasi-shopee", batch_id: 7, presetId: 1,
       tandaiBelumMp: [{ order_ref: "Q-1", nama_shopee: "Tanpa SKU", variasi: "", sumber: "order", qty_total: 1 }],
     });
     assert.equal(r.status, 200, `satu baris buruk tidak boleh 500: ${r.body.error ?? ""}`);
@@ -432,10 +434,44 @@ describe("konfirmasi-shopee + FK order_items.sku", () => {
   it("semua pernyataan gagal → tetap error (bukan sukses palsu)", async () => {
     const fake = buatDbFk(["A"], { hash: "h4", orders: [order("R-1", [item("A", "Produk A")])], advance: [] });
     fake.rusakTotal();
-    const r = await panggil(fake.db, { aksi: "konfirmasi-shopee", batch_id: 7 });
+    const r = await panggil(fake.db, { aksi: "konfirmasi-shopee", batch_id: 7, presetId: 1 });
     assert.notEqual(r.status, 200, "semua gagal bukan sukses");
     assert.equal(r.body.ok, false);
     assert.match(String(r.body.error), /masalah skema|ditolak/i);
+  });
+});
+
+// Satu D1 dipakai banyak toko: tanpa `presetId` order masuk ke toko yang salah tanpa terlihat.
+// Jadi server MENOLAK impor tanpa preset, bukan menulis dengan preset kosong/tebakan.
+describe("impor wajib presetId", () => {
+  it("konfirmasi-shopee tanpa presetId → 400 yang menyebut presetId", async () => {
+    const { db } = buatDbFk(["A"], { hash: "h5", orders: [order("S-1", [item("A", "Produk A")])], advance: [] });
+    const r = await panggil(db, { aksi: "konfirmasi-shopee", batch_id: 7 });
+    assert.equal(r.status, 400);
+    assert.equal(r.body.ok, false);
+    assert.match(String(r.body.error), /presetId/);
+    assert.equal(db.data.orders.size, 0, "tidak boleh ada order tertulis tanpa toko");
+  });
+
+  it("presetId bukan integer > 0 → 400", async () => {
+    const { db } = buatDbFk(["A"], { hash: "h6", orders: [order("S-2", [item("A", "Produk A")])], advance: [] });
+    for (const presetId of [0, -3, 1.5, "abc", null]) {
+      const r = await panggil(db, { aksi: "konfirmasi-shopee", batch_id: 7, presetId });
+      assert.equal(r.status, 400, `presetId=${String(presetId)} harus ditolak`);
+      assert.match(String(r.body.error), /presetId/);
+    }
+    assert.equal(db.data.orders.size, 0);
+  });
+
+  it("impor-potong tanpa presetId → 400 sebelum pernyataan disusun", async () => {
+    const r = await panggil(buatDbBertahap([{ file: "a.xlsx", status: "preview", progres_baris: 0 }]), {
+      aksi: "impor-potong",
+      batchId: 101,
+      nomorPotong: 1,
+      potongan: [order("T-1", [item("A", "Produk A")])],
+    });
+    assert.equal(r.status, 400);
+    assert.match(String(r.body.error), /presetId/);
   });
 });
 

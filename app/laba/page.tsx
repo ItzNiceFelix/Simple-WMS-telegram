@@ -63,6 +63,20 @@ type Snapshot = {
 
 type RingkasTanggal = { tanggal: string; jml_order: number; laba: number };
 
+/**
+ * Kunci minggu (Senin..Minggu) untuk mengelompokkan riwayat snapshot.
+ *
+ * Sejak impor memotong satu berkas menjadi BANYAK tanggal, riwayat cepat memanjang (7 hari
+ * per berkas). Daftar datar berisi puluhan tombol tidak terbaca; kelompok per minggu membuat
+ * "data minggu ini" dan "minggu lalu" terpisah tanpa mengubah tanggal yang disimpan.
+ */
+function mingguDari(tanggal: string): string {
+  const d = new Date(`${tanggal}T00:00:00Z`);
+  const hariMap = (d.getUTCDay() + 6) % 7; // Senin = 0
+  d.setUTCDate(d.getUTCDate() - hariMap);
+  return d.toISOString().slice(0, 10);
+}
+
 type BarisOverlap = {
   no_pesanan: string;
   tanggal_list: string[];
@@ -340,21 +354,28 @@ function LabaPreset() {
               </Field>
               {daftar && daftar.length > 0 ? (
                 <Field className="w-full sm:max-w-64">
-                  <FieldLabel htmlFor="daftar-tanggal-laba">Riwayat tersimpan</FieldLabel>
-                  <div id="daftar-tanggal-laba" className="flex flex-wrap gap-1.5" data-testid="daftar-tanggal-laba">
-                    {daftar.slice(0, 7).map((d) => (
-                      <Button
-                        key={d.tanggal}
-                        size="sm"
-                        variant={d.tanggal === tanggal ? "default" : "outline"}
-                        className="h-7 px-2 text-xs"
-                        onClick={() => setTanggal(d.tanggal)}
-                        data-testid={`tanggal-${d.tanggal}`}
-                      >
-                        {d.tanggal.slice(5)}
-                      </Button>
-                    ))}
-                  </div>
+                  <FieldLabel htmlFor="daftar-tanggal-laba">Riwayat tersimpan ({daftar.length})</FieldLabel>
+                  {/* Dikelompokkan per minggu: impor berkas 7 hari menghasilkan 7 snapshot, jadi
+                      daftar datar berisi puluhan tombol dan tanggal terbaru tersembunyi. */}
+                  <Select value={tanggal} onValueChange={(v) => typeof v === "string" && v && setTanggal(v)}>
+                    <SelectTrigger id="daftar-tanggal-laba" className="h-11 w-full md:h-8" data-testid="daftar-tanggal-laba">
+                      <SelectValue>{tanggal || "Pilih tanggal"}</SelectValue>
+                    </SelectTrigger>
+                    <SelectContent className="max-h-72">
+                      {[...new Set(daftar.map((d) => mingguDari(d.tanggal)))].map((m) => (
+                        <SelectGroup key={m}>
+                          <div className="px-2 py-1 text-xs text-muted-foreground">
+                            Minggu {m.slice(5)} — {daftar.filter((d) => mingguDari(d.tanggal) === m).length} snapshot
+                          </div>
+                          {daftar.filter((d) => mingguDari(d.tanggal) === m).map((d) => (
+                            <SelectItem key={d.tanggal} value={d.tanggal} data-testid={`tanggal-${d.tanggal}`}>
+                              {d.tanggal} · {d.jml_order} order · {formatRupiah(d.laba)}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </Field>
               ) : null}
             </div>

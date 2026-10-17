@@ -1,12 +1,12 @@
 // app/api/laba/route.ts — Hitung laba per preset (A3, mesin baru hitungLabaPreset).
-// POST { aksi:'hitung'|'simpan', presetId, rows, file?, tanggal?, mode? }.
+// POST { aksi:'hitung'|'simpan', presetId, rows, file?, mode? }.
 // GET ?aksi=muat&presetId=&tanggal= | ?aksi=list&presetId=&limit= | ?aksi=pdf&presetId=&tanggal= | ?aksi=total&presetId=&dari=&sampai=
 //     | ?aksi=overlap&presetId=&dari=&sampai= | ?aksi=export-csv&presetId=&dari=&sampai=.
 import { getDb } from "@/lib/d1/db";
+import { potongPerTanggal, rentangDariNamaBerkas } from "@/lib/analisa/potongHarian";
 import { hitungDanSimpan, siapkanHitung, totalRegistry } from "@/lib/d1/labaPreset";
 import { barisCsv, cariOverlap, daftarPerNo } from "@/lib/d1/labaLaporan";
 import { bangunPdfLaba } from "@/lib/d1/labaPdf";
-import { tanggalJakarta } from "@/lib/d1/labaShopee";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
 
 const MAKS_BARIS = 10000;
@@ -128,24 +128,65 @@ export async function POST(request: Request) {
   const file = typeof body.file === "string" ? body.file.trim().slice(0, 120) : "";
 
   const db = getDb();
-  const siap = await siapkanHitung(db, presetId);
+
+  // ── Potong per tanggal penjualan ──
+  // Satu export Order.all memuat rentang (mis. 7 hari). Snapshot disimpan per tanggal, jadi
+  // file dipotong dulu; `tanggal` yang diketik user TIDAK dipakai lagi — itu sumber
+  // snapshot tumpang-tindih di produksi (satu rentang masuk ke satu tanggal).
+  const potongan = potongPerTanggal(
+    rows as Record<string, unknown>[],
+    rentangDariNamaBerkas(file)
+  );
+  if (potongan.perTanggal.length === 0) {
+    return json({
+      ok: false,
+      error:
+        "Tidak ada baris dengan kolom \"Waktu Pesanan Dibuat\" yang terbaca — tanggal penjualan " +
+        `tidak bisa ditentukan (${potongan.tanpaTanggal} baris tanpa tanggal). Periksa berkasnya.`,
+    }, 422);
+  }
+
+  const mode = body.mode === "timpa_semua" ? "timpa_semua" : "tambah_baru";
+  const tanggalAwal = potongan.tanggalPenuh[0] ?? potongan.perTanggal[0].tanggal;
+
+  // Konteks kumulatif: syarat berbasis volume dinilai "sampai tanggal ini", bukan per hari.
+  // Dihitung sekali di awal agar satu file = satu pembacaan registry, bukan satu per tanggal.
+  const siap = await siapkanHitung(db, presetId, tanggalAwal);
   if (!siap) return json({ ok: false, error: "Preset tidak ditemukan." }, 404);
 
-  const tanggalRaw = typeof body.tanggal === "string" ? body.tanggal.trim() : "";
-  const tanggal = /^\d{4}-\d{2}-\d{2}$/.test(tanggalRaw) ? tanggalRaw : tanggalJakarta();
-  const mode = body.mode === "timpa_semua" ? "timpa_semua" : "tambah_baru";
   let agregat;
   let klasifikasi;
+  const ringkasTanggal: { tanggal: string; jml_order: number; omzet: number; laba: number; parsial: boolean }[] = [];
   try {
-    const hasil = await hitungDanSimpan(
-      db, siap, rows as Record<string, unknown>[], file, tanggal, user.tg_id, aksi === "simpan", mode
-    );
-    agregat = hasil.agregat;
-    klasifikasi = hasil.klasifikasi;
+    for (const p of potongan.perTanggal) {
+      const hasil = await hitungDanSimpan(
+        db, siap, p.baris, file, p.tanggal, user.tg_id, aksi === "simpan", mode
+      );
+      // Agregat yang dikembalikan = jumlah seluruh tanggal pada berkas; angka per tanggal
+      // tetap tersedia di `ringkasTanggal` supaya UI bisa memeriksa potongannya.
+      ringkasTanggal.push({
+        tanggal: p.tanggal,
+        jml_order: hasil.agregat.jml_order,
+        omzet: hasil.agregat.omzet,
+        laba: hasil.agregat.laba,
+        parsial: potongan.tanggalParsial.includes(p.tanggal),
+      });
+      agregat = hasil.agregat;
+      klasifikasi = hasil.klasifikasi;
+    }
   } catch (e) {
     // Lapis 2 D-1: simpan diblokir (SKU tanpa kategori) → 422 dengan pesan jelas.
     return json({ ok: false, error: e instanceof Error ? e.message : "Gagal menyimpan perhitungan." }, 422);
   }
-  if (aksi === "hitung") return json({ ok: true, agregat, klasifikasi, estimasi_kasar: agregat.estimasi_kasar });
-  return json({ ok: true, tanggal, agregat, klasifikasi, estimasi_kasar: agregat.estimasi_kasar });
+
+  const ringkas = {
+    tanggal: ringkasTanggal,
+    tanggalPenuh: potongan.tanggalPenuh,
+    tanggalParsial: potongan.tanggalParsial,
+    tanpaTanggal: potongan.tanpaTanggal,
+  };
+  if (aksi === "hitung") {
+    return json({ ok: true, agregat, klasifikasi, ...ringkas, estimasi_kasar: agregat?.estimasi_kasar ?? false });
+  }
+  return json({ ok: true, agregat, klasifikasi, ...ringkas, estimasi_kasar: agregat?.estimasi_kasar ?? false });
 }

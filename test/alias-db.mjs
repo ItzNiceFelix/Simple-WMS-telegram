@@ -24,3 +24,7 @@ export function getEnvAi() {
 export function gagal(status, error) {
   return { ok: false, status, error };
 }
+
+export function getKunciEnkripsi() {
+  return null;
+}

@@ -1,26 +1,27 @@
 // lib/analisa/ai.ts — Analisa mendalam: AI MENAFSIRKAN, bukan menghitung.
 //
-// PEMISAHAN YANG WAJIB DIPATUHI:
+// PEMBATASAN KINI HANYA PADA ANGKA, BUKAN PADA TAFSIR:
 //   * Seluruh angka datang dari lib/analisa/hitung.ts yang sudah diuji dan bisa diaudit.
-//   * AI menerima angka itu sebagai FAKTA dan dilarang menghitung ulang dari data mentah.
-//     Kalau AI yang menghitung, hasilnya tidak bisa diperiksa, dan di data keuangan
-//     angka yang tidak bisa diaudit tidak boleh jadi dasar keputusan.
-//   * AI WAJIB menyebut data yang tidak ada. Kesimpulan yang dibuat tanpa biaya iklan
-//     harus dinyatakan sebagai begitu, bukan disajikan seolah gambar utuh.
+//     AI menerima angka itu sebagai FAKTA; ia DILARANG menghitung ulang, menjumlahkan,
+//     menaksir, atau mengarang angka. Kalau AI yang menghitung, hasilnya tidak bisa
+//     diperiksa — dan di data keuangan angka yang tidak bisa diaudit tidak boleh jadi
+//     dasar keputusan.
+//   * Selain angka, AI BEBAS berhipotesis, menyusun prioritas, mengaitkan sebab-akibat
+//     antar angka, dan mengkritik pola penjualan. Tafsir tidak perlu diaudit angka demi
+//     angka; yang harus bisa ditelusuri adalah angka yang dirujuknya.
+//   * Bila data tidak cukup menjawab pertanyaan pemilik toko, AI WAJIB menyebut data
+//     apa yang kurang. Kesimpulan tanpa biaya iklan harus dinyatakan sebagai begitu,
+//     bukan disajikan seolah gambar utuh.
+//   * Bentuk jawaban TIDAK dipaku. Prompt lama memaksa struktur (paragraf ringkasan,
+//     daftar prioritas, bagian "Yang belum bisa dinilai") dan menyuruh mengutip judul
+//     temuan apa adanya tanpa penilaian sendiri; hasilnya terasa diatur dan tidak
+//     menjawab pertanyaan yang diajukan. Yang dipertahankan hanya batas yang memang
+//     tak bisa diaudit: DILARANG mengklaim tahu mekanisme internal iklan Shopee
+//     (GMV MAX / AUTO ROAS), DILARANG menyebut target ROAS sebagai "yang terbaik".
 //
-// BATAS KERAS SARAN IKLAN (dipatuhi prompt di bawah):
-//   DILARANG menyebut target ROAS sebagai "yang terbaik", DILARANG mengklaim tahu
-//   mekanisme GMV MAX / AUTO ROAS yang berlaku. Yang boleh: menjelaskan arti ROAS
-//   TITIK IMPAS yang sudah dihitung dari biaya toko sendiri.
-//
-// DASAR PENAMBAHAN ATURAN (riset praktik instruksi model, bukan selera):
-//   * "Wajib menyebut angka pemicu" — rekomendasi tanpa angka tidak bisa diaudit;
-//     pembaca tidak bisa tahu ambang mana yang dipakai, sehingga tidak bisa membantah.
-//   * "Larangan frasa lindung" — model cenderung menutup ketidakpastian dengan
-//     "tergantung"/"bisa jadi". Di keputusan iklan, jawaban seperti itu sama saja
-//     tidak menjawab; lebih baik menyatakan datanya kurang.
-//   * "Batas temuan mengikuti kedalaman" — panjang jawaban adalah pilihan pengguna,
-//     bukan angka yang dipaku di kode.
+// BATAS PANJANG: kedalaman (ATURAN_KEDALAMAN) hanya mengatur panjang jawaban, karena
+// panjang adalah pilihan pengguna — bukan angka yang dipaku di kode, dan bukan cetakan
+// struktur.
 import { panggilTeks, type Konteks } from "@/lib/ai/provider";
 import type { UpayaGagal } from "@/lib/d1/hasil";
 import { keputusanIklan, organikCr } from "./hitung";
@@ -32,64 +33,61 @@ export type Kedalaman = "ringkas" | "sedang" | "panjang";
 
 /**
  * Blok aturan yang BERUBAH menurut kedalaman. Ini INSTRUKSI, bukan pemotongan teks:
- * model tetap menerima seluruh bahan, yang dibatasi hanya panjang jawabannya.
+ * model tetap menerima seluruh bahan. Isinya HANYA panjang jawaban — bentuk jawaban
+ * ditentukan model sendiri menurut pertanyaan yang diajukan.
  */
 export const ATURAN_KEDALAMAN: Record<Kedalaman, string> = {
-  ringkas:
-    "KEDALAMAN = RINGKAS. Tulis maksimum 3 temuan dan satu paragraf ringkasan. " +
-    "Pilih hanya yang dampak rupiahnya paling besar; setiap temuan tetap wajib menyebut " +
-    "angkanya. Jangan menambah bagian lain.",
-  sedang:
-    "KEDALAMAN = SEDANG. Tulis maksimum 5 temuan, masing-masing 1-3 kalimat, dan setiap " +
-    "temuan wajib menyebut angkanya. Cukup satu paragraf ringkasan di awal.",
+  ringkas: "PANJANG JAWABAN: RINGKAS, maksimal sekitar 150 kata.",
+  sedang: "PANJANG JAWABAN: SEDANG, maksimal sekitar 350 kata.",
   panjang:
-    "KEDALAMAN = PANJANG. Tidak ada batas jumlah temuan — bahas seluruh temuan yang " +
-    "dampak rupiahnya berarti, dan boleh menjelaskan per produk satu per satu. " +
-    "Setiap klaim tetap wajib menyebut angkanya; menambah panjang tanpa angka dilarang.",
+    "PANJANG JAWABAN: PANJANG, tanpa batas praktis — pakai sepanjang yang benar-benar " +
+    "dibutuhkan untuk menjawab, jangan mengulang.",
 };
 
 /**
- * Prompt sistem: mengunci peran AI sebagai penafsir, bukan penghitung.
- * Dipisah dari fungsi supaya bisa diuji apa adanya (tanpa memanggil model).
+ * Prompt sistem: AI penafsir, bukan penghitung. Yang dikunci hanya soal ANGKA; tafsir
+ * dibebaskan supaya jawaban berguna. Dipisah dari fungsi supaya bisa diuji apa adanya
+ * (tanpa memanggil model).
  */
 export const PROMPT_SISTEM =
   `Anda menafsirkan hasil analisa penjualan untuk pemilik toko online Indonesia.
 
-ATURAN YANG TIDAK BOLEH DILANGGAR:
-1. SEMUA angka sudah dihitung sistem. Anda DILARANG menghitung ulang, menjumlahkan,
-   mengalikan, atau mengubah angka apa pun. Kutip apa adanya.
-2. Anda DILARANG mengarang angka yang tidak ada di data. Bila perlu angka yang tidak
-   tersedia, tulis terus terang bahwa datanya belum ada.
-3. Bila daftar "data yang belum tersedia" tidak kosong, SEBUTKAN di jawaban bahwa
-   kesimpulan ini belum memperhitungkan hal tersebut.
-4. Tentang iklan: sistem HANYA menghitung TITIK IMPAS dari biaya toko sendiri
-   (HPP, admin, program, pajak). Anda DILARANG menyebut suatu target ROAS sebagai
-   "yang terbaik", DILARANG mengklaim tahu cara kerja setelan iklan Shopee
-   (GMV MAX, AUTO ROAS), dan DILARANG menyarankan angka setelan tertentu.
-5. Bahasa Indonesia sederhana, tanpa istilah teknis. Pemilik toko bukan programmer.
-6. JANGAN membalik arah temuan. Setiap temuan sudah menyatakan sifatnya (rugi, tipis,
-   terlalu bergantung, dst). Menyebut konsentrasi laba yang tinggi sebagai pencapaian
-   BAIK adalah kesalahan — konsentrasi tinggi itu RISIKO. Bila ragu, kutip judul temuan
-   apa adanya dan jangan menambahkan penilaian sendiri.
-7. SETIAP rekomendasi WAJIB menyebut angka pemicunya: ambang atau nilai yang membuat
-   Anda menyarankan hal itu (mis. "ROAS impas 2,3 sementara ROAS aktual 14,3").
-   Rekomendasi tanpa angka pemicu harus dicabut, bukan ditulis lebih halus.
-8. DILARANG memakai frasa lindung saat memberi rekomendasi: "tergantung",
-   "perlu dipertimbangkan", "bisa jadi", "salah satu opsi". Bila datanya belum cukup
-   untuk memutuskan, KATAKAN datanya kurang dan sebutkan data apa yang kurang —
-   jangan berputar-putar memakai frasa di atas.
+DUA ATURAN KERAS:
+1. Seluruh angka sudah dihitung sistem. DILARANG menghitung ulang, menjumlahkan,
+   menaksir, atau mengarang angka. Kutip angka dari bahan apa adanya. Bila butuh angka
+   yang tidak ada di bahan, nyatakan datanya belum ada — jangan menebaknya.
+2. Bila data tidak cukup untuk menjawab pertanyaan pemilik toko, sebutkan data apa
+   yang kurang.
 
-Bentuk jawaban:
-- Satu paragraf ringkasan keadaan toko periode ini.
-- Daftar prioritas tindakan, yang paling besar dampak rupiahnya lebih dulu.
-- Satu bagian "Yang belum bisa dinilai" berisi data yang tidak tersedia.`;
+SELAIN ITU ANDA BEBAS: boleh berhipotesis, menyusun prioritas, mengaitkan sebab-akibat
+antar angka, dan mengkritik pola penjualan — asalkan setiap klaim merujuk angka di bahan.
+
+BATAS YANG TIDAK BISA DIAUDIT:
+- DILARANG mengklaim tahu mekanisme internal iklan Shopee (GMV MAX, AUTO ROAS).
+- DILARANG menyebut suatu target ROAS sebagai "yang terbaik". Yang boleh dijelaskan:
+  arti ROAS TITIK IMPAS yang dihitung dari biaya toko sendiri.
+
+BENTUK JAWABAN: bebas. Jawab pertanyaan yang diajukan bila ada — jangan sekadar
+merangkum bahan. Pakai bahasa Indonesia sederhana, tanpa istilah teknis.`;
+
+/** Konteks tambahan yang boleh menyertai bahan; semua opsional agar pemanggil lama tetap bekerja. */
+export type KonteksBahan = {
+  trenHarian?: string;
+  perJam?: string;
+  fastSlowDead?: string;
+  komposisiBiaya?: string;
+  pertanyaan?: string;
+};
 
 /**
  * Susun bahan untuk AI dari hasil analisa cepat. Sengaja hanya mengirim ANGKA YANG
  * SUDAH DIHITUNG plus konteks minimum — bukan data mentah, supaya AI tidak punya
  * kesempatan menghitung ulang.
+ *
+ * `konteks` opsional: blok tambahan hanya ditambahkan BILA diisi, sehingga bahan lama
+ * tetap identik untuk pemanggil yang hanya mengirim hasil analisa.
  */
-export function susunBahan(h: HasilAnalisa): string {
+export function susunBahan(h: HasilAnalisa, konteks?: KonteksBahan): string {
   const r = h.ringkasan;
   const baris: string[] = [];
 
@@ -154,6 +152,16 @@ export function susunBahan(h: HasilAnalisa): string {
           organikRingkas(b)
       );
     }
+  }
+
+  // Blok konteks tambahan: hanya ditambahkan bila pemanggil mengisinya, urut tetap.
+  // Teksnya SUDAH dihitung pemanggil — di sini murni label + kutipan, tidak ada hitungan.
+  if (konteks) {
+    if (konteks.trenHarian) baris.push(`TREN HARIAN (sudah dihitung sistem):\n${konteks.trenHarian}`);
+    if (konteks.perJam) baris.push(`PER JAM (sudah dihitung sistem):\n${konteks.perJam}`);
+    if (konteks.fastSlowDead) baris.push(`KLASIFIKASI PRODUK:\n${konteks.fastSlowDead}`);
+    if (konteks.komposisiBiaya) baris.push(`KOMPOSISI BIAYA:\n${konteks.komposisiBiaya}`);
+    if (konteks.pertanyaan) baris.push(`PERTANYAAN PENGGUNA:\n${konteks.pertanyaan}`);
   }
 
   return baris.join("\n");
@@ -227,18 +235,27 @@ export type OpsiMendalam = {
   maksToken?: number;
   /** Panjang jawaban yang diminta; menentukan blok instruksi, bukan pemotongan teks. */
   kedalaman: Kedalaman;
+  /** Blok kondisi (tren harian, per jam, fast/slow/dead, komposisi) dari aksi `tren`. */
+  konteks?: KonteksBahan;
 };
 
-/** Pesan yang dikirim ke model: bahan dulu, instruksi terakhir (paling mudah diikuti). */
-export function susunPesan(bahan: string, kedalaman: Kedalaman): { role: "user"; teks: string } {
+/**
+ * Pesan yang dikirim ke model: bahan dulu, instruksi terakhir (paling mudah diikuti).
+ * `pertanyaan` opsional: bila ada, instruksinya menuntut jawaban langsung atas pertanyaan
+ * itu, bukan rangkuman bahan.
+ */
+export function susunPesan(bahan: string, kedalaman: Kedalaman, pertanyaan?: string): { role: "user"; teks: string } {
   return {
     role: "user",
     teks:
       `Berikut hasil analisa yang SUDAH DIHITUNG sistem. Tafsirkan untuk pemilik toko.\n\n` +
       `${bahan}\n\n` +
       `${ATURAN_KEDALAMAN[kedalaman]}\n` +
-      `Ingat: jangan menghitung ulang apa pun, jangan mengarang angka, setiap rekomendasi ` +
-      `wajib menyebut angka pemicunya, dan sebutkan data yang belum tersedia.`,
+      (pertanyaan
+        ? `Jawab langsung pertanyaan pengguna berikut, bukan sekadar merangkum bahan: "${pertanyaan}"\n`
+        : "") +
+      `Ingat: jangan menghitung ulang apa pun, jangan mengarang angka, dan bila data ` +
+      `kurang untuk menjawab, sebutkan data apa yang kurang.`,
   };
 }
 
@@ -248,8 +265,12 @@ export function susunPesan(bahan: string, kedalaman: Kedalaman): { role: "user";
  * Kalau tiap jalur menyusunnya sendiri, dua endpoint bisa mengirim instruksi berbeda
  * untuk angka yang sama dan hasilnya tidak lagi bisa dibandingkan.
  */
-export function susunPesanMendalam(bahan: string, kedalaman: Kedalaman): { role: "system" | "user"; teks: string }[] {
-  return [{ role: "system" as const, teks: PROMPT_SISTEM }, susunPesan(bahan, kedalaman)];
+export function susunPesanMendalam(
+  bahan: string,
+  kedalaman: Kedalaman,
+  pertanyaan?: string
+): { role: "system" | "user"; teks: string }[] {
+  return [{ role: "system" as const, teks: PROMPT_SISTEM }, susunPesan(bahan, kedalaman, pertanyaan)];
 }
 
 /**
@@ -264,9 +285,9 @@ export async function analisaMendalam(
   h: HasilAnalisa,
   opsi: OpsiMendalam
 ): Promise<{ ok: true; data: HasilMendalam } | { ok: false; status: number; error: string; upaya?: UpayaGagal[] }> {
-  const bahan = susunBahan(h);
+  const bahan = susunBahan(h, opsi.konteks);
 
-  const pesan = susunPesanMendalam(bahan, opsi.kedalaman);
+  const pesan = susunPesanMendalam(bahan, opsi.kedalaman, opsi.konteks?.pertanyaan);
 
   const hasil = await panggilTeks(
     ctx,
@@ -299,33 +320,34 @@ export async function analisaMendalam(
 
 /**
  * Prompt sistem untuk saran langkah iklan. Dipisah dan diekspor supaya bisa diuji apa
- * adanya (tanpa memanggil model) — yang diuji di sini adalah LARANGANNYA, bukan gaya
+ * adanya (tanpa memanggil model) — yang diuji di sini adalah batas angkanya, bukan gaya
  * bahasanya: model yang mengarang angka pemicu membuat rencana tidak bisa diaudit.
+ * Paket skenario tetap dikirim sebagai BAHAN, bukan template jawaban: model menilai
+ * sendiri mana yang perlu dihentikan, dinaikkan, atau ditahan.
  */
 export const PROMPT_SISTEM_SKENARIO =
-  `Anda menyusun rencana BERTAHAP per skenario untuk pemilik toko online Indonesia
-yang sedang beriklan. Paket data di bawah SUDAH DIHITUNG sistem.
+  `Anda memberi saran iklan untuk pemilik toko online Indonesia. Paket data dan
+skenario di bawah SUDAH DIHITUNG sistem.
 
-ATURAN YANG TIDAK BOLEH DILANGGAR:
-1. Seluruh angka ada di paket data. Anda DILARANG mengarang, menaksir, atau menghitung
-   ulang angka apa pun — termasuk perkiraan omzet, perkiraan biaya, dan angka setelan
-   iklan. Bila perlu angka yang tidak ada di paket, tulis terus terang bahwa datanya
-   belum ada, jangan menebaknya.
-2. Anda DILARANG menyebut suatu target ROAS sebagai "yang terbaik" dan DILARANG
-   mengklaim tahu cara kerja setelan iklan Shopee (GMV MAX, AUTO ROAS).
-3. Ikuti TIGA skenario yang ada di paket dengan urutan sama, dan pakai ambang pemicu
-   (angka "kapan") apa adanya. Jangan mengganti ambangnya dengan angka sendiri.
-4. Tiap langkah WAJIB menyebut angka pemicunya; langkah tanpa angka harus dicabut.
-5. DILARANG memakai frasa lindung: "tergantung", "bisa jadi", "perlu dipertimbangkan",
-   "salah satu opsi". Bila data belum cukup untuk memutuskan, katakan datanya kurang
-   dan sebutkan data apa yang kurang.
-6. Bahasa Indonesia sederhana, tanpa istilah teknis.
+DUA ATURAN KERAS:
+1. Seluruh angka sudah dihitung sistem. DILARANG menghitung ulang, menjumlahkan,
+   menaksir, atau mengarang angka. Kutip angka dari paket apa adanya. Bila butuh angka
+   yang tidak ada di paket, nyatakan datanya belum ada.
+2. Bila data tidak cukup untuk menjawab, sebutkan data apa yang kurang.
 
-Bentuk jawaban:
-- Satu paragraf singkat keadaan iklan pada hari yang disebut pengguna.
-- Untuk SETIAP skenario: judul, pemicunya (angka), lalu langkah-langkah bernomor
-  berurutan yang bisa langsung dijalankan hari itu.
-- Satu baris "Yang belum bisa dinilai" berisi data yang tidak tersedia di paket.`;
+SELAIN ITU ANDA BEBAS menilai. Dari fakta paket, tentukan SENDIRI mana yang perlu
+dihentikan, dinaikkan, atau ditahan — sertakan alasan berangka untuk setiap penilaian.
+Skenario di paket adalah bahan pertimbangan, bukan urutan yang harus diikuti; boleh
+setuju, menolak, menggabungkan, atau menambah prioritas lain bila angkanya mendukung.
+Gunakan ambang pemicu dari paket apa adanya, jangan menggantinya dengan angka sendiri.
+
+BATAS YANG TIDAK BISA DIAUDIT:
+- DILARANG menyebut suatu target ROAS sebagai "yang terbaik".
+- DILARANG mengklaim tahu mekanisme internal iklan Shopee (GMV MAX, AUTO ROAS).
+
+BENTUK JAWABAN: bebas, selama menjawab pertanyaan pengguna dan setiap langkah yang
+disarankan bisa ditelusuri ke angka di paket. Bahasa Indonesia sederhana, tanpa
+istilah teknis.`;
 
 /** Bahan yang dikirim ke AI beserta hari yang disebut pengguna — ditampilkan di UI. */
 export type HasilSaranIklan = {
@@ -398,7 +420,8 @@ export function susunPesanSkenario(paket: PaketSkenario, hariKe: number): { role
       role: "user" as const,
       teks:
         `Hari yang diminta pengguna: hari ke-${hariKe}.\n` +
-        `Susun rencana bertahap untuk hari ke-${hariKe} berdasarkan paket berikut. ` +
+        `Nilai sendiri dari paket berikut: apa yang perlu dihentikan, dinaikkan, atau ditahan ` +
+        `pada hari ke-${hariKe}, beserta alasan berangkanya. ` +
         `Pakai angka paket apa adanya; jangan mengarang angka di luar paket.\n\n` +
         `${susunBahanSkenario(paket, hariKe)}`,
     },

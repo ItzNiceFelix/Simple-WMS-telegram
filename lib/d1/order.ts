@@ -121,6 +121,9 @@ export type FilterOrder = {
   sampai?: number;
   /** SKU yang harus ADA di order; hanya dipakai untuk mode daftar item (lihat listItemOrder). */
   sku?: string;
+  /** Toko pemilik order. Satu D1 dipakai beberapa toko dan fee berbeda per akun, jadi daftar
+   *  per toko TIDAK boleh tercampur. NULL = baris lama yang belum ditandai (lihat migrasi 0040). */
+  presetId?: number;
   limit?: number;
   offset?: number;
   kolomUrut?: KolomUrutOrder;
@@ -188,6 +191,7 @@ function syaratOrder(filter: FilterOrder): { where: string; args: unknown[] } {
   if (filter.status) { syarat.push("status_fulfill = ?"); args.push(filter.status); }
   if (filter.dari !== undefined) { syarat.push("tanggal >= ?"); args.push(filter.dari); }
   if (filter.sampai !== undefined) { syarat.push("tanggal <= ?"); args.push(filter.sampai); }
+  if (filter.presetId !== undefined) { syarat.push("preset_id = ?"); args.push(filter.presetId); }
   return { where: syarat.length > 0 ? ` WHERE ${syarat.join(" AND ")}` : "", args };
 }
 
@@ -356,4 +360,51 @@ export async function ambilOrderBanyak(db: D1Database, orders: KunciOrder[]): Pr
   // Urutan keluaran = urutan permintaan, supaya pemanggil bisa memakai hasilnya berpasangan
   // dengan daftar header yang dia kirim.
   return unik.map((o) => peta.get(`${o.mp}|${o.no}`)).filter((d): d is OrderDetail => d !== undefined);
+}
+
+/** Laba satu order persis seperti yang terakhir diimpor untuk preset itu. */
+export type LabaOrder = {
+  laba: number;
+  /** Persen, satu desimal; null saat omzet 0 — margin atas nol tidak terdefinisi, bukan 0%. */
+  margin: number | null;
+  biaya: number;
+  tanggal_snapshot: string;
+};
+
+/**
+ * Laba per no_pesanan dari `laba_order`, hanya untuk daftar nomor yang diminta.
+ *
+ * Kenapa IN atas halaman, bukan query seluruh tabel: tabel ini berisi semua order semua
+ * tanggal semua preset. Membacanya utuh lalu menyaring di Worker memindahkan ribuan baris
+ * untuk melengkapi 50 baris layar. Pemotongan 50 sama dengan `klasifikasikan`
+ * (lib/d1/labaPreset.ts) karena No pesanan disimpan sebagai teks — parameter D1 punya plafon.
+ *
+ * Order tanpa baris di sini TIDAK dikembalikan sebagai 0: pemanggil merender "—" supaya
+ * "belum pernah diimpor labanya" tidak terbaca sebagai "labanya nol".
+ */
+export async function labaPerOrder(
+  db: D1Database,
+  presetId: number,
+  noPesanan: string[]
+): Promise<Map<string, LabaOrder>> {
+  const hasil = new Map<string, LabaOrder>();
+  const unik = [...new Set(noPesanan)].filter((s) => s.length > 0);
+  for (let i = 0; i < unik.length; i += POTONG_ORDER) {
+    const potong = unik.slice(i, i + POTONG_ORDER);
+    const tanda = potong.map(() => "?").join(",");
+    const { results } = await db.prepare(
+      `SELECT no_pesanan, laba, omzet, biaya, tanggal_snapshot FROM laba_order WHERE preset_id = ? AND no_pesanan IN (${tanda})`
+    ).bind(presetId, ...potong).all<{ no_pesanan: string; laba: number; omzet: number; biaya: number; tanggal_snapshot: string }>();
+    for (const r of results) {
+      hasil.set(r.no_pesanan, {
+        laba: r.laba,
+        biaya: r.biaya,
+        tanggal_snapshot: r.tanggal_snapshot,
+        // Pembulatan ke 1 desimal: persen mentah (mis. 33.3333) memenuhi kolom dan tidak
+        // menambah keputusan apa pun di layar.
+        margin: r.omzet > 0 ? Math.round((r.laba / r.omzet) * 1000) / 10 : null,
+      });
+    }
+  }
+  return hasil;
 }

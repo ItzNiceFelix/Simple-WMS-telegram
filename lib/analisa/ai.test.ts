@@ -6,7 +6,7 @@
 // justru yang paling penting.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { susunBahan, PROMPT_SISTEM, ATURAN_KEDALAMAN, susunPesan } from "./ai";
+import { susunBahan, PROMPT_SISTEM, PROMPT_SISTEM_SKENARIO, ATURAN_KEDALAMAN, susunPesan, susunPesanSkenario, type KonteksBahan } from "./ai";
 import { analisaCepat, type MasukanAnalisa } from "./hitung";
 import type { BarisSku, HasilAnalisa, Temuan } from "./tipe";
 
@@ -59,13 +59,26 @@ function hasilUji(ubah: Partial<HasilAnalisa> = {}): HasilAnalisa {
   };
 }
 
-describe("PROMPT_SISTEM — batas keras saran iklan", () => {
+describe("PROMPT_SISTEM — batas keras hanya pada angka", () => {
   it("melarang menghitung ulang angka", () => {
     assert.match(PROMPT_SISTEM, /DILARANG menghitung ulang/i);
+    assert.match(PROMPT_SISTEM, /menjumlahkan/);
   });
 
-  it("melarang mengarang angka", () => {
+  it("melarang mengarang angka dan menaksir", () => {
     assert.match(PROMPT_SISTEM, /mengarang angka/i);
+    assert.match(PROMPT_SISTEM, /menaksir/);
+    assert.match(PROMPT_SISTEM, /datanya belum ada/i);
+  });
+
+  it("mewajibkan menyebut data apa yang kurang bila tak cukup menjawab", () => {
+    assert.match(PROMPT_SISTEM, /data\s+apa\s+yang\s+kurang/i);
+  });
+
+  it("membebaskan tafsir: hipotesis, prioritas, sebab-akibat, kritik", () => {
+    assert.match(PROMPT_SISTEM, /berhipotesis/);
+    assert.match(PROMPT_SISTEM, /sebab-akibat/);
+    assert.match(PROMPT_SISTEM, /mengkritik/i);
   });
 
   it("melarang mengklaim tahu GMV MAX / AUTO ROAS", () => {
@@ -76,13 +89,20 @@ describe("PROMPT_SISTEM — batas keras saran iklan", () => {
     assert.match(PROMPT_SISTEM, /DILARANG mengklaim tahu/i);
   });
 
-  it("mewajibkan menyebut data yang belum tersedia", () => {
-    assert.match(PROMPT_SISTEM, /data yang belum tersedia/i);
-    assert.match(PROMPT_SISTEM, /SEBUTKAN/i);
+  it("melarang menyebut target ROAS sebagai yang terbaik", () => {
+    assert.match(PROMPT_SISTEM, /yang terbaik/);
+    assert.match(PROMPT_SISTEM, /titik impas/i);
   });
 
-  it("menegaskan hanya titik impas yang dihitung", () => {
-    assert.match(PROMPT_SISTEM, /TITIK IMPAS/);
+  it("TIDAK memaksa struktur jawaban lama", () => {
+    // Struktur dipaku = narasi terasa diatur; bentuk jawaban kini bebas.
+    assert.doesNotMatch(PROMPT_SISTEM, /kutip judul temuan apa adanya/i);
+    assert.doesNotMatch(PROMPT_SISTEM, /jangan menambahkan penilaian sendiri/i);
+    assert.doesNotMatch(PROMPT_SISTEM, /Satu paragraf ringkasan/i);
+    assert.doesNotMatch(PROMPT_SISTEM, /Daftar prioritas tindakan/i);
+    assert.doesNotMatch(PROMPT_SISTEM, /Yang belum bisa dinilai/);
+    assert.doesNotMatch(PROMPT_SISTEM, /frasa lindung/i);
+    assert.match(PROMPT_SISTEM, /BENTUK JAWABAN: bebas/i);
   });
 });
 
@@ -172,6 +192,67 @@ describe("susunBahan", () => {
   });
 });
 
+describe("susunBahan — konteks opsional", () => {
+  it("tanpa konteks menghasilkan potongan kunci yang sama dengan perilaku lama", () => {
+    // Pemanggil lama (route, analisaMendalam) hanya mengirim `h`; keluarannya tidak
+    // boleh berubah. Potongan kunci dibandingkan terhadap string yang diharapkan.
+    const b = susunBahan(hasilUji());
+    const lama = [
+      "PERIODE: 2026-10-13 (preset #1)",
+      "RINGKASAN: omzet Rp 65000, laba Rp 27880, margin 42.9%, 10 pesanan, 1 SKU terjual.",
+      "TEMUAN (sudah dihitung, kutip apa adanya):",
+      "- [masalah serius] 2 SKU merugi setiap kali terjual: Harga jual lebih rendah daripada biaya.",
+    ];
+    for (const potongan of lama) assert.ok(b.includes(potongan), `bahan lama harus memuat: ${potongan}`);
+  });
+
+  it("konteks kosong/undefined tidak menambah blok apa pun", () => {
+    const tanpa = susunBahan(hasilUji());
+    assert.equal(susunBahan(hasilUji(), {}), tanpa);
+    assert.equal(susunBahan(hasilUji(), undefined), tanpa);
+    assert.doesNotMatch(tanpa, /TREN HARIAN|PER JAM|KLASIFIKASI PRODUK|KOMPOSISI BIAYA|PERTANYAAN PENGGUNA/);
+  });
+
+  it("konteks terisi menambahkan blok berlabel jelas", () => {
+    const konteks: KonteksBahan = {
+      trenHarian: "13 Okt: omzet Rp 65000; 14 Okt: omzet Rp 70000",
+      perJam: "19:00-21:00 menyumbang 40% pesanan",
+      fastSlowDead: "Cepat: 001562; Lambat: -; Mati: -",
+      komposisiBiaya: "HPP 57%, admin 0%, pajak 0%",
+      pertanyaan: "Kenapa laba turun padahal omzet naik?",
+    };
+    const b = susunBahan(hasilUji(), konteks);
+    assert.match(b, /TREN HARIAN \(sudah dihitung sistem\):/);
+    assert.match(b, /PER JAM \(sudah dihitung sistem\):/);
+    assert.match(b, /KLASIFIKASI PRODUK:/);
+    assert.match(b, /KOMPOSISI BIAYA:/);
+    assert.match(b, /PERTANYAAN PENGGUNA:/);
+    assert.ok(b.includes(konteks.pertanyaan!));
+    // Bahan lama tetap utuh di depan blok konteks.
+    assert.ok(b.indexOf("PERIODE: 2026-10-13") < b.indexOf("TREN HARIAN"));
+  });
+
+  it("blok konteks hanya muncul untuk field yang diisi", () => {
+    const b = susunBahan(hasilUji(), { pertanyaan: "Stok mana yang harus didahulukan?" });
+    assert.match(b, /PERTANYAAN PENGGUNA:/);
+    assert.doesNotMatch(b, /TREN HARIAN/);
+    assert.doesNotMatch(b, /KOMPOSISI BIAYA/);
+  });
+});
+
+describe("susunPesan — pertanyaan pengguna", () => {
+  it("tanpa pertanyaan tidak menambah instruksi menjawab pertanyaan", () => {
+    assert.doesNotMatch(susunPesan("bahan", "sedang").teks, /Jawab langsung pertanyaan/);
+  });
+
+  it("dengan pertanyaan memuat instruksi menjawab langsung, bukan merangkum", () => {
+    const teks = susunPesan("bahan", "sedang", "Produk mana yang harus dihentikan?").teks;
+    assert.match(teks, /Jawab langsung pertanyaan pengguna/);
+    assert.match(teks, /bukan sekadar merangkum/);
+    assert.ok(teks.includes("Produk mana yang harus dihentikan?"));
+  });
+});
+
 describe("susunBahan — blok KEPUTUSAN IKLAN", () => {
   it("muncul saat ada data iklan, memuat angka + keputusan + alasan", () => {
     const b = susunBahan(hasilUji({ baris: [barisIklan()] }));
@@ -204,24 +285,20 @@ describe("susunBahan — blok KEPUTUSAN IKLAN", () => {
   });
 });
 
-describe("kedalaman mengubah INSTRUKSI, bukan pemotongan bahan", () => {
-  it("ringkas menyebut maksimum 3 temuan", () => {
-    assert.match(ATURAN_KEDALAMAN.ringkas, /maksimum 3 temuan/);
+describe("kedalaman hanya mengatur PANJANG, bukan struktur", () => {
+  it("ringkas sekitar 150 kata, sedang sekitar 350 kata", () => {
+    assert.match(ATURAN_KEDALAMAN.ringkas, /150 kata/);
+    assert.match(ATURAN_KEDALAMAN.sedang, /350 kata/);
   });
 
-  it("sedang menyebut maksimum 5 temuan", () => {
-    assert.match(ATURAN_KEDALAMAN.sedang, /maksimum 5 temuan/);
+  it("panjang tanpa batas praktis", () => {
+    assert.match(ATURAN_KEDALAMAN.panjang, /tanpa batas praktis/i);
   });
 
-  it("panjang tidak menyebut batas jumlah temuan", () => {
-    assert.match(ATURAN_KEDALAMAN.panjang, /tidak ada batas jumlah temuan/i);
-    assert.match(ATURAN_KEDALAMAN.panjang, /menjelaskan per produk/i);
-    assert.doesNotMatch(ATURAN_KEDALAMAN.panjang, /maksimum \d+ temuan/i);
-  });
-
-  it("ketiganya tetap mewajibkan angka", () => {
+  it("tidak ada kedalaman yang mengatur jumlah temuan atau bentuk jawaban", () => {
     for (const k of ["ringkas", "sedang", "panjang"] as const) {
-      assert.match(ATURAN_KEDALAMAN[k], /angka/i, `kedalaman ${k} wajib menyebut angka`);
+      assert.doesNotMatch(ATURAN_KEDALAMAN[k], /temuan/i, `kedalaman ${k} tidak boleh mengatur temuan`);
+      assert.doesNotMatch(ATURAN_KEDALAMAN[k], /paragraf|daftar prioritas|bagian/i);
     }
   });
 
@@ -233,34 +310,42 @@ describe("kedalaman mengubah INSTRUKSI, bukan pemotongan bahan", () => {
     assert.ok(ringkas.teks.includes(bahan) && panjang.teks.includes(bahan));
     assert.notEqual(ringkas.teks, panjang.teks, "instruksinya berbeda");
   });
-});
-
-describe("PROMPT_SISTEM — aturan rekomendasi (riset praktik instruksi model)", () => {
-  it("mewajibkan angka pemicu untuk setiap rekomendasi", () => {
-    assert.match(PROMPT_SISTEM, /angka pemicu/i);
-    assert.match(PROMPT_SISTEM, /harus dicabut/i);
-  });
-
-  it("melarang frasa lindung saat memberi rekomendasi", () => {
-    assert.match(PROMPT_SISTEM, /frasa lindung/i);
-    for (const frasa of ["tergantung", "perlu dipertimbangkan", "bisa jadi", "salah satu opsi"]) {
-      assert.ok(PROMPT_SISTEM.includes(frasa), `frasa "${frasa}" harus dilarang`);
-    }
-    assert.match(PROMPT_SISTEM, /datanya kurang/i);
-  });
-
-  it("TIDAK lagi memaku angka 5 temuan di prompt (batas ikut kedalaman)", () => {
-    assert.doesNotMatch(PROMPT_SISTEM, /Paling banyak 5 temuan/);
-  });
-
-  it("mempertahankan aturan lama: arah temuan tidak boleh dibalik", () => {
-    assert.match(PROMPT_SISTEM, /JANGAN membalik arah temuan/);
-  });
 
   it("struktur pesan: bahan dulu, instruksi di akhir", () => {
     const bahan = susunBahan(hasilUji());
     const teks = susunPesan(bahan, "sedang").teks;
     assert.ok(teks.indexOf(bahan) < teks.indexOf(ATURAN_KEDALAMAN.sedang));
+  });
+});
+
+describe("PROMPT_SISTEM_SKENARIO — menilai sendiri, bukan mengikuti urutan", () => {
+  it("meminta AI menilai sendiri hentikan/naikkan/tahan dengan alasan berangka", () => {
+    assert.match(PROMPT_SISTEM_SKENARIO, /dihentikan, dinaikkan, atau ditahan/);
+    assert.match(PROMPT_SISTEM_SKENARIO, /alasan berangka/);
+  });
+
+  it("TIDAK memaksa mengikuti urutan skenario", () => {
+    assert.doesNotMatch(PROMPT_SISTEM_SKENARIO, /urutan sama/);
+    assert.doesNotMatch(PROMPT_SISTEM_SKENARIO, /Ikuti TIGA skenario/);
+    assert.match(PROMPT_SISTEM_SKENARIO, /bahan pertimbangan/);
+  });
+
+  it("melarang mengarang angka dan menyebut target ROAS terbaik", () => {
+    assert.match(PROMPT_SISTEM_SKENARIO, /mengarang angka/i);
+    assert.match(PROMPT_SISTEM_SKENARIO, /yang terbaik/);
+    assert.match(PROMPT_SISTEM_SKENARIO, /GMV MAX/);
+  });
+
+  it("susunPesanSkenario tidak memuat frasa 'urutan sama'", () => {
+    const pesan = susunPesanSkenario(
+      {
+        fakta: ["omzet Rp 1000"],
+        skenario: [{ id: "naikkan", judul: "Naikkan modal", kapan: "ROAS di atas 2", angka: ["ROAS 3"], langkah: ["tambah modal bertahap"] }],
+      },
+      1
+    );
+    for (const p of pesan) assert.doesNotMatch(p.teks, /urutan sama/);
+    assert.match(pesan[1].teks, /Nilai sendiri dari paket/);
   });
 });
 

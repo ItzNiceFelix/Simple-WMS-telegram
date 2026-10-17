@@ -63,7 +63,14 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { formatRupiah, formatTanggalJamWibBagian } from "@/lib/dashboard/format";
 import type { OrderDetail } from "@/lib/d1/order";
 
-type RincianOrder = OrderDetail;
+type RincianOrder = OrderDetail & {
+  // Hanya ada saat ?presetId dikirim dan baris itu punya jejak di `laba_order`. Semuanya
+  // opsional dengan sengaja: "tidak ada" harus bisa dibedakan dari 0 di layar.
+  laba?: number;
+  margin?: number | null;
+  biaya?: number;
+  laba_tanggal?: string;
+};
 type Target = { mp: string; no: string; ke: string };
 
 // Cermin PETA_TRANSISI lib/d1/order.ts — tombol tampil sesuai status kini.
@@ -274,6 +281,13 @@ function DaftarOrder() {
   const [ekspor, setEkspor] = useState<Record<string, string[]>>({});
   const [importOpen, setImportOpen] = useState(false);
   const [importOrderOpen, setImportOrderOpen] = useState(false);
+  // Preset/toko pemilik order yang akan diimpor (dialog Impor Shopee) DAN filter daftar.
+  // Satu D1 dipakai banyak toko: tanpa preset, order impor masuk ke toko yang salah tanpa
+  // terlihat — daftar bercampur antar-akun dan laba dihitung untuk toko yang keliru.
+  // Daftar preset dibaca dari /api/preset (endpoint yang sama dipakai /laba); tidak ada
+  // endpoint baru karena daftar tokonya memang satu sumber.
+  const [presets, setPresets] = useState<{ id: number; nama: string }[] | null>(null);
+  const [presetId, setPresetId] = useState<number | null>(null);
   const [modePicklist, setModePicklist] = useState<ModePicklist>("per_paket");
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState("semua");
@@ -496,6 +510,42 @@ function DaftarOrder() {
     void muatBooking();
   }, [modePicklist, muatBooking]);
 
+  // Daftar preset (toko) dimuat sekali saat halaman dibuka. Preset pertama dipilih otomatis
+  // seperti /laba supaya dialog impor tidak lahir dalam keadaan kosong; user tetap bisa
+  // menggantinya lewat pemilih di toolbar.
+  const muatPreset = useCallback(async () => {
+    try {
+      const res = await fetch("/api/preset", { credentials: "include" });
+      const data = (await res.json().catch(() => null)) as {
+        ok?: boolean;
+        presets?: { id: number; nama: string }[];
+      } | null;
+      if (!res.ok || !data?.ok) throw new Error("Gagal memuat preset.");
+      const daftar = data.presets ?? [];
+      setPresets(daftar);
+      if (daftar.length > 0) setPresetId((lama) => lama ?? daftar[0].id);
+    } catch (e) {
+      // Daftar kosong = pemilih preset mati dan impor Shopee tidak bisa dijalankan. Kegagalan
+      // muat TIDAK boleh jatuh ke preset tebakan: order akan masuk ke toko yang salah.
+      setPresets([]);
+      tampilkanGagalTulis(e instanceof Error ? e.message : "Gagal memuat preset.");
+    }
+  }, []);
+
+  useEffect(() => {
+    void muatPreset();
+  }, [muatPreset]);
+
+  function gantiPreset(nilai: string): void {
+    const id = Number(nilai);
+    if (!Number.isInteger(id)) return;
+    setPresetId(id);
+    // Himpunan daftar ikut berubah (per toko) — halaman lama tidak lagi bermakna.
+    setHalaman(1);
+  }
+
+  const presetTerpilih = presets?.find((p) => p.id === presetId) ?? null;
+
   function toggleBooking(sn: string): void {
     setBookingTerpilih((lama) => {
       const baru = new Set(lama);
@@ -672,6 +722,9 @@ function DaftarOrder() {
       if (tanggal) q.set("tanggal", tanggal);
       if (status !== "semua") q.set("status", status);
       if (mpTertunda) q.set("mp", mpTertunda);
+      // Hanya kirim bila sudah dipilih: daftar tanpa preset tetap menampilkan semua toko
+      // (perilaku lama), karena baris historis boleh saja belum bertanda toko.
+      if (presetId !== null) q.set("presetId", String(presetId));
       const res = await fetch(`/api/order?${q}`, { credentials: "include" });
       const data = (await res.json().catch(() => null)) as {
         ok?: boolean;
@@ -701,7 +754,7 @@ function DaftarOrder() {
     } finally {
       setMemuatHalaman(false);
     }
-  }, [status, mpTertunda, tanggal, halaman, kolomUrut, arah]);
+  }, [status, mpTertunda, tanggal, halaman, kolomUrut, arah, presetId]);
 
   useEffect(() => {
     void muat();
@@ -788,6 +841,29 @@ function DaftarOrder() {
 
       <div className="flex flex-col gap-4">
         <div className="flex flex-wrap items-end gap-3">
+          <Field className="w-full sm:max-w-52">
+            <FieldLabel htmlFor="filter-preset-order">Toko (Preset)</FieldLabel>
+            {/* Satu D1 dipakai banyak toko: pilihan ini menentukan toko TUJUAN impor Shopee
+                sekaligus toko yang daftarnya ditampilkan. Tanpa pilihan, impor ditolak. */}
+            <Select value={presetId === null ? "" : String(presetId)} onValueChange={(v) => typeof v === "string" && gantiPreset(v)}>
+              <SelectTrigger id="filter-preset-order" className="h-11 w-full md:h-8" data-testid="filter-preset-order">
+                <SelectValue>
+                  {(v: string | null) =>
+                    v ? presets?.find((p) => String(p.id) === v)?.nama ?? v : presets === null ? "Memuat preset…" : "Pilih toko"
+                  }
+                </SelectValue>
+              </SelectTrigger>
+              <SelectContent>
+                <SelectGroup>
+                  {(presets ?? []).map((p) => (
+                    <SelectItem key={p.id} value={String(p.id)}>
+                      {p.nama}
+                    </SelectItem>
+                  ))}
+                </SelectGroup>
+              </SelectContent>
+            </Select>
+          </Field>
           <Field className="w-full sm:max-w-52">
             <FieldLabel htmlFor="filter-status-order">Status</FieldLabel>
             <Select
@@ -1074,6 +1150,15 @@ function DaftarOrder() {
                       daripada tidak ada tombol. */}
                   <TableHead className="text-right">Item</TableHead>
                   <TableHead className="text-right">Total</TableHead>
+                  {/* Laba per order baru bermakna setelah tokonya jelas (laba_order dihitung
+                      per preset), jadi kolomnya hanya muncul saat preset dipilih. */}
+                  {presetId !== null && (
+                    <>
+                      <TableHead className="text-right">Estimasi laba</TableHead>
+                      <TableHead className="text-right">Margin</TableHead>
+                      <TableHead className="text-right">Biaya</TableHead>
+                    </>
+                  )}
                   <TableHead>Pengiriman</TableHead>
                   <TableHead>Aksi</TableHead>
                   <TableHead>Tag</TableHead>
@@ -1111,6 +1196,31 @@ function DaftarOrder() {
                     </TableCell>
                     <TableCell className="text-right tabular-nums">{o.items.reduce((a, i) => a + i.qty, 0)}</TableCell>
                     <TableCell className="text-right tabular-nums">{formatRupiah(o.items.reduce((a, i) => a + i.subtotal, 0))}</TableCell>
+                    {presetId !== null && (
+                      <>
+                        {/* `== null` (bukan falsy) supaya laba 0 tetap tampil "Rp 0": nol itu
+                            hasil hitung yang sah, sedangkan "—" hanya untuk yang belum diimpor. */}
+                        <TableCell
+                          className={`text-right tabular-nums ${o.laba == null ? "" : o.laba < 0 ? "text-red-600 dark:text-red-400" : o.laba > 0 ? "text-emerald-600 dark:text-emerald-400" : ""}`}
+                          data-testid={`laba-${o.no_pesanan}`}
+                          title={o.laba_tanggal ? `Impor laba ${o.laba_tanggal}` : undefined}
+                        >
+                          {o.laba == null ? <span className="text-muted-foreground">—</span> : formatRupiah(o.laba)}
+                        </TableCell>
+                        <TableCell
+                          className="text-right tabular-nums"
+                          title={o.laba_tanggal ? `Impor laba ${o.laba_tanggal}` : undefined}
+                        >
+                          {o.margin == null ? <span className="text-muted-foreground">—</span> : `${o.margin.toLocaleString("id-ID", { maximumFractionDigits: 1 })}%`}
+                        </TableCell>
+                        <TableCell
+                          className="text-right tabular-nums"
+                          title={o.laba_tanggal ? `Impor laba ${o.laba_tanggal}` : undefined}
+                        >
+                          {o.biaya == null ? <span className="text-muted-foreground">—</span> : formatRupiah(o.biaya)}
+                        </TableCell>
+                      </>
+                    )}
                     <TableCell data-testid={`pengiriman-${o.no_pesanan}`}>
                       {/* Jasa kirim + tipe layanan digabung " · "; yang kosong dilewati supaya
                           tidak muncul pemisah menggantung saat file impor hanya menyebut salah satu. */}
@@ -1277,7 +1387,7 @@ function DaftarOrder() {
         </AlertDialogContent>
       </AlertDialog>
       <DialogImportExcel open={importOpen} onOpenChange={setImportOpen} tipe="pesanan" onSukses={() => void muat()} />
-      <DialogImportOrder open={importOrderOpen} onOpenChange={setImportOrderOpen} onSukses={() => void muat()} />
+      <DialogImportOrder open={importOrderOpen} onOpenChange={setImportOrderOpen} onSukses={() => void muat()} preset={presetTerpilih} />
 
       {/* Pratinjau picklist. Tinggi dibatasi 80dvh dan isinya bisa di-scroll (`dvh` = tinggi
           pandangan yang menyusut saat keyboard Telegram naik; `vh` biasa membuat tombol Export
