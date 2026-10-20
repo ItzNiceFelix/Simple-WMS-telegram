@@ -154,8 +154,8 @@ Repo: `Simple-WMS-telegram` @ `0dbfff8`. Dibuat 2026-10-20 dari isi kode (bukan 
 | bot legacy (Vercel/Firestore) error, `GEMINI_API_KEY`, `/settings` | `07-ai.md` | `lib/gemini/client.js` + `lib/ai/index.js` + `lib/router/routePesan.js` | stack lama; jangan tertukar dengan jalur D1 |
 | Resi tidak tercetak / tombol cetak | `08-printing-desain.md` | `app/printing/page.tsx` | Area cetak WAJIB anak langsung `<body>`; CSS `body>*:not(#area-cetak-printing)`. |
 | Pratinjau kosong / gagal membaca label | `08-printing-desain.md` | `lib/printing/ekstraksi.ts` | Ekstraksi teks murni; lihat test colocated. |
-| Watermark pita di tepi / posisi band | `08-printing-desain.md` | `lib/printing/watermark.ts` | `hitungTataLetak` + `gambarPita`; `stripMm` (0..45 mm) memakan ruang sendiri, tidak menimpa resi. |
-| Halaman kosong ikut tercetak / boros kertas | `08-printing-desain.md` | `components/dashboard/printing-workspace.tsx` | `periksaHalaman` menandai "terlihat kosong"; tombol `lewati-kosong` + centang per halaman. |
+| Strip tidak muncul / posisi meleset | `08-printing-desain.md` | `lib/printing/strip.ts` + `lib/printing/watermark.ts` | Kotak `strip`/`resi` (mm dari atas) → `drawPage`; strip ditanam `embedPdf`. |
+| Halaman kosong ikut tercetak / boros kertas | `08-printing-desain.md` | `components/dashboard/printing-workspace.tsx` | Pemindai menandai kosong (<0,2% tinta) dan langsung melewati; klik halaman untuk membalik. |
 | Barcode jadi kabur | `08-printing-desain.md` | `lib/printing/watermark.ts` | Kode mempertahankan halaman asli vektor lewat `embedPage`. |
 | Jumlah halaman preview dan cetak beda | `08-printing-desain.md` | `lib/printing/watermark.ts` | Periksa opsi gambar watermark halaman pertama. |
 | Picklist per SKU salah | `08-printing-desain.md` | `lib/d1/picklistPdf.ts` | `bangunPdfPicklist`. |

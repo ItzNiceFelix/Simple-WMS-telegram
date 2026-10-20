@@ -10,7 +10,9 @@
 ## Peta file
 | file | peran | export/entry penting |
 |---|---|---|
-| `lib/printing/watermark.ts` | Bangun PDF resi client-side: resi vektor + pita di band bawah | `bangunPdf`, `hitungTataLetak`, `OpsiCetak`, `IkonGaris` |
+| `lib/printing/watermark.ts` | Susun PDF keluaran: resi + strip ditempel ke kotak mm | `bangunPdf`, `tataLetakAwal`, `Kotak`, `OpsiCetak` |
+| `lib/printing/strip.ts` | Susun PDF strip 1 halaman (klasik vektor / kartun SVG) | `buatStrip`, `TEMPLATE`, `TemplateStrip`, `TeksStrip` |
+| `lib/printing/templateKartun.ts` | SVG template kartun (dirender ke PNG di klien) | `SVG_KARTUN` |
 | `lib/printing/ekstraksi.ts` | Ekstrak saran nomor order/resi dari teks label; murni tanpa PDF/DOM/jaringan | `bacaNomorLabel`, `bacaNomorDariHalaman`, `NomorLabel` |
 | `lib/printing/watermark.test.ts`, `lib/printing/ekstraksi.test.ts` | Unit test printing | test colocated; watermark memakai `pdf-lib` |
 | `lib/desain/skemaLayout.ts` | Model/validasi layout kanvas normalized | `JenisElemen`, `ElemenLayout`, `LayoutBanner`, `validasiLayout`, `UKURAN_PRESET`, `FONT_AMAN` |
@@ -19,8 +21,8 @@
 | `lib/desain/*.test.ts` | Test skema layout/operasi | test colocated |
 | `lib/d1/desain.ts` | Persistensi folder/desain/latar D1 | `daftarFolder`, `UKURAN_SAH`, tipe `DesainPenuh`/`LatarPenuh` |
 | `lib/d1/elemenDesain.ts` | Elemen SVG & kategori (ikon/bentuk/panah/hiasan) | `daftarElemen`, `ambilElemen`, `KATEGORI_ELEMEN`, `MAKS_ELEMEN_BYTE` |
-| `components/dashboard/printing-workspace.tsx` | Halaman kerja cetak (client): preset pita, deteksi halaman kosong, pratinjau, panggil `bangunPdf` | `PrintingWorkspace`; internal: `PRESET` (fragile, unboxing, jangan, hati, cod, terima, buka, tanpa), `periksaHalaman`, `BASE_PATH` |
-| `public/wm/*.svg` | Aset ikon preset watermark (Tabler Icons, MIT) + `LISENSI.txt` | `cod`, `dilarang-buka`, `fragile`, `hati-hati`, `jangan-dibanting`, `terima-kasih`, `video-unboxing` |
+| `components/dashboard/printing-workspace.tsx` | Halaman kerja cetak (client): template strip, editor posisi drag/resize, deteksi halaman kosong, cetak | `PrintingWorkspace`; internal: `kePngHitamPutih`, `snap`, `gambar`, `denganDokumen`, `BASE_PATH` |
+| `public/wm/*.svg` | Aset ikon lama (Tabler Icons, MIT); tidak dipakai lagi oleh printing | `cod`, `dilarang-buka`, `fragile`, `hati-hati`, `jangan-dibanting`, `terima-kasih`, `video-unboxing` |
 | `public/pdf.worker.min.mjs`, `scripts/salin-worker-pdf.mjs` | Worker pdf.js seversi, dilayani sendiri (tanpa CDN) | salinan dari `pdfjs-dist/build`; hook `postinstall`/`prebuild`/`predev` |
 | `lib/d1/picklistPdf.ts` | PDF picklist per SKU | `bangunPdfPicklist` |
 | `lib/d1/picklistPaketPdf.ts` | PDF picklist paket | `bangunPdfPicklistPaket` |
@@ -41,7 +43,7 @@
 ## Alur data
 1. `app/printing/page.tsx` -> `components/dashboard/printing-workspace.tsx`; dokumen resi diproses browser karena berisi nama/alamat/telepon. File tidak diunggah; nomor order saja dikirim setelah cetak untuk catatan.
 2. Workspace membaca teks dengan `pdfjs-dist`; `lib/printing/ekstraksi.ts` (`bacaNomorLabel`, `bacaNomorDariHalaman`) memberi kandidat nomor. Ini saran, label yang nomornya tak terbaca tetap boleh dicetak.
-3. `lib/printing/watermark.ts` (`bangunPdf`) memuat sumber dengan `pdf-lib` (`PDFDocument.load`, `embedPage`) lalu menata halaman: `hitungTataLetak` men-scale resi ke area (tinggi − strip) dan meletakkannya di atas band; `gambarPita` mengisi band bawah. Barcode tetap vektor. Font standar `pdf-lib`: Helvetica/HelveticaBold; ikon pita digambar sebagai garis vektor.
+3. `lib/printing/strip.ts` (`buatStrip`) menyusun PDF strip 1 halaman seukuran kotak S; template klasik menggambar kotak+ikon vektor, template kartun merender `SVG_KARTUN` ke PNG. Lalu `lib/printing/watermark.ts` (`bangunPdf`) memuat sumber (`PDFDocument.load`, `embedPage`), menempel resi ke kotak `resi` dan strip ke kotak `strip` (koordinat mm dari atas), barcode tetap vektor.
 4. Picklist per SKU: `lib/d1/picklistPdf.ts` (`bangunPdfPicklist`), menerima `BarisPicklist[]` dan jumlah order; PDF `pdf-lib`, Helvetica/HelveticaBold.
 5. Picklist paket: `lib/d1/picklistPaketPdf.ts` (`bangunPdfPicklistPaket`), menerima `PaketPicklist[]`/`BarisPaket[]`; PDF `pdf-lib`, Helvetica/HelveticaBold.
 6. Gabung order+advance: `lib/d1/picklistGabungPdf.ts` (`gabungPerSku`, `bangunPdfPicklistGabung`), menerima baris bertipe order/advance; PDF `pdf-lib`, Helvetica/HelveticaBold.
@@ -62,12 +64,12 @@
 - Test e2e: `e2e/printing-sinkronisasi.spec.ts` (watermark/pita + impor), `e2e/preview-picklist.spec.ts` (pratinjau vs cetak), `e2e/excel.spec.ts` (ekspor). Jalankan satu spec: `npm run e2e:build` lalu `npx playwright test e2e/printing-sinkronisasi.spec.ts --project=desktop`.
 
 ## Gotcha / konvensi
-- Pita resi memakai BAND, bukan lapisan overlay: `stripMm` (0..45 mm) memakan ruang di tepi bawah; resi diskalakan ke `tinggi − strip` lewat `hitungTataLetak` (y ≥ strip). Tidak ada motif/cap/nama toko di badan resi.
+- Mekanisme = alat referensi pemilik toko: strip adalah PDF tersendiri yang ditanam `embedPdf` (bukan digambar ulang per halaman), dan posisi resi/strip adalah dua kotak mm yang diedit lewat drag/resize di kanvas (`S` strip, `R` resi). `tataLetakAwal` hanya mengisi posisi awal; setelah user menggeser (`manual`), perubahan template/ukuran tidak mereset posisi.
 - Detail cetak: area `#area-cetak-printing` dibuat sebagai anak langsung `<body>` oleh `cetak()`, CSS print `body>*:not(#area-cetak-printing){display:none}` + `@page{size:100mm <tinggi>mm;margin:0}`. Area yang bersarang di AppShell membuat dialog cetak keluar satu halaman kosong.
-- Halaman kosong: `periksaHalaman` merender thumbnail kecil dan menghitung piksel gelap; hasilnya hanya SARAN (`terlihatKosong`). Tombol `lewati-kosong` melewati semua saran sekaligus; centang per halaman tetap keputusan user.
-- Ikon garis pada pita berupa vektor (`gambarIkonGaris`); tidak ada lagi unggahan PNG/logo. Font standar `pdf-lib`: Helvetica dan HelveticaBold.
+- Halaman kosong: pemindai di `printing-workspace.tsx` merender thumbnail 150 px dan menghitung piksel gelap (<0,2% = kosong). Seperti alat referensi, halaman kosong LANGSUNG dilewati; klik halaman untuk membalik, atau tombol `lewati-kosong` / `cetak-semua`.
+- Template klasik: ikon garis vektor (`ikonGelas`, `ikonKamera`), font Helvetica/HelveticaBold, logo opsional diubah hitam-putih lalu ditanam. Template kartun tidak memakai teks/logo.
 - Worker pdf.js DILAYANI SENDIRI: `public/pdf.worker.min.mjs` disalin dari `pdfjs-dist/build` oleh `scripts/salin-worker-pdf.mjs` (hook `postinstall`, `prebuild`, `predev`), URL `${BASE_PATH}/pdf.worker.min.mjs?v=<versi>`. Jangan kembalikan ke CDN: offline/CSP memblokir jsdelivr mematikan seluruh halaman.
-- Setiap pemakaian pdf.js lewat `denganDokumen()` yang membuka loading task lalu `destroy()` di `finally` — pdf.js v6 membebaskan buffer/worker resource lewat loading task, bukan `doc.destroy()`.
+- Setiap pemakaian pdf.js lewat `denganDokumen()` (loading task + `destroy()` di `finally`). Berkas yang tetap terbuka untuk thumbnail menyimpan `tugas` dan menutupnya saat berkas dihapus / halaman ditinggalkan — pdf.js v6 tidak punya `doc.destroy()`.
 - Lima generator server (picklist biasa/paket/gabung, permintaan, laba, advance) memakai `pdf-lib`; data masuk dalam objek/baris siap pakai. Caller dan tabel sumber spesifik belum ditelusuri. Source generator tidak menunjukkan aset ikon/font/watermark eksternal.
 - Sebelum perbaikan (commit sebelumnya): pita digambar DI ATAS resi (persegi putih + kotak menimpa 20 mm bawah, barcode hilang), area cetak bersarang di AppShell + `body>*{display:none}` (hasil print = satu halaman kosong), dan motif/nama toko menutupi badan resi. Ketiganya sudah dihapus.
 - Skema layout memakai elemen koordinat ternormalisasi 0..1 dan z-order; validator membuang jenis tak dikenal. Operasi kanvas dibatasi daftar dikenal; `bangun_ulang` bersifat destruktif.
@@ -80,8 +82,8 @@
 |---|---|---|
 | Resi tidak tercetak / tombol cetak | `app/printing/page.tsx` | Lanjut ke workspace client. |
 | Pratinjau kosong / gagal membaca label | `lib/printing/ekstraksi.ts` | Ekstraksi teks murni; lihat test colocated. |
-| Watermark pita di tepi / posisi atas-bawah | `lib/printing/watermark.ts` | `dasarPita`, `gambarPita`, `OpsiCetak.stripMm` (0..45 mm). |
-| Ikon watermark hilang | `components/dashboard/printing-workspace.tsx` → `lib/printing/watermark.ts` | `kePngHitamPutih` (SVG `public/wm/*.svg` → PNG) lalu `embedPng`; cek `BASE_PATH`/`NEXT_PUBLIC_BASE_PATH` bila 404. |
+| Strip tidak muncul / posisi meleset | `lib/printing/watermark.ts` | Kotak `strip`/`resi` (mm dari atas) → `drawPage`; strip ditanam `embedPdf`. |
+| Template kartun kosong / strip gagal | `lib/printing/strip.ts` | `svgKePng` butuh canvas; cek `SVG_KARTUN` di `templateKartun.ts`. |
 | Barcode jadi kabur | `lib/printing/watermark.ts` | Kode mempertahankan halaman asli vektor lewat `embedPage`. |
 | Jumlah halaman preview dan cetak beda | `lib/printing/watermark.ts` | Periksa opsi gambar watermark halaman pertama. |
 | Picklist per SKU salah | `lib/d1/picklistPdf.ts` | `bangunPdfPicklist`. |

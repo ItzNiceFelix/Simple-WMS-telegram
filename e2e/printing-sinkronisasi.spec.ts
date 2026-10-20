@@ -51,7 +51,7 @@ async function pilihDariSelect(page: Page, testid: string, label: string) {
   await page.getByRole("option", { name: label }).click();
 }
 
-test("printing: daftar toko termuat, pemicu bisa dibuka, tombol cetak membuka dialog print", async ({ page }) => {
+test("printing: daftar toko, template strip, deteksi halaman kosong, tombol cetak", async ({ page }) => {
   await page.route("**/api/preset", async (route) => {
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(PRESETS) });
   });
@@ -70,37 +70,41 @@ test("printing: daftar toko termuat, pemicu bisa dibuka, tombol cetak membuka di
   await pilihDariSelect(page, "printing-preset", "Toko Kedua");
   await expect(page.getByTestId("printing-preset")).toContainText("Toko Kedua");
 
-  // Ikon preset tampil sebagai gambar, bukan kotak kosong.
-  await expect(page.getByTestId("preset-fragile").locator("img")).toBeVisible();
+  // Empat template strip dari alat referensi tersedia.
+  await expect(page.getByTestId("daftar-template").getByRole("button")).toHaveCount(4);
+  await expect(page.getByTestId("template-3")).toContainText("Kartun");
+  await expect(page.getByTestId("kanvas-posisi")).toBeVisible();
 
   // Tanpa berkas: tidak ada yang dicetak.
   await expect(page.getByTestId("tombol-cetak")).toBeDisabled();
 
   await page.getByTestId("berkas-resi").setInputFiles({ name: "resi-uji.pdf", mimeType: "application/pdf", buffer: await pdfUji() });
   await expect(page.getByTestId("daftar-berkas")).toContainText("resi-uji.pdf");
-  await expect(page.getByTestId("pratinjau-resi")).toBeVisible();
-  // Berkas masuk → tombol aktif tanpa perlu memilih toko lagi.
-  await expect(page.getByTestId("tombol-cetak")).toBeEnabled();
 
-  // Preset pita hanya mengganti isi teks; tidak ada lagi nama toko di watermark.
-  await page.getByTestId("preset-cod").click();
-  await expect(page.getByTestId("teks1")).toHaveValue("COD");
-  await expect(page.getByTestId("teks2")).toHaveValue("BAYAR DI TEMPAT");
+  // Deteksi otomatis: halaman 2 kosong → langsung dilewati, halaman 1 & 3 dicetak.
+  await expect(page.getByTestId("halaman-2")).toContainText("kosong");
+  await expect(page.getByTestId("halaman-2")).toContainText("lewati");
+  await expect(page.getByTestId("jumlah-cetak")).toContainText("2 dicetak");
+  await expect(page.getByTestId("tombol-cetak")).toContainText("Cetak 2 resi");
 
-  // Halaman: halaman 2 kosong harus DITANDAI tapi TIDAK dihapus otomatis.
-  await page.getByTestId("buka-halaman-0").click();
-  await expect(page.getByTestId("halaman-1")).toBeVisible();
-  await expect(page.getByTestId("halaman-3")).toBeVisible();
-  await expect(page.getByTestId("saran-kosong-2")).toBeVisible();
-  await expect(page.getByTestId("saran-kosong-1")).toHaveCount(0);
-  await expect(page.getByTestId("cetak-halaman-2")).toBeChecked();
-  await expect(page.getByTestId("jumlah-cetak")).toContainText("3 halaman");
+  // Klik halaman kosong → dibalik menjadi dicetak (3 resi).
+  await page.getByTestId("halaman-2").click();
+  await expect(page.getByTestId("halaman-2")).not.toContainText("lewati");
+  await expect(page.getByTestId("tombol-cetak")).toContainText("Cetak 3 resi");
 
-  // Lepas centang halaman 2 → halaman itu tidak ikut dicetak, halaman 3 tetap.
-  await page.getByTestId("cetak-halaman-2").uncheck();
-  await expect(page.getByTestId("halaman-2")).toContainText("TIDAK DICETAK");
-  await expect(page.getByTestId("jumlah-cetak")).toContainText("2 halaman");
-  await expect(page.getByTestId("pratinjau-resi")).toBeVisible();
+  // "Lewati semua kosong" mengembalikan ke 2 resi.
+  await page.getByTestId("lewati-kosong").click();
+  await expect(page.getByTestId("tombol-cetak")).toContainText("Cetak 2 resi");
+
+  // Template klasik: teks kotak bisa diubah dan strip ikut dirender ulang.
+  await expect(page.getByTestId("teks1")).toHaveValue("FRAGILE");
+  await page.getByTestId("teks1").fill("AWAS PECAH");
+  await expect(page.getByTestId("teks1")).toHaveValue("AWAS PECAH");
+
+  // Template kartun menyembunyikan input teks.
+  await page.getByTestId("template-3").click();
+  await expect(page.getByTestId("teks1")).toHaveCount(0);
+  await page.getByTestId("template-0").click();
 
   await page.getByTestId("tombol-cetak").click();
   await expect.poll(async () => page.evaluate(() => (window as unknown as { __dicetak?: number }).__dicetak ?? 0)).toBeGreaterThan(0);
