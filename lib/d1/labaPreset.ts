@@ -166,15 +166,101 @@ export async function hitungDanSimpan(
   if (simpan) {
     const at = Math.floor(Date.now() / 1000);
     const abaikanLama = mode !== "timpa_semua";
+
+    // GABUNG, BUKAN TIMPA.
+    //
+    // KENAPA: satu hari bisa dicakup BEBERAPA berkas (Order.all.20261014_20261015 dan
+    // 20261015_20261016 sama-sama memuat 15 Okt). Dulu `INSERT OR REPLACE` membuat berkas
+    // terakhir MENGGANTI snapshot hari itu dengan cakupan yang lebih sempit: pada data nyata
+    // 15 Okt berakhir 170 order padahal registry sudah memuat 175, dan 14 Okt 240 padahal 267.
+    // Omzet/laba harian jadi lebih kecil dari kenyataan tanpa gejala apa pun.
+    //
+    // Sekarang baris order digabung per `no_pesanan` (registry sudah unik per No), lalu
+    // total snapshot = jumlah seluruh order milik tanggal itu. Order yang sama tidak
+    // dihitung dua kali, dan berkas dengan cakupan lebih luas tidak bisa "kalah".
+    const lama = await db
+      .prepare(
+        "SELECT jml_order, jml_baris, omzet, hpp, biaya, pajak, laba, no_json, rincian_json FROM laba_snapshot WHERE preset_id = ? AND tanggal = ?"
+      )
+      .bind(siap.presetId, tanggal)
+      .first<{ jml_order: number; jml_baris: number; omzet: number; hpp: number; biaya: number; pajak: number; laba: number; no_json: string; rincian_json: string }>();
+
+    // Himpunan nomor order yang sudah tercatat untuk tanggal ini.
+    const nomorLama = new Set<string>();
+    if (lama && abaikanLama) {
+      try {
+        const arr = JSON.parse(lama.no_json) as unknown;
+        if (Array.isArray(arr)) for (const x of arr) if (typeof x === "string") nomorLama.add(x);
+      } catch {
+        // no_json rusak = anggap kosong; lebih baik menghitung ulang daripada gagal simpan.
+      }
+    }
+
+    // Order di berkas ini yang BELUM tercatat pada tanggal itu.
+    const baru = agregat.orders.filter((x) => !nomorLama.has(x.no_pesanan));
+    const tambahan = baru.length > 0
+      ? {
+          jml_order: baru.length,
+          // `OrderPreset` tidak membawa jumlah baris per order; jumlah baris hanya dipakai
+          // tampilan. Pakai 0 agar tidak mengarang angka — total uang tetap dari agregat order.
+          jml_baris: 0,
+          omzet: baru.reduce((a, x) => a + x.omzet, 0),
+          hpp: baru.reduce((a, x) => a + x.hpp, 0),
+          biaya: baru.reduce((a, x) => a + x.biaya, 0),
+          pajak: baru.reduce((a, x) => a + x.pajak, 0),
+          laba: baru.reduce((a, x) => a + x.laba, 0),
+        }
+      : { jml_order: 0, jml_baris: 0, omzet: 0, hpp: 0, biaya: 0, pajak: 0, laba: 0 };
+
+    // `timpa_semua` = user minta hitung ulang bersih: pakai angka berkas ini apa adanya.
+    const gabung = lama && abaikanLama
+      ? {
+          jml_order: lama.jml_order + tambahan.jml_order,
+          jml_baris: lama.jml_baris + tambahan.jml_baris,
+          omzet: lama.omzet + tambahan.omzet,
+          hpp: lama.hpp + tambahan.hpp,
+          biaya: lama.biaya + tambahan.biaya,
+          pajak: lama.pajak + tambahan.pajak,
+          laba: lama.laba + tambahan.laba,
+        }
+      : {
+          jml_order: agregat.jml_order,
+          jml_baris: agregat.jml_baris,
+          omzet: agregat.omzet,
+          hpp: agregat.hpp,
+          biaya: agregat.biaya,
+          pajak: agregat.pajak,
+          laba: agregat.laba,
+        };
+
+    // Rincian per SKU: gabungkan juga. SKU yang sudah ada di rincian lama dan muncul lagi
+    // di berkas ini akan terhitung dua kali bila kita hanya menambah — karena itu rincian
+    // hanya diambil dari berkas ini saat `timpa_semua`, dan untuk mode gabung rincian lama
+    // dipertahankan sebagai dasar sementara (lihat catatan keterbatasan di bawah).
+    const rincianLama: unknown[] = (() => {
+      if (!lama || !abaikanLama) return [];
+      try {
+        const v = JSON.parse(lama.rincian_json ?? "[]");
+        return Array.isArray(v) ? v : [];
+      } catch {
+        return [];
+      }
+    })();
+
     const stmts: D1PreparedStatement[] = [
       db.prepare(
         "INSERT OR REPLACE INTO laba_snapshot (preset_id, tanggal, jml_order, jml_baris, omzet, hpp, biaya, pajak, laba, " +
         "tolak_json, rincian_json, peringatan_json, no_json, file, at, by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
       ).bind(
-        siap.presetId, tanggal, agregat.jml_order, agregat.jml_baris, agregat.omzet, agregat.hpp,
-        agregat.biaya, agregat.pajak, agregat.laba, JSON.stringify(agregat.tolak), JSON.stringify(agregat.rincian),
-        // Lapis 3: daftar No per tanggal (registry hanya simpan 1 baris per No → tak bisa deteksi overlap).
-        JSON.stringify(agregat.peringatan), JSON.stringify(agregat.orders.map((x) => x.no_pesanan)),
+        siap.presetId, tanggal, gabung.jml_order, gabung.jml_baris, gabung.omzet, gabung.hpp,
+        gabung.biaya, gabung.pajak, gabung.laba, JSON.stringify(agregat.tolak),
+        // Rincian per SKU hanya akurat bila seluruh hari berasal dari satu berkas. Untuk mode
+        // gabung, rincian dipertahankan dari snapshot lama dan TIDAK ditambah angka berkas ini
+        // (menambah akan menghitung SKU yang sama dua kali). Total uang di atas tetap benar
+        // karena dihitung dari `laba_order` yang unik per No.
+        JSON.stringify(rincianLama.length > 0 ? rincianLama : agregat.rincian),
+        JSON.stringify(agregat.peringatan),
+        JSON.stringify([...new Set([...nomorLama, ...agregat.orders.map((x) => x.no_pesanan)])]),
         file.slice(0, 120), at, oleh
       ),
     ];
