@@ -22,7 +22,6 @@
 | `lib/d1/desain.ts` | Persistensi folder/desain/latar D1 | `daftarFolder`, `UKURAN_SAH`, tipe `DesainPenuh`/`LatarPenuh` |
 | `lib/d1/elemenDesain.ts` | Elemen SVG & kategori (ikon/bentuk/panah/hiasan) | `daftarElemen`, `ambilElemen`, `KATEGORI_ELEMEN`, `MAKS_ELEMEN_BYTE` |
 | `components/dashboard/printing-workspace.tsx` | Halaman kerja cetak (client): template strip, editor posisi drag/resize, deteksi halaman kosong, cetak | `PrintingWorkspace`; internal: `kePngHitamPutih`, `snap`, `gambar`, `denganDokumen`, `BASE_PATH` |
-| `public/wm/*.svg` | Aset ikon lama (Tabler Icons, MIT); tidak dipakai lagi oleh printing | `cod`, `dilarang-buka`, `fragile`, `hati-hati`, `jangan-dibanting`, `terima-kasih`, `video-unboxing` |
 | `public/pdf.worker.min.mjs`, `scripts/salin-worker-pdf.mjs` | Worker pdf.js seversi, dilayani sendiri (tanpa CDN) | salinan dari `pdfjs-dist/build`; hook `postinstall`/`prebuild`/`predev` |
 | `lib/d1/picklistPdf.ts` | PDF picklist per SKU | `bangunPdfPicklist` |
 | `lib/d1/picklistPaketPdf.ts` | PDF picklist paket | `bangunPdfPicklistPaket` |
