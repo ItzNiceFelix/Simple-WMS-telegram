@@ -91,8 +91,10 @@ export async function POST(request: Request) {
     if (!Number.isInteger(presetId) || presetId <= 0) {
       return json({ ok: false, error: "Pilih toko dulu sebelum mengimpor performa." }, 400);
     }
+    // Nama berkas dipakai menurunkan periode: ekspor parentskudetail tidak punya kolom tanggal.
+    const namaFile = typeof body.namaFile === "string" ? body.namaFile.slice(0, 200) : "";
     try {
-      const h = await imporPerforma(db, buf.buffer as ArrayBuffer, oleh, presetId);
+      const h = await imporPerforma(db, buf.buffer as ArrayBuffer, oleh, presetId, namaFile);
       return json(h, 200);
     } catch (e) {
       return json({ ok: false, error: `Berkas tidak bisa dibaca sebagai Excel: ${e instanceof Error ? e.message : "tidak diketahui"}.` }, 400);

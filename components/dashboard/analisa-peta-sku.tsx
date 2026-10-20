@@ -103,7 +103,7 @@ export function AnalisaPetaSku({ presetId }: { presetId: number }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ aksi: "impor-performa", file: base64, presetId }),
+        body: JSON.stringify({ aksi: "impor-performa", file: base64, presetId, namaFile: berkas.name }),
       });
       const d = (await res.json().catch(() => null)) as {
         ok?: boolean; ringkas?: RingkasImpor; jumlahPertanyaan?: number; error?: string;

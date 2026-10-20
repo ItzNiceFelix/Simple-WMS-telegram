@@ -64,7 +64,7 @@ function bersih(v: unknown): string {
   return typeof v === "string" ? v.trim() : v == null ? "" : String(v).trim();
 }
 
-function periodeDariTanggal(rows: unknown[][]): string {
+function periodeDariTanggal(rows: unknown[][]): string | null {
   const kol = (rows[0] ?? [])
     .map((h, i) => (/tanggal|waktu|date/i.test(bersih(h)) ? i : -1))
     .filter((i) => i >= 0);
@@ -92,10 +92,24 @@ function periodeDariTanggal(rows: unknown[][]): string {
       if (akhir === null || iso > akhir) akhir = iso;
     }
   }
-  if (awal === null || akhir === null) {
-    const hariIni = formatIsoJakarta.format(new Date());
-    return `${hariIni}_${hariIni}`;
-  }
+  if (awal === null || akhir === null) return null;
+  return awal === akhir ? awal : `${awal}_${akhir}`;
+}
+
+/**
+ * Periode dari NAMA berkas: `parentskudetail.20261013_20261019.xlsx` → `2026-10-13_2026-10-19`.
+ *
+ * KENAPA PERLU: ekspor Performa Produk tidak punya kolom tanggal sama sekali. Tanpa ini
+ * periodenya jatuh ke "hari ini", sehingga semua riwayat menumpuk di satu periode yang salah
+ * dan delta antar periode mustahil. Nama berkas adalah satu-satunya jejak rentang yang ada.
+ * Tidak cocok → null (pemanggil memakai hari ini sebagai jalan terakhir).
+ */
+function periodeDariNama(nama: string): string | null {
+  const m = /(\d{4})(\d{2})(\d{2})[_\-](\d{4})(\d{2})(\d{2})/.exec(nama);
+  if (!m) return null;
+  const [, y1, m1, d1, y2, m2, d2] = m;
+  const awal = `${y1}-${m1}-${d1}`;
+  const akhir = `${y2}-${m2}-${d2}`;
   return awal === akhir ? awal : `${awal}_${akhir}`;
 }
 
@@ -113,6 +127,12 @@ export async function imporPerforma(
   buffer: ArrayBuffer,
   _oleh: string | null,
   presetId: number,
+  /**
+   * Nama berkas sumber. Ekspor `parentskudetail.YYYYMMDD_YYYYMMDD.xlsx` TIDAK memuat kolom
+   * tanggal sama sekali, jadi tanpa nama berkas periodenya jatuh ke "hari ini" — dan seluruh
+   * riwayat menumpuk di satu periode yang salah.
+   */
+  namaFile?: string,
 ): Promise<{ ok: true } & HasilImporPerforma> {
   const wb = XLSX.read(buffer, { type: "array" });
   const ws = wb.Sheets[wb.SheetNames[0]];
@@ -125,7 +145,13 @@ export async function imporPerforma(
   // Periode diturunkan dari RENTANG DATA berkas, bukan dari tanggal impor saja: dengan
   // periode kosong setiap impor menimpa impor sebelumnya pada kunci (preset, periode, sku),
   // sehingga riwayat hilang dan delta/ranking antar periode mustahil dihitung.
-  const periode = periodeDariTanggal(rows);
+  // Urutan sumber periode: kolom tanggal di berkas → rentang di nama berkas → hari ini.
+  const periode = periodeDariTanggal(rows) ?? periodeDariNama(namaFile ?? "") ?? (() => {
+    // Jalan terakhir: hari ini. Dicatat di komentar karena ini tanda berkas tidak membawa
+    // rentang apa pun — angka tetap masuk, tapi periode-nya tidak bisa dipercaya.
+    const hariIni = formatIsoJakarta.format(new Date());
+    return `${hariIni}_${hariIni}`;
+  })();
 
   // Satu kode produk bisa menghasilkan BANYAK baris (satu per variasi). Upsert per
   // (kode_produk, sku) tidak idempoten untuk kasus itu: D1 menjalankan pernyataan yang

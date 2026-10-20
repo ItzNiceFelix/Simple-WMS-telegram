@@ -13,13 +13,14 @@ const WAKTU = "Waktu Laporan Dibuat,14/10/2026 13:47\r\nPeriode,14/10/2026 - 14/
 const HEADER = "Urutan,Nama Iklan,Status,Jenis Iklan,Kode Produk,Tampilan Iklan,Mode Bidding,Penempatan Iklan,Tanggal Mulai,Tanggal Selesai,Dilihat,Jumlah Klik,Persentase Klik,Tambah ke Keranjang,Persentase Tambah ke Keranjang,Konversi,Konversi Langsung,Tingkat konversi,Tingkat Konversi Langsung,Biaya per Konversi,Biaya per Konversi Langsung,Produk Terjual,Terjual Langsung,Omzet Penjualan,Penjualan Langsung (GMV Langsung),Biaya,Efektifitas Iklan,Efektivitas Langsung,ACOS,ACOS Langsung,Jumlah Produk Dilihat,Jumlah Klik Produk,Persentase Klik Produk,Voucher Amount,Vouchered Sales";
 
 /** 35 sel: hanya kolom yang dibaca yang penting; sisanya "-". */
-function baris(nama: string, kode: string, status: string, dilihat: string, klik: string, omzet: string, biaya: string): string {
+function baris(nama: string, kode: string, status: string, dilihat: string, klik: string, omzet: string, biaya: string, mulai = "14/10/2026 00:00:00"): string {
   const sel = Array<string>(35).fill("-");
   sel[0] = "1";
   sel[1] = nama;
   sel[2] = status;
   sel[3] = "Iklan Produk";
   sel[4] = kode;
+  sel[8] = mulai;
   sel[10] = dilihat;
   sel[11] = klik;
   sel[23] = omzet;
@@ -207,6 +208,23 @@ describe("imporIklan", () => {
     // Dulu 885000 (dua kali lipat) karena ON CONFLICT menjumlahkan. Berkas yang sama
     // diunggah ulang tidak boleh mengubah angka.
     assert.equal(db.ads.get("7|2026-10-14|SKU-A")?.["biaya"], 442500);
+  });
+
+  it("tanggal simpan = AWAL periode laporan; Tanggal Mulai kampanye tidak dipakai", async () => {
+    const db = buatDb();
+    const peta = new Map([[KODE_A, ["SKU-A"]]]);
+    // Dua baris dengan Tanggal Mulai kampanye berbeda (12 Okt & 18 Sep) dalam satu laporan.
+    // Keduanya harus mendarat di tanggal AWAL periode (14 Okt untuk laporan 14–14), karena
+    // ekspor Ads tidak punya tanggal belanja per baris dan `Tanggal Mulai` = tanggal kampanye.
+    const teks = teksUji([
+      baris("Iklan A", KODE_A, "Berjalan", "10", "1", "1000", "5000", "12/10/2026 00:00:00"),
+      baris("Iklan A", KODE_A, "Berjalan", "20", "2", "2000", "7000", "18/09/2026 00:00:00"),
+    ]);
+    const r = await imporIklan(db, teks, 7, null, peta);
+    assert.equal(r.ok, true);
+    if (!r.ok) return;
+    assert.equal(db.ads.size, 1, "satu tanggal simpan untuk satu laporan");
+    assert.equal(db.ads.get("7|2026-10-14|SKU-A")?.["biaya"], 12000, "biaya kedua baris dijumlah");
   });
 
   it("gagal 400 bila header lebih sempit dari kolom yang dibaca (ekspor bergeser)", async () => {

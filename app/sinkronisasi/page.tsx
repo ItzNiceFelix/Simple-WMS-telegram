@@ -153,7 +153,7 @@ function Sinkronisasi() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ aksi: "impor-performa", file, presetId }),
+        body: JSON.stringify({ aksi: "impor-performa", file, presetId, namaFile: f.name }),
       });
       const d = (await res.json().catch(() => null)) as
         | {

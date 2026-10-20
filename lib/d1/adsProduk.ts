@@ -22,6 +22,9 @@ const KOL = {
   namaIklan: 1,
   status: 2,
   kodeProduk: 4,
+  /** Tanggal mulai tayang per baris iklan (`DD/MM/YYYY HH:MM:SS`). */
+  tanggalMulai: 8,
+  tanggalSelesai: 9,
   dilihat: 10,
   klik: 11,
   omzet: 23,
@@ -37,6 +40,14 @@ export type BarisIklan = {
   dilihat: number | null;
   omzetIklan: number;
   status: string;
+  /**
+   * Tanggal mulai tayang kampanye (`YYYY-MM-DD`), dari kolom `Tanggal Mulai`.
+   *
+   * BUKAN tanggal belanja: diverifikasi pada ekspor nyata — laporan periode 09–15 Okt
+   * memuat baris dengan `Tanggal Mulai` 18 Sep. Kolom ini hanya jejak kapan kampanye dibuat,
+   * jadi TIDAK dipakai sebagai tanggal `ads_produk`.
+   */
+  tanggalMulaiKampanye: string | null;
 };
 
 export type PeriodeIklan = { dari: string; sampai: string };
@@ -158,6 +169,7 @@ export function parseIklan(teks: string): HasilParseIklan {
       dilihat: angkaOpsional(r[KOL.dilihat]),
       omzetIklan: bacaAngka(r[KOL.omzet]),
       status: (r[KOL.status] ?? "").trim(),
+      tanggalMulaiKampanye: tanggalIso((r[KOL.tanggalMulai] ?? "").trim().slice(0, 10)),
     });
   }
   return { baris, dilewatiTanpaKode, periode, barisHeader };
@@ -189,12 +201,19 @@ export async function imporIklan(
    * sehingga total iklan per SKU salah walau total toko benar.
    */
   petaSku: Map<string, string[]>
-): Promise<Hasil<{ tersimpan: number; dilewatiTanpaKode: number; dilewatiTanpaPeta: number; kodeTanpaPeta: string[]; barisDibaca: number }>> {
+): Promise<Hasil<{ tersimpan: number; dilewatiTanpaKode: number; dilewatiTanpaPeta: number; kodeTanpaPeta: string[]; barisDibaca: number; periode: PeriodeIklan | null }>> {
   const hasil = parseIklan(teks);
   if (hasil.galatLebar) return gagal(400, hasil.galatLebar);
   if (hasil.barisHeader < 0) return gagal(400, "Baris header 'Urutan' tidak ditemukan di berkas iklan");
-  const tanggal = hasil.periode?.dari;
-  if (!tanggal) return gagal(400, "Periode laporan tidak ditemukan di berkas iklan");
+  // Tanggal simpan = AWAL periode laporan.
+  //
+  // Ekspor Ads tidak punya tanggal belanja per baris: kolom `Tanggal Mulai` adalah tanggal
+  // kampanye dibuat (terbukti berisi 18 Sep di laporan 09–15 Okt), dan seluruh biaya satu
+  // laporan memang satu angka agregat. Menyimpannya di awal periode membuat laporan mingguan
+  // tetap masuk jendela `BETWEEN t-6 AND t` di sekitar tanggal laporan, dan TIDAK menggeser
+  // baris lama saat berkas yang sama diimpor ulang — jadi tidak ada duplikat.
+  const tanggalPeriode = hasil.periode?.dari;
+  if (!tanggalPeriode) return gagal(400, "Periode laporan tidak ditemukan di berkas iklan");
 
   const dilewatiTanpaPeta = new Set<string>();
   const kodeTanpaPeta: string[] = [];
@@ -213,22 +232,24 @@ export async function imporIklan(
   // menyimpan per SKU. Satu kode dengan N SKU: biaya dibagi rata ke semua SKU-nya supaya
   // total toko tetap benar dan tidak ada biaya yang hilang. (Dulu hanya SKU pertama yang
   // menerima seluruh biaya, sehingga ROAS per SKU melenceng jauh.)
-  const perKunci = new Map<string, { sku: string; biaya: number; klik: number; dilihat: number; omzet: number }>();
+  const perKunci = new Map<string, { tanggal: string; sku: string; biaya: number; klik: number; dilihat: number; omzet: number }>();
   for (const b of hasil.baris) {
     const semua = petaSku.get(b.kodeProduk);
     if (!semua || semua.length === 0) continue;
+    const tanggal = tanggalPeriode;
     const n = semua.length;
     const biaya = Math.round(b.biaya / n);
     const klik = Math.round((b.klik ?? 0) / n);
     const dilihat = Math.round((b.dilihat ?? 0) / n);
     const omzet = Math.round(b.omzetIklan / n);
     for (const sku of semua) {
-      const agg = perKunci.get(sku) ?? { sku, biaya: 0, klik: 0, dilihat: 0, omzet: 0 };
+      const kunci = `${tanggal}\u0000${sku}`;
+      const agg = perKunci.get(kunci) ?? { tanggal, sku, biaya: 0, klik: 0, dilihat: 0, omzet: 0 };
       agg.biaya += biaya;
       agg.klik += klik;
       agg.dilihat += dilihat;
       agg.omzet += omzet;
-      perKunci.set(sku, agg);
+      perKunci.set(kunci, agg);
     }
   }
 
@@ -246,7 +267,7 @@ export async function imporIklan(
           "biaya = excluded.biaya, klik = excluded.klik, " +
           "dilihat = excluded.dilihat, omzet_iklan = excluded.omzet_iklan, at = excluded.at"
       )
-      .bind(presetId, tanggal, a.sku, a.biaya, a.klik, a.dilihat, a.omzet, at)
+      .bind(presetId, a.tanggal, a.sku, a.biaya, a.klik, a.dilihat, a.omzet, at)
   );
   for (let i = 0; i < stmts.length; i += PER_BATCH) await db.batch(stmts.slice(i, i + PER_BATCH));
 
@@ -255,7 +276,7 @@ export async function imporIklan(
     for (const a of perKunci.values()) {
       await db
         .prepare("UPDATE ads_produk SET at = ? WHERE preset_id = ? AND tanggal = ? AND sku = ?")
-        .bind(at, presetId, tanggal, a.sku)
+        .bind(at, presetId, a.tanggal, a.sku)
         .run()
         .catch(() => null);
     }
@@ -270,6 +291,8 @@ export async function imporIklan(
     // Jumlah BARIS berkas (bukan SKU): halaman Sinkronisasi melaporkan "berapa baris dibaca",
     // dan SKU unik selalu lebih kecil dari baris sehingga terlihat seperti data hilang.
     barisDibaca: hasil.baris.length,
+    /** Periode laporan yang dipakai sebagai tanggal simpan (satu tanggal untuk semua baris). */
+    periode: hasil.periode,
   };
 }
 
