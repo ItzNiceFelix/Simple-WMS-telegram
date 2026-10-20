@@ -69,7 +69,6 @@ test("printing: daftar toko termuat, pemicu bisa dibuka, tombol cetak membuka di
   await expect(page.getByTestId("printing-preset")).toContainText("Shopee Utama");
   await pilihDariSelect(page, "printing-preset", "Toko Kedua");
   await expect(page.getByTestId("printing-preset")).toContainText("Toko Kedua");
-  await expect(page.getByTestId("nama-toko-wm")).toHaveValue("Toko Kedua");
 
   // Ikon preset tampil sebagai gambar, bukan kotak kosong.
   await expect(page.getByTestId("preset-fragile").locator("img")).toBeVisible();
@@ -83,8 +82,10 @@ test("printing: daftar toko termuat, pemicu bisa dibuka, tombol cetak membuka di
   // Berkas masuk → tombol aktif tanpa perlu memilih toko lagi.
   await expect(page.getByTestId("tombol-cetak")).toBeEnabled();
 
+  // Preset pita hanya mengganti isi teks; tidak ada lagi nama toko di watermark.
   await page.getByTestId("preset-cod").click();
-  await expect(page.getByTestId("posisi-watermark")).toContainText("Cap tengah");
+  await expect(page.getByTestId("teks1")).toHaveValue("COD");
+  await expect(page.getByTestId("teks2")).toHaveValue("BAYAR DI TEMPAT");
 
   // Halaman: halaman 2 kosong harus DITANDAI tapi TIDAK dihapus otomatis.
   await page.getByTestId("buka-halaman-0").click();
@@ -104,6 +105,11 @@ test("printing: daftar toko termuat, pemicu bisa dibuka, tombol cetak membuka di
   await page.getByTestId("tombol-cetak").click();
   await expect.poll(async () => page.evaluate(() => (window as unknown as { __dicetak?: number }).__dicetak ?? 0)).toBeGreaterThan(0);
   await expect(page.locator("#area-cetak-printing img")).toHaveCount(2);
+  // Area cetak WAJIB anak langsung <body>: induk yang display:none saat print membuat
+  // dialog cetak mengeluarkan satu halaman kosong.
+  await expect
+    .poll(async () => page.evaluate(() => document.getElementById("area-cetak-printing")?.parentElement === document.body))
+    .toBe(true);
 });
 
 test("sinkronisasi: daftar toko termuat, riwayat selesai dimuat, ganti toko memicu muat ulang", async ({ page }) => {

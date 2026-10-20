@@ -1,16 +1,16 @@
-// lib/printing/watermark.test.ts — uji PDF keluaran: ukuran kertas, halaman dilewati, ikon.
+// lib/printing/watermark.test.ts — uji PDF keluaran: ukuran kertas, halaman dilewati, tata letak.
 //
-// Yang dijaga: halaman yang ditandai "tidak dicetak" BENAR-BENAR tidak ada di PDF, dan
-// pratinjau TIDAK boleh mengecilkan hitungan halaman (dulu pratinjau hanya menyusun satu
-// halaman sehingga "N halaman akan dicetak" melaporkan 1).
+// Yang dijaga: halaman yang ditandai "tidak dicetak" BENAR-BENAR tidak ada di PDF, pratinjau
+// TIDAK mengecilkan hitungan halaman, dan pita bawah tidak pernah menimpa isi resi.
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { deflateSync, inflateSync } from "node:zlib";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 
-import { bangunPdf, dasarPita, type OpsiCetak } from "./watermark";
+import { bangunPdf, hitungTataLetak, type OpsiCetak } from "./watermark";
 
-/** PDF uji: satu halaman 100×150 mm berisi teks (halaman tanpa isi tidak bisa ditempel). */
+const MM = 72 / 25.4;
+
+/** PDF uji: satu halaman 100×150 mm berisi teks. */
 async function pdfAsli(jumlah = 1): Promise<Uint8Array> {
   const d = await PDFDocument.create();
   const f = await d.embedFont(StandardFonts.Helvetica);
@@ -21,51 +21,15 @@ async function pdfAsli(jumlah = 1): Promise<Uint8Array> {
   return d.save();
 }
 
-/** PNG 1×1 hitam — cukup untuk memastikan jalur embedPng berjalan. */
-function pngHitam1px(): Uint8Array {
-  const crc = (buf: Buffer): number => {
-    let c = ~0;
-    for (const b of buf) {
-      c ^= b;
-      for (let i = 0; i < 8; i++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
-    }
-    return ~c >>> 0;
-  };
-  const chunk = (tipe: string, isi: Buffer): Buffer => {
-    const len = Buffer.alloc(4);
-    len.writeUInt32BE(isi.length);
-    const td = Buffer.concat([Buffer.from(tipe), isi]);
-    const c = Buffer.alloc(4);
-    c.writeUInt32BE(crc(td));
-    return Buffer.concat([len, td, c]);
-  };
-  const png = Buffer.concat([
-    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
-    chunk("IHDR", Buffer.from([0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0])),
-    chunk("IDAT", deflateSync(Buffer.from([0, 0, 0, 0, 255]))),
-    chunk("IEND", Buffer.alloc(0)),
-  ]);
-  return new Uint8Array(png);
-}
-
 const OPSI: OpsiCetak = {
   tinggiMm: 150,
-  posisi: "bawah",
   teks1: "FRAGILE",
   teks2: "VIDEO UNBOXING",
   teksBawah: "Tanpa video unboxing, komplain tidak diproses",
   ikonKiri: "gelas",
   ikonKanan: "kamera",
   stripMm: 20,
-  namaToko: "tokohanaa",
-  opacity: 0.4,
-  rotasi: 20,
-  ikonMm: 14,
-  jarakMm: 34,
   cropBawahMm: 0,
-  geserXMm: 0,
-  geserYMm: 0,
-  ikon: null,
 };
 
 const UKURAN = { getSize: () => ({ width: 283.46, height: 425.2 }) };
@@ -92,6 +56,17 @@ describe("bangunPdf", () => {
     assert.equal(d.getPageCount(), 2);
   });
 
+  it("halaman tanpa isi (tanpa stream Contents) dilewati, sisa berkas tetap tercetak", async () => {
+    const d = await PDFDocument.create();
+    const f = await d.embedFont(StandardFonts.Helvetica);
+    const isi = d.addPage([283.46, 425.2]);
+    isi.drawText("Resi", { x: 20, y: 300, size: 14, font: f });
+    d.addPage([283.46, 425.2]); // benar-benar kosong: embedPage menolak ("missing Contents")
+    const h = await bangunPdf([{ bytes: await d.save(), halaman: [UKURAN, UKURAN] }], OPSI);
+    assert.equal(h.halaman, 1);
+    assert.equal(h.gagal, 1);
+  });
+
   it("semua halaman dilewati → PDF kosong, bukan error", async () => {
     const bytes = await pdfAsli(2);
     const h = await bangunPdf([{ bytes, halaman: [null, null] }], OPSI);
@@ -99,42 +74,49 @@ describe("bangunPdf", () => {
     assert.equal(h.dilewati, 2);
   });
 
-  it("pratinjau tetap menghitung SEMUA halaman, hanya watermark yang digambar sekali", async () => {
+  it("pratinjau tetap menghitung SEMUA halaman, hanya pita yang digambar sekali", async () => {
     const bytes = await pdfAsli(3);
     const penuh = await bangunPdf([{ bytes, halaman: [UKURAN, UKURAN, UKURAN] }], OPSI);
     const pratinjau = await bangunPdf([{ bytes, halaman: [UKURAN, UKURAN, UKURAN] }], OPSI, true);
     assert.equal(pratinjau.halaman, 3);
     assert.equal(penuh.halaman, 3);
-    // Watermark hanya sekali → PDF pratinjau harus lebih kecil dari versi cetak.
     assert.ok(pratinjau.bytes.length < penuh.bytes.length);
   });
 
-  it("ikon benar-benar tertanam dan menambah isi PDF", async () => {
+  it("pita benar-benar digambar (output lebih besar dari tanpa pita)", async () => {
     const bytes = await pdfAsli(1);
-    const tanpa = await bangunPdf([{ bytes, halaman: [UKURAN] }], OPSI);
-    const dengan = await bangunPdf(
-      [{ bytes, halaman: [UKURAN] }],
-      { ...OPSI, ikon: { png: pngHitam1px(), rasio: 1 } }
-    );
+    const tanpa = await bangunPdf([{ bytes, halaman: [UKURAN] }], { ...OPSI, stripMm: 0 });
+    const dengan = await bangunPdf([{ bytes, halaman: [UKURAN] }], OPSI);
+    assert.equal((await PDFDocument.load(tanpa.bytes)).getPageCount(), 1);
     assert.ok(dengan.bytes.length > tanpa.bytes.length);
   });
+});
 
-  it("pita bawah menempel di tepi bawah, pita atas di tepi atas", () => {
-    // Angka ini satu-satunya penentu posisi pita; motif/nama toko hanya lapisan tambahan.
-    const tinggi = 150 * (72 / 25.4);
-    const strip = 20 * (72 / 25.4);
-    assert.equal(dasarPita(tinggi, strip, false), 0, "pita bawah harus mulai di y=0");
-    assert.ok(Math.abs(dasarPita(tinggi, strip, true) - (tinggi - strip)) < 1e-9, "pita atas di y=tinggi-strip");
-    // Pita tidak boleh melewati tepi atas halaman.
-    assert.ok(dasarPita(tinggi, strip, true) + strip <= tinggi + 1e-9);
+describe("hitungTataLetak", () => {
+  const W = 100 * MM;
+  const H = 150 * MM;
+  const strip = 20 * MM;
+
+  it("resi 100×150 mm tidak tertimpa pita: bawah resi tepat di atas band", () => {
+    const t = hitungTataLetak({ width: W, height: H }, W, H, strip);
+    assert.ok(Math.abs(t.skala - (H - strip) / H) < 1e-6);
+    assert.ok(Math.abs(t.width - W * ((H - strip) / H)) < 1e-6, "lebar mengikuti skala");
+    assert.ok(Math.abs(t.height - (H - strip)) < 1e-6, "tinggi = area di atas pita");
+    assert.ok(t.y >= strip - 1e-6, `y ${t.y} tidak boleh masuk band`);
+    assert.ok(t.y + t.height <= H + 1e-6, "tidak melewati tepi atas");
   });
 
-  it("posisi atas/bawah/tengah semuanya menghasilkan halaman sah", async () => {
-    const bytes = await pdfAsli(1);
-    for (const posisi of ["bawah", "atas", "tengah"] as const) {
-      const h = await bangunPdf([{ bytes, halaman: [UKURAN] }], { ...OPSI, posisi });
-      const d = await PDFDocument.load(h.bytes);
-      assert.equal(d.getPageCount(), 1, posisi);
-    }
+  it("tanpa pita, resi memenuhi halaman 100×150", () => {
+    const t = hitungTataLetak({ width: W, height: H }, W, H, 0);
+    assert.ok(Math.abs(t.skala - 1) < 1e-6);
+    assert.ok(Math.abs(t.y) < 1e-6);
+    assert.ok(Math.abs(t.height - H) < 1e-6);
+  });
+
+  it("resi lebih pendek (100×120) tetap di tengah area isi, tidak masuk band", () => {
+    const t = hitungTataLetak({ width: W, height: 120 * MM }, W, H, strip);
+    assert.ok(Math.abs(t.skala - 1) < 1e-6, "tidak perlu diskalakan");
+    assert.ok(t.y >= strip - 1e-6);
+    assert.ok(Math.abs(t.y + t.height - (strip + (H - strip + 120 * MM) / 2)) < 1e-6);
   });
 });

@@ -10,6 +10,7 @@
 // biaya unduh itu hanya karena menu Printing ada di sidebar.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type * as PdfJsModule from "pdfjs-dist";
+import type { PDFDocumentProxy } from "pdfjs-dist";
 import { toast } from "sonner";
 import { ChevronDown, ChevronUp, Download, FileText, Lock, Printer, Trash2 } from "lucide-react";
 
@@ -24,7 +25,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger, SelectVa
 import { Spinner } from "@/components/ui/spinner";
 import { tampilkanGagalTulis } from "@/components/dashboard/umpan-tulis";
 import { bacaNomorDariHalaman, type NomorLabel } from "@/lib/printing/ekstraksi";
-import { bangunPdf, type IkonGaris, type OpsiCetak, type PosisiWatermark } from "@/lib/printing/watermark";
+import { bangunPdf, type IkonGaris, type OpsiCetak } from "@/lib/printing/watermark";
 
 /**
  * Ikon preset. URL-nya dibangun saat modul dimuat (bukan saat render), jadi `BASE_PATH`
@@ -33,18 +34,12 @@ import { bangunPdf, type IkonGaris, type OpsiCetak, type PosisiWatermark } from 
 const BASE_PATH = process.env.NEXT_PUBLIC_BASE_PATH ?? "";
 
 /**
- * Preset watermark. Gambarnya ada di `public/wm/*.svg` (Tabler Icons, MIT) dan digambar
- * mandiri di klien — bukan unggahan, bukan aset pihak ketiga saat runtime.
+ * Preset pita. Gambarnya ada di `public/wm/*.svg` (Tabler Icons, MIT) hanya sebagai
+ * penanda visual; isi pita = dua kotak teks + baris kecil.
  */
 type PresetWm = {
   label: string;
   gambar: string;
-  posisi: PosisiWatermark;
-  ikonMm: number;
-  jarakMm: number;
-  rotasi: number;
-  opacity: number;
-  /** Isi pita: dua kotak teks + baris kecil di bawahnya. */
   teks1: string;
   teks2: string;
   teksBawah: string;
@@ -54,24 +49,15 @@ type PresetWm = {
 
 /** Teks pita sesuai referensi cetak: kotak kiri HITAM, kotak kanan bergaris. */
 const PRESET: Record<string, PresetWm> = {
-  fragile: { label: "Fragile — gelas pecah", gambar: `${BASE_PATH}/wm/fragile.svg`, posisi: "bawah", ikonMm: 14, jarakMm: 34, rotasi: 20, opacity: 0.5 , teks1: "FRAGILE", teks2: "VIDEO UNBOXING", teksBawah: "Tanpa video unboxing, komplain tidak diproses", ikonKiri: "gelas", ikonKanan: "kamera" },
-  unboxing: { label: "Video Unboxing", gambar: `${BASE_PATH}/wm/video-unboxing.svg`, posisi: "bawah", ikonMm: 13, jarakMm: 42, rotasi: 20, opacity: 0.45 , teks1: "VIDEO UNBOXING", teks2: "WAJIB", teksBawah: "Rekam saat paket dibuka. Tanpa video, klaim tidak dilayani.", ikonKiri: "kamera", ikonKanan: "kamera" },
-  jangan: { label: "Jangan Dibanting", gambar: `${BASE_PATH}/wm/jangan-dibanting.svg`, posisi: "bawah", ikonMm: 14, jarakMm: 34, rotasi: 20, opacity: 0.5 , teks1: "JANGAN DIBANTING", teks2: "PECAH BELAH", teksBawah: "Barang mudah pecah. Simpan di tempat aman.", ikonKiri: "gelas", ikonKanan: "gelas" },
-  hati: { label: "Hati-hati", gambar: `${BASE_PATH}/wm/hati-hati.svg`, posisi: "bawah", ikonMm: 14, jarakMm: 36, rotasi: 20, opacity: 0.5 , teks1: "HATI-HATI", teks2: "SIMPAN RAPI", teksBawah: "Jangan ditumpuk barang berat.", ikonKiri: "gelas", ikonKanan: "gelas" },
-  cod: { label: "COD — bayar di tempat", gambar: `${BASE_PATH}/wm/cod.svg`, posisi: "tengah", ikonMm: 24, jarakMm: 40, rotasi: 25, opacity: 0.4 , teks1: "COD", teks2: "BAYAR DI TEMPAT", teksBawah: "Barang dikirim setelah pembayaran diterima kurir.", ikonKiri: "kamera", ikonKanan: "gelas" },
-  terima: { label: "Terima kasih", gambar: `${BASE_PATH}/wm/terima-kasih.svg`, posisi: "bawah", ikonMm: 12, jarakMm: 44, rotasi: 20, opacity: 0.35 , teks1: "TERIMA KASIH", teks2: "SUDAH DICEK", teksBawah: "Barang sudah diperiksa sebelum dikirim.", ikonKiri: "gelas", ikonKanan: "kamera" },
-  buka: { label: "Dilarang buka sebelum dibayar", gambar: `${BASE_PATH}/wm/dilarang-buka.svg`, posisi: "tengah", ikonMm: 22, jarakMm: 40, rotasi: 25, opacity: 0.4 , teks1: "DILARANG BUKA", teks2: "SEBELUM DIBAYAR", teksBawah: "Paket berisi barang berharga.", ikonKiri: "gelas", ikonKanan: "kamera" },
-  tanpa: { label: "Tanpa ikon (teks saja)", gambar: "", posisi: "bawah", ikonMm: 14, jarakMm: 34, rotasi: 20, opacity: 0.5 , teks1: "", teks2: "", teksBawah: "", ikonKiri: "gelas", ikonKanan: "kamera" },
+  fragile: { label: "Fragile — gelas pecah", gambar: `${BASE_PATH}/wm/fragile.svg`, teks1: "FRAGILE", teks2: "VIDEO UNBOXING", teksBawah: "Tanpa video unboxing, komplain tidak diproses", ikonKiri: "gelas", ikonKanan: "kamera" },
+  unboxing: { label: "Video Unboxing", gambar: `${BASE_PATH}/wm/video-unboxing.svg`, teks1: "VIDEO UNBOXING", teks2: "WAJIB", teksBawah: "Rekam saat paket dibuka. Tanpa video, klaim tidak dilayani.", ikonKiri: "kamera", ikonKanan: "kamera" },
+  jangan: { label: "Jangan Dibanting", gambar: `${BASE_PATH}/wm/jangan-dibanting.svg`, teks1: "JANGAN DIBANTING", teks2: "PECAH BELAH", teksBawah: "Barang mudah pecah. Simpan di tempat aman.", ikonKiri: "gelas", ikonKanan: "gelas" },
+  hati: { label: "Hati-hati", gambar: `${BASE_PATH}/wm/hati-hati.svg`, teks1: "HATI-HATI", teks2: "SIMPAN RAPI", teksBawah: "Jangan ditumpuk barang berat.", ikonKiri: "gelas", ikonKanan: "gelas" },
+  cod: { label: "COD — bayar di tempat", gambar: `${BASE_PATH}/wm/cod.svg`, teks1: "COD", teks2: "BAYAR DI TEMPAT", teksBawah: "Barang dikirim setelah pembayaran diterima kurir.", ikonKiri: "kamera", ikonKanan: "gelas" },
+  terima: { label: "Terima kasih", gambar: `${BASE_PATH}/wm/terima-kasih.svg`, teks1: "TERIMA KASIH", teks2: "SUDAH DICEK", teksBawah: "Barang sudah diperiksa sebelum dikirim.", ikonKiri: "gelas", ikonKanan: "kamera" },
+  buka: { label: "Dilarang buka sebelum dibayar", gambar: `${BASE_PATH}/wm/dilarang-buka.svg`, teks1: "DILARANG BUKA", teks2: "SEBELUM DIBAYAR", teksBawah: "Paket berisi barang berharga.", ikonKiri: "gelas", ikonKanan: "kamera" },
+  tanpa: { label: "Tanpa teks", gambar: "", teks1: "", teks2: "", teksBawah: "", ikonKiri: "gelas", ikonKanan: "kamera" },
 };
-const LABEL_PRESET: Record<string, string> = Object.fromEntries(
-  Object.entries(PRESET).map(([k, v]) => [k, v.label])
-);
-const LABEL_POSISI: Record<string, string> = {
-  bawah: "Motif bawah",
-  atas: "Motif atas",
-  tengah: "Cap tengah",
-};
-
 type Berkas = {
   nama: string;
   /** Kunci stabil: nama berkas bisa sama saat user memilih PDF berbeda. */
@@ -91,27 +77,47 @@ type Berkas = {
 
 type PdfJs = typeof PdfJsModule;
 
-/** Muat pdf.js sekali per halaman; worker disajikan dari CDN versi yang sama dengan paket. */
+/** Muat pdf.js sekali per halaman; worker disajikan dari `/pdf.worker.min.mjs` (seversi). */
 let pdfjsSiap: Promise<PdfJs> | null = null;
 function muatPdfJs(): Promise<PdfJs> {
   if (!pdfjsSiap) {
     pdfjsSiap = import("pdfjs-dist").then((mod) => {
-      mod.GlobalWorkerOptions.workerSrc = `https://cdn.jsdelivr.net/npm/pdfjs-dist@${mod.version}/build/pdf.worker.min.mjs`;
+      // KENAPA LOKAL: CDN mematikan Printing saat offline atau CSP memblokir jsdelivr.
+      // Berkas disalin dari `pdfjs-dist/build` oleh `scripts/salin-worker-pdf.mjs` pada
+      // install/build; `?v=` mencegah cache memakai worker versi lama.
+      mod.GlobalWorkerOptions.workerSrc = `${BASE_PATH}/pdf.worker.min.mjs?v=${mod.version}`;
       return mod;
     });
   }
   return pdfjsSiap;
 }
 
+/** Satu tempat membuka & menutup dokumen pdf.js: buffer + worker resource tidak bocor. */
+async function denganDokumen<T>(
+  pdfjs: PdfJs,
+  bytes: Uint8Array,
+  pakai: (doc: PDFDocumentProxy) => Promise<T>
+): Promise<T> {
+  const tugas = pdfjs.getDocument({ data: bytes.slice(0) });
+  const doc = await tugas.promise;
+  try {
+    return await pakai(doc);
+  } finally {
+    // pdf.js v6: resource dibebaskan lewat loading task, bukan proxy dokumen.
+    await tugas.destroy();
+  }
+}
+
 /** Ukuran halaman sumber lewat pdf.js, dalam bentuk yang dipakai pembangun PDF. */
 async function ukuranHalaman(pdfjs: PdfJs, bytes: Uint8Array): Promise<({ getSize: () => { width: number; height: number } } | null)[]> {
-  const doc = await pdfjs.getDocument({ data: bytes.slice(0) }).promise;
-  return Promise.all(
-    Array.from({ length: doc.numPages }, async (_, i) => {
-      const page = await doc.getPage(i + 1);
-      const v = page.getViewport({ scale: 1 });
-      return { getSize: () => ({ width: v.width, height: v.height }) };
-    })
+  return denganDokumen(pdfjs, bytes, (doc) =>
+    Promise.all(
+      Array.from({ length: doc.numPages }, async (_, i) => {
+        const page = await doc.getPage(i + 1);
+        const v = page.getViewport({ scale: 1 });
+        return { getSize: () => ({ width: v.width, height: v.height }) };
+      })
+    )
   );
 }
 
@@ -141,116 +147,72 @@ type Kendali = {
  * halaman yang hanya punya garis pembatas punya teks kosong. Yang menentukan adalah gambar.
  */
 async function periksaHalaman(pdfjs: PdfJs, bytes: Uint8Array): Promise<number[]> {
-  const doc = await pdfjs.getDocument({ data: bytes.slice(0) }).promise;
-  const hasil: number[] = [];
-  for (let i = 1; i <= doc.numPages; i++) {
-    const page = await doc.getPage(i);
-    const vp = page.getViewport({ scale: SKALA_PERIKSA });
-    const c = document.createElement("canvas");
-    c.width = Math.max(1, Math.round(vp.width));
-    c.height = Math.max(1, Math.round(vp.height));
-    const ctx = c.getContext("2d", { willReadFrequently: true });
-    if (!ctx) { hasil.push(1); continue; }
-    ctx.fillStyle = "#fff";
-    ctx.fillRect(0, 0, c.width, c.height);
-    await page.render({ canvasContext: ctx, viewport: vp, canvas: c }).promise;
-    const d = ctx.getImageData(0, 0, c.width, c.height).data;
-    let gelap = 0;
-    for (let p = 0; p < d.length; p += 4) {
-      // Luma < 200: abu tua & hitam dihitung; abu muda latar tidak.
-      if (d[p] * 0.3 + d[p + 1] * 0.59 + d[p + 2] * 0.11 < 200) gelap += 1;
-    }
-    // Dibagi jumlah piksel yang BENAR-BENAR dibaca, bukan lebar×tinggi: canvas yang dipotong
-    // GPU mengembalikan piksel lebih sedikit, dan pembagi lebar×tinggi membuat halaman
-    // berisi tebal pun terbaca hampir nol.
-    // CANVAS, REKAM, LALU BACA: getImageData tepat setelah render kadang mengembalikan
-    // buffer kosong di Chromium (GPU belum selesai) — halaman penuh terbaca "kosong".
-    // Menyalin ke canvas kedua memaksa sinkronisasi baca.
-    let gelapFinal = gelap;
-    let totalFinal = d.length / 4;
-    if (gelapFinal === 0) {
-      const c2 = document.createElement("canvas");
-      c2.width = c.width;
-      c2.height = c.height;
-      const ctx2 = c2.getContext("2d", { willReadFrequently: true });
-      if (ctx2) {
-        ctx2.drawImage(c, 0, 0);
-        const d2 = ctx2.getImageData(0, 0, c2.width, c2.height).data;
-        gelapFinal = 0;
-        for (let p = 0; p < d2.length; p += 4) {
-          if (d2[p] * 0.3 + d2[p + 1] * 0.59 + d2[p + 2] * 0.11 < 200) gelapFinal += 1;
-        }
-        totalFinal = d2.length / 4;
+  return denganDokumen(pdfjs, bytes, async (doc) => {
+    const hasil: number[] = [];
+    for (let i = 1; i <= doc.numPages; i++) {
+      const page = await doc.getPage(i);
+      const vp = page.getViewport({ scale: SKALA_PERIKSA });
+      const c = document.createElement("canvas");
+      c.width = Math.max(1, Math.round(vp.width));
+      c.height = Math.max(1, Math.round(vp.height));
+      const ctx = c.getContext("2d", { willReadFrequently: true });
+      if (!ctx) { hasil.push(1); continue; }
+      ctx.fillStyle = "#fff";
+      ctx.fillRect(0, 0, c.width, c.height);
+      await page.render({ canvasContext: ctx, viewport: vp, canvas: c }).promise;
+      const d = ctx.getImageData(0, 0, c.width, c.height).data;
+      let gelap = 0;
+      for (let p = 0; p < d.length; p += 4) {
+        // Luma < 200: abu tua & hitam dihitung; abu muda latar tidak.
+        if (d[p] * 0.3 + d[p + 1] * 0.59 + d[p + 2] * 0.11 < 200) gelap += 1;
       }
+      // Dibagi jumlah piksel yang BENAR-BENAR dibaca, bukan lebar×tinggi: canvas yang dipotong
+      // GPU mengembalikan piksel lebih sedikit, dan pembagi lebar×tinggi membuat halaman
+      // berisi tebal pun terbaca hampir nol.
+      // CANVAS, REKAM, LALU BACA: getImageData tepat setelah render kadang mengembalikan
+      // buffer kosong di Chromium (GPU belum selesai) — halaman penuh terbaca "kosong".
+      // Menyalin ke canvas kedua memaksa sinkronisasi baca.
+      let gelapFinal = gelap;
+      let totalFinal = d.length / 4;
+      if (gelapFinal === 0) {
+        const c2 = document.createElement("canvas");
+        c2.width = c.width;
+        c2.height = c.height;
+        const ctx2 = c2.getContext("2d", { willReadFrequently: true });
+        if (ctx2) {
+          ctx2.drawImage(c, 0, 0);
+          const d2 = ctx2.getImageData(0, 0, c2.width, c2.height).data;
+          gelapFinal = 0;
+          for (let p = 0; p < d2.length; p += 4) {
+            if (d2[p] * 0.3 + d2[p + 1] * 0.59 + d2[p + 2] * 0.11 < 200) gelapFinal += 1;
+          }
+          totalFinal = d2.length / 4;
+        }
+      }
+      hasil.push(gelapFinal / Math.max(1, totalFinal));
     }
-    hasil.push(gelapFinal / Math.max(1, totalFinal));
-  }
-  return hasil;
+    return hasil;
+  });
 }
 
 /** Ambil jumlah halaman + render kecil satu halaman untuk thumbnail & pemeriksaan. */
 async function renderHalaman(pdfjs: PdfJs, bytes: Uint8Array, indeks0: number, skala: number): Promise<string | null> {
-  const doc = await pdfjs.getDocument({ data: bytes.slice(0) }).promise;
-  if (indeks0 >= doc.numPages) return null;
-  const page = await doc.getPage(indeks0 + 1);
-  const vp = page.getViewport({ scale: skala });
-  const c = document.createElement("canvas");
-  c.width = Math.max(1, Math.round(vp.width));
-  c.height = Math.max(1, Math.round(vp.height));
-  const ctx = c.getContext("2d");
-  if (!ctx) return null;
-  ctx.fillStyle = "#fff";
-  ctx.fillRect(0, 0, c.width, c.height);
-  await page.render({ canvasContext: ctx, viewport: vp, canvas: c }).promise;
-  return c.toDataURL("image/jpeg", 0.6);
-}
-
-
-/**
- * Gambar apa pun (SVG, PNG, JPG, WebP logo) → PNG hitam-putih.
- *
- * Kenapa hitam-putih: printer termal label resi hanya punya 1 bit, jadi ikon berwarna atau
- * bergradasi akan tercetak sebagai raster kacau. Transparansi dipertahankan (alfa < 128
- * dibuang) supaya ikon latar tembus tetap bersih.
- */
-async function kePngHitamPutih(f: File | Blob, maksPx = 480): Promise<{ png: Uint8Array; rasio: number }> {
-  const url = URL.createObjectURL(f);
-  try {
-    // KENAPA <img> DAN BUKAN createImageBitmap: Chromium TIDAK mendukung createImageBitmap
-    // untuk berkas SVG → semua ikon preset gagal dimuat. <img> mendekode SVG (dan PNG/JPG/
-    // WebP) dengan andal, jadi jalur itu yang dipakai untuk semua format.
-    const bmp = await new Promise<HTMLImageElement>((selesai, gagal) => {
-      const img = new Image();
-      img.onload = () => selesai(img);
-      img.onerror = () => gagal(new Error("Gambar tidak bisa didekode."));
-      img.src = url;
-    });
-    // SVG tanpa atribut width/height bisa terbaca 0 — pakai 300 sebagai ukuran acuan.
-    const lebarAsli = bmp.naturalWidth || bmp.width || 300;
-    const tinggiAsli = bmp.naturalHeight || bmp.height || 300;
-    const skala = Math.min(1, maksPx / Math.max(lebarAsli, tinggiAsli));
+  return denganDokumen(pdfjs, bytes, async (doc) => {
+    if (indeks0 >= doc.numPages) return null;
+    const page = await doc.getPage(indeks0 + 1);
+    const vp = page.getViewport({ scale: skala });
     const c = document.createElement("canvas");
-    c.width = Math.max(1, Math.round(lebarAsli * skala));
-    c.height = Math.max(1, Math.round(tinggiAsli * skala));
+    c.width = Math.max(1, Math.round(vp.width));
+    c.height = Math.max(1, Math.round(vp.height));
     const ctx = c.getContext("2d");
-    if (!ctx) throw new Error("Canvas tidak tersedia.");
-    ctx.drawImage(bmp, 0, 0, c.width, c.height);
-    const d = ctx.getImageData(0, 0, c.width, c.height);
-    for (let i = 0; i < d.data.length; i += 4) {
-      const a = d.data[i + 3];
-      const g = d.data[i] * 0.3 + d.data[i + 1] * 0.59 + d.data[i + 2] * 0.11;
-      const hitam = g < 160 && a > 128;
-      d.data[i] = d.data[i + 1] = d.data[i + 2] = hitam ? 0 : 255;
-      d.data[i + 3] = hitam ? 255 : 0;
-    }
-    ctx.putImageData(d, 0, 0);
-    const blob = await new Promise<Blob | null>((r) => c.toBlob(r, "image/png"));
-    if (!blob) throw new Error("Gambar gagal dikonversi.");
-    return { png: new Uint8Array(await blob.arrayBuffer()), rasio: c.width / c.height };
-  } finally {
-    URL.revokeObjectURL(url);
-  }
+    if (!ctx) return null;
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, c.width, c.height);
+    await page.render({ canvasContext: ctx, viewport: vp, canvas: c }).promise;
+    return c.toDataURL("image/jpeg", 0.6);
+  });
 }
+
 
 /**
  * Panel halaman satu berkas: thumbnail per halaman, status tinta, dan centang cetak.
@@ -297,6 +259,21 @@ function PanelHalaman({
           thumbnail sebelum menghapus.
         </span>
         <span className="flex-1" />
+        {(() => {
+          const sisaKosong = berkas.kendali.terlihatKosong.filter((i) => !berkas.kendali.dilewati[i]);
+          if (sisaKosong.length === 0) return null;
+          return (
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7"
+              onClick={() => { for (const i of sisaKosong) onToggle(i); }}
+              data-testid="lewati-kosong"
+            >
+              Lewati {sisaKosong.length} halaman kosong
+            </Button>
+          );
+        })()}
         <Button
           size="sm"
           variant="outline"
@@ -372,13 +349,10 @@ export function PrintingWorkspace() {
   /** Toko dipakai HANYA untuk mencocokkan nomor & mencatat cetak, bukan syarat mencetak. */
   const [toko, setToko] = useState<{ id: number; nama: string }[] | null>(null);
   const [presetId, setPresetId] = useState<number | null>(null);
-  /** Nama toko untuk watermark. Diisi nama toko terpilih; boleh diedit user, jadi state. */
-  const [namaToko, setNamaToko] = useState("");
   const [berkas, setBerkas] = useState<Berkas[]>([]);
   const [sibuk, setSibuk] = useState(false);
   const [progres, setProgres] = useState("");
   const [preset, setPreset] = useState<keyof typeof PRESET>("fragile");
-  const [posisi, setPosisi] = useState<PosisiWatermark>(PRESET.fragile.posisi);
   const [stripMm, setStripMm] = useState(20);
   const [teks1, setTeks1] = useState(PRESET.fragile.teks1);
   const [teks2, setTeks2] = useState(PRESET.fragile.teks2);
@@ -386,34 +360,22 @@ export function PrintingWorkspace() {
   const [ikonKiri, setIkonKiri] = useState<IkonGaris>(PRESET.fragile.ikonKiri);
   const [ikonKanan, setIkonKanan] = useState<IkonGaris>(PRESET.fragile.ikonKanan);
   const [tinggiMm, setTinggiMm] = useState(150);
-  const [ikonMm, setIkonMm] = useState(PRESET.fragile.ikonMm);
-  const [jarakMm, setJarakMm] = useState(PRESET.fragile.jarakMm);
-  const [opacity, setOpacity] = useState(PRESET.fragile.opacity);
-  const [rotasi, setRotasi] = useState(PRESET.fragile.rotasi);
   const [crop, setCrop] = useState(0);
-  const [geserX, setGeserX] = useState(0);
-  const [geserY, setGeserY] = useState(0);
-  const [ikon, setIkon] = useState<{ png: Uint8Array; rasio: number; nama: string } | null>(null);
-  const [memuatIkon, setMemuatIkon] = useState(false);
   const [pratinjau, setPratinjau] = useState<string | null>(null);
   /** Jumlah halaman yang benar-benar akan tercetak (setelah halaman dilewati). */
   const [jumlahCetak, setJumlahCetak] = useState(0);
+  /** Halaman tanpa isi di PDF sumber yang tidak bisa ditempel & dilewati otomatis. */
+  const [halamanKosong, setHalamanKosong] = useState(0);
   const [memuatPratinjau, setMemuatPratinjau] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  const inputIkonRef = useRef<HTMLInputElement>(null);
 
   const presetAktif = PRESET[preset];
 
   const opsi: OpsiCetak = useMemo(
     () => ({
-      tinggiMm, posisi, namaToko, opacity, rotasi, ikonMm, jarakMm, stripMm,
-      teks1, teks2, teksBawah, ikonKiri, ikonKanan,
-      cropBawahMm: crop, geserXMm: geserX, geserYMm: geserY, ikon,
+      tinggiMm, stripMm, teks1, teks2, teksBawah, ikonKiri, ikonKanan, cropBawahMm: crop,
     }),
-    [
-      tinggiMm, posisi, namaToko, opacity, rotasi, ikonMm, jarakMm, stripMm,
-      teks1, teks2, teksBawah, ikonKiri, ikonKanan, crop, geserX, geserY, ikon,
-    ]
+    [tinggiMm, stripMm, teks1, teks2, teksBawah, ikonKiri, ikonKanan, crop]
   );
 
   // Daftar toko: bukan syarat mencetak. Kegagalan memuatnya hanya membuat pencatatan
@@ -428,51 +390,31 @@ export function PrintingWorkspace() {
         const daftar = d?.ok ? d.presets ?? [] : [];
         setToko(daftar);
         setPresetId(daftar[0]?.id ?? null);
-        if (daftar[0]) setNamaToko(daftar[0].nama);
       } catch {
         setToko([]);
       }
     })();
   }, []);
 
-  /** Ikon preset: ambil SVG dari /wm, konversi ke PNG hitam-putih, cache per nama preset. */
-  const cacheIkon = useRef(new Map<string, { png: Uint8Array; rasio: number }>());
-  useEffect(() => {
-    const gambar = presetAktif.gambar;
-    if (!gambar) { setIkon(null); return; }
-    const tersimpan = cacheIkon.current.get(gambar);
-    if (tersimpan) { setIkon({ ...tersimpan, nama: gambar }); return; }
-    let batal = false;
-    void (async () => {
-      try {
-        const blob = await (await fetch(gambar)).blob();
-        const hasil = await kePngHitamPutih(blob);
-        cacheIkon.current.set(gambar, hasil);
-        if (!batal) setIkon({ ...hasil, nama: gambar });
-      } catch {
-        if (!batal) { setIkon(null); toast.error("Ikon watermark gagal dimuat."); }
-      }
-    })();
-    return () => { batal = true; };
-  }, [presetAktif.gambar]);
-
   /** Baca satu berkas: teks per halaman → nomor, plus kepadatan tinta per halaman. */
   const bacaBerkas = useCallback(async (f: File): Promise<Berkas> => {
     const pdfjs = await muatPdfJs();
     const bytes = new Uint8Array(await f.arrayBuffer());
-    const doc = await pdfjs.getDocument({ data: bytes.slice(0) }).promise;
-    const teksHalaman: string[] = [];
-    for (let i = 1; i <= doc.numPages; i++) {
-      const page = await doc.getPage(i);
-      const isi = await page.getTextContent();
-      teksHalaman.push(isi.items.map((it) => ("str" in it ? it.str : "")).join(" "));
-    }
+    const { teksHalaman, jumlahHalaman } = await denganDokumen(pdfjs, bytes, async (doc) => {
+      const teks: string[] = [];
+      for (let i = 1; i <= doc.numPages; i++) {
+        const page = await doc.getPage(i);
+        const isi = await page.getTextContent();
+        teks.push(isi.items.map((it) => ("str" in it ? it.str : "")).join(" "));
+      }
+      return { teksHalaman: teks, jumlahHalaman: doc.numPages };
+    });
     const kepadatan = await periksaHalaman(pdfjs, bytes);
     return {
       nama: f.name,
       kunci: `${f.name}#${bytes.length}#${Date.now()}#${Math.random().toString(36).slice(2, 7)}`,
       bytes,
-      jumlahHalaman: doc.numPages,
+      jumlahHalaman,
       nomor: bacaNomorDariHalaman(teksHalaman),
       status: "belum",
       // Deteksi TIDAK menghapus apa pun: hanya menandai. User memutuskan lewat centang.
@@ -544,8 +486,6 @@ export function PrintingWorkspace() {
   /** Ganti toko: cocokkan ulang semua berkas yang sudah masuk (tidak perlu unggah ulang). */
   async function gantiToko(id: number) {
     setPresetId(id);
-    const nama = toko?.find((t) => t.id === id)?.nama;
-    if (nama) setNamaToko(nama);
     if (berkas.length > 0) setBerkas(await cocokkan(berkas, id));
   }
 
@@ -572,6 +512,7 @@ export function PrintingWorkspace() {
     try {
       const pdfjs = await muatPdfJs();
       const hasil = await bangunPdf(await sumberBerkas(pdfjs), opsi, true);
+      setHalamanKosong(hasil.gagal);
       // Semua halaman dilewati → tidak ada halaman untuk ditampilkan; beri tahu, bukan
       // biarkan pratinjau lama menempel seolah masih berlaku.
       if (hasil.halaman === 0) {
@@ -580,20 +521,21 @@ export function PrintingWorkspace() {
         return;
       }
       setJumlahCetak(hasil.halaman);
-      const doc = await pdfjs.getDocument({ data: hasil.bytes.slice(0) }).promise;
-      const page = await doc.getPage(1);
-      const vp = page.getViewport({ scale: 2 });
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.round(vp.width);
-      canvas.height = Math.round(vp.height);
-      const canvasContext = canvas.getContext("2d");
-      if (!canvasContext) throw new Error("Canvas tidak tersedia.");
-      // Latar putih: halaman resi bisa transparan, dan di layar gelap gambar transparan
-      // terlihat hitam sehingga pratinjau menyesatkan.
-      canvasContext.fillStyle = "#fff";
-      canvasContext.fillRect(0, 0, canvas.width, canvas.height);
-      await page.render({ canvasContext, viewport: vp, canvas }).promise;
-      setPratinjau(canvas.toDataURL("image/png"));
+      await denganDokumen(pdfjs, hasil.bytes, async (doc) => {
+        const page = await doc.getPage(1);
+        const vp = page.getViewport({ scale: 2 });
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.round(vp.width);
+        canvas.height = Math.round(vp.height);
+        const canvasContext = canvas.getContext("2d");
+        if (!canvasContext) throw new Error("Canvas tidak tersedia.");
+        // Latar putih: halaman resi bisa transparan, dan di layar gelap gambar transparan
+        // terlihat hitam sehingga pratinjau menyesatkan.
+        canvasContext.fillStyle = "#fff";
+        canvasContext.fillRect(0, 0, canvas.width, canvas.height);
+        await page.render({ canvasContext, viewport: vp, canvas }).promise;
+        setPratinjau(canvas.toDataURL("image/png"));
+      });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Gagal membuat pratinjau.");
     } finally {
@@ -608,6 +550,14 @@ export function PrintingWorkspace() {
     const t = setTimeout(() => void bangunPratinjau(), 350);
     return () => clearTimeout(t);
   }, [bangunPratinjau, berkas.length]);
+
+  // Semua berkas dihapus: hitungan lama tidak boleh membuat tombol Cetak tetap aktif.
+  useEffect(() => {
+    if (berkas.length > 0) return;
+    setJumlahCetak(0);
+    setHalamanKosong(0);
+    setPratinjau(null);
+  }, [berkas.length]);
 
   async function unduh() {
     setSibuk(true);
@@ -642,54 +592,77 @@ export function PrintingWorkspace() {
         toast.error("Semua halaman dilewati. Centang minimal satu halaman.");
         return;
       }
-      const doc = await pdfjs.getDocument({ data: hasil.bytes.slice(0) }).promise;
+      // KENAPA DI <body>: aturan cetak menyembunyikan semua anak <body> lain. Area cetak yang
+      // bersarang di dalam AppShell ikut tersembunyi (display:none pada ancestor tidak bisa
+      // dibatalkan descendant) — dulu hasil "Cetak" keluar satu halaman kosong.
+      let wadah = document.getElementById("area-cetak-printing");
+      if (!wadah) {
+        wadah = document.createElement("div");
+        wadah.id = "area-cetak-printing";
+        wadah.setAttribute("aria-hidden", "true");
+        document.body.appendChild(wadah);
+      }
+      wadah.innerHTML = "";
       // Render tiap halaman ke <img> supaya hasil print identik dengan pratinjau (font
       // tertanam, ukuran mm). Barcode sudah raster di tahap ini — cukup untuk label termal.
-      const wadah = document.getElementById("area-cetak-printing");
-      if (!wadah) throw new Error("Area cetak tidak ditemukan.");
-      wadah.innerHTML = "";
-      for (let i = 1; i <= doc.numPages; i++) {
-        setProgres(`Menyiapkan halaman ${i}/${doc.numPages}…`);
-        const page = await doc.getPage(i);
-        // Lebar raster 800 px untuk halaman 100 mm ≈ 203 dpi — angka yang SAMA dengan alat
-        // referensi yang dipakai user, dan ambang minimum pembaca barcode termal. Skala lebih
-        // besar hanya menambah memori tanpa membuat barcode lebih mudah dipindai.
-        const vp = page.getViewport({ scale: 800 / (page.view[2] - page.view[0]) });
-        const c = document.createElement("canvas");
-        c.width = Math.round(vp.width);
-        c.height = Math.round(vp.height);
-        const canvasContext = c.getContext("2d");
-        if (!canvasContext) throw new Error("Canvas tidak tersedia.");
-        canvasContext.fillStyle = "#fff";
-        canvasContext.fillRect(0, 0, c.width, c.height);
-        await page.render({ canvasContext, viewport: vp, canvas: c }).promise;
-        const img = new Image();
-        img.src = c.toDataURL("image/png");
-        await img.decode();
-        wadah.appendChild(img);
-      }
+      await denganDokumen(pdfjs, hasil.bytes, async (doc) => {
+        for (let i = 1; i <= doc.numPages; i++) {
+          setProgres(`Menyiapkan halaman ${i}/${doc.numPages}…`);
+          const page = await doc.getPage(i);
+          // Lebar raster 800 px untuk halaman 100 mm ≈ 203 dpi — angka yang SAMA dengan alat
+          // referensi yang dipakai user, dan ambang minimum pembaca barcode termal.
+          const vp = page.getViewport({ scale: 800 / (page.view[2] - page.view[0]) });
+          const c = document.createElement("canvas");
+          c.width = Math.round(vp.width);
+          c.height = Math.round(vp.height);
+          const canvasContext = c.getContext("2d");
+          if (!canvasContext) throw new Error("Canvas tidak tersedia.");
+          canvasContext.fillStyle = "#fff";
+          canvasContext.fillRect(0, 0, c.width, c.height);
+          await page.render({ canvasContext, viewport: vp, canvas: c }).promise;
+          const img = new Image();
+          img.src = c.toDataURL("image/png");
+          await img.decode();
+          wadah.appendChild(img);
+        }
+      });
+      const ukuranMm = `100mm ${tinggiMm}mm`;
       let gaya = document.getElementById("gaya-cetak-printing");
       if (!gaya) {
         gaya = document.createElement("style");
         gaya.id = "gaya-cetak-printing";
         document.head.appendChild(gaya);
       }
-      // KENAPA SELURUH HALAMAN DISEMBUNYIKAN: `hidden print:block` pada area cetak saja
-      // TIDAK cukup — seluruh dashboard (sidebar, kartu, tombol) tetap dicetak, sehingga PDF
-      // hasil "Cetak" berisi 19 halaman campur UI + resi. Aturan di bawah menyembunyikan
-      // SEMUA elemen body lalu menampilkan hanya area cetak.
+      // `body>*:not(area)` = sembunyikan dashboard, SISAKAN area cetak. Gambar memakai
+      // lebar 100mm + tinggi otomatis, jadi rasio halaman tidak pernah dipaksa melar.
       gaya.textContent =
-        `@page{size:100mm ${tinggiMm}mm;margin:0}` +
+        `@page{size:${ukuranMm};margin:0}` +
         `@media print{html,body{margin:0!important;padding:0!important;background:#fff!important}` +
-        `body>*{display:none!important}` +
-        // Lebar/tinggi kontainer WAJIB direset: elemen ini berukuran 0×0 di layar, dan
-        // `width:100mm` pada <img> tidak akan tampak bila induknya selebar 0.
+        `body>*:not(#area-cetak-printing){display:none!important}` +
         `#area-cetak-printing{display:block!important;visibility:visible!important;position:static!important;` +
-        `width:100mm!important;height:auto!important;overflow:visible!important}` +
-        `#area-cetak-printing img{display:block;width:100%!important;height:${tinggiMm}mm!important;` +
+        `width:100mm!important;height:auto!important;overflow:visible!important;margin:0!important;padding:0!important}` +
+        `#area-cetak-printing img{display:block;width:100mm!important;height:auto!important;` +
         `page-break-after:always;break-after:page;margin:0!important;border:0!important}` +
         `#area-cetak-printing img:last-child{page-break-after:auto;break-after:auto}}`;
-      await catatCetak();
+
+      // Dialog print membaca DOM setelah frame berikutnya; tanpa jeda ini Chromium kadang
+      // mencetak halaman kosong pada label besar.
+      await new Promise<void>((r) => requestAnimationFrame(() => setTimeout(r, 100)));
+
+      const gayaId = "gaya-cetak-printing";
+      let sudahBersih = false;
+      const bersihkan = () => {
+        if (sudahBersih) return;
+        sudahBersih = true;
+        document.getElementById(gayaId)?.remove();
+        wadah.innerHTML = "";
+        // Catat SETELAH dialog ditutup: user yang membatalkan tidak dicatat "sudah dicetak".
+        void catatCetak();
+      };
+      window.addEventListener("afterprint", bersihkan, { once: true });
+      // Jaring pengaman: sebagian WebView tidak pernah memicu afterprint.
+      window.setTimeout(bersihkan, 60_000);
+
       window.print();
       toast.success(`${hasil.halaman} halaman dikirim ke dialog cetak.`);
     } catch (e) {
@@ -722,30 +695,11 @@ export function PrintingWorkspace() {
   function terapkanPreset(k: keyof typeof PRESET) {
     const p = PRESET[k];
     setPreset(k);
-    setPosisi(p.posisi);
-    setIkonMm(p.ikonMm);
-    setJarakMm(p.jarakMm);
-    setRotasi(p.rotasi);
-    setOpacity(p.opacity);
     setTeks1(p.teks1);
     setTeks2(p.teks2);
     setTeksBawah(p.teksBawah);
     setIkonKiri(p.ikonKiri);
     setIkonKanan(p.ikonKanan);
-  }
-
-  async function pilihIkon(f: File | null) {
-    if (!f) return;
-    setMemuatIkon(true);
-    try {
-      const hasil = await kePngHitamPutih(f);
-      setIkon({ ...hasil, nama: f.name });
-      toast.success(`${f.name} dipakai sebagai watermark.`);
-    } catch {
-      toast.error("Gambar tidak bisa dibaca. Pakai PNG, JPG, WebP, atau SVG.");
-    } finally {
-      setMemuatIkon(false);
-    }
   }
 
   const ringkas = useMemo(() => {
@@ -896,9 +850,9 @@ export function PrintingWorkspace() {
           {/* ── Watermark ── */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">2. Watermark</CardTitle>
+              <CardTitle className="text-base">2. Pita watermark</CardTitle>
               <CardDescription>
-                Ikon + nama toko digambar transparan di atas resi, jadi alamat & barcode tetap terbaca.
+                Pita FRAGILE + VIDEO UNBOXING dicetak di band bawah label; isi resi tidak tertimpa.
               </CardDescription>
             </CardHeader>
             <CardContent className="flex flex-col gap-3">
@@ -929,45 +883,6 @@ export function PrintingWorkspace() {
                 </div>
                 <span className="mt-1">{presetAktif.label}. Ikon dari Tabler Icons (MIT).</span>
               </div>
-
-              <div className="grid gap-2 sm:grid-cols-2">
-                <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                  Gambar watermark sendiri
-                  <Input
-                    ref={inputIkonRef}
-                    type="file"
-                    accept="image/png,image/jpeg,image/webp,image/svg+xml"
-                    disabled={memuatIkon}
-                    onChange={(e) => void pilihIkon(e.target.files?.[0] ?? null)}
-                    data-testid="unggah-watermark"
-                  />
-                </label>
-                <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                  Posisi
-                  <Select value={posisi} onValueChange={(v) => { if (typeof v === "string" && v) setPosisi(v as PosisiWatermark); }}>
-                    <SelectTrigger className="h-9 w-full" data-testid="posisi-watermark">
-                      <SelectValue>{(v: string | null) => LABEL_POSISI[v ?? ""] ?? "Pilih posisi"}</SelectValue>
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectGroup>
-                        <SelectItem value="bawah">Motif bawah</SelectItem>
-                        <SelectItem value="atas">Motif atas</SelectItem>
-                        <SelectItem value="tengah">Cap tengah</SelectItem>
-                      </SelectGroup>
-                    </SelectContent>
-                  </Select>
-                </label>
-              </div>
-              {ikon ? (
-                <p className="text-[11px] text-muted-foreground">
-                  Ikon aktif: {ikon.nama} {memuatIkon ? "(memuat…)" : ""}
-                </p>
-              ) : null}
-
-              <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                Nama toko di watermark (kosong = tanpa teks)
-                <Input value={namaToko} maxLength={28} onChange={(e) => setNamaToko(e.target.value)} className="h-9" data-testid="nama-toko-wm" />
-              </label>
 
               {/* ── Pita watermark (bentuk utama di label) ── */}
               <div className="rounded-lg border border-border p-2">
@@ -1019,53 +934,19 @@ export function PrintingWorkspace() {
                 </label>
               </div>
 
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <div className="grid grid-cols-2 gap-2">
                 <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                  Tinggi (mm)
-                  <Input type="number" min={100} max={300} value={tinggiMm} onChange={(e) => setTinggiMm(Number(e.target.value) || 150)} className="h-9" />
+                  Tinggi label (mm)
+                  <Input type="number" min={100} max={300} value={tinggiMm} onChange={(e) => setTinggiMm(Number(e.target.value) || 150)} className="h-9" data-testid="tinggi-label" />
                 </label>
                 <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                  Ukuran ikon (mm)
-                  <Input type="number" min={5} max={40} value={ikonMm} onChange={(e) => setIkonMm(Number(e.target.value) || 14)} className="h-9" data-testid="ukuran-ikon" />
-                </label>
-                <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                  Jarak motif (mm)
-                  <Input type="number" min={10} max={90} value={jarakMm} onChange={(e) => setJarakMm(Number(e.target.value) || 34)} className="h-9" />
-                </label>
-                <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                  Miring (°)
-                  <Input type="number" min={-90} max={90} value={rotasi} onChange={(e) => setRotasi(Number(e.target.value) || 0)} className="h-9" />
-                </label>
-              </div>
-              <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                Kepekatan ({Math.round(opacity * 100)}%)
-                <input
-                  type="range"
-                  min={5}
-                  max={100}
-                  value={Math.round(opacity * 100)}
-                  onChange={(e) => setOpacity(Number(e.target.value) / 100)}
-                  data-testid="opacity"
-                  className="h-9 w-full accent-primary"
-                />
-              </label>
-              <div className="grid grid-cols-3 gap-2">
-                <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                  Crop bawah (mm)
-                  <Input type="number" min={0} max={80} value={crop} onChange={(e) => setCrop(Number(e.target.value) || 0)} className="h-9" />
-                </label>
-                <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                  Geser X (mm)
-                  <Input type="number" min={-20} max={20} value={geserX} onChange={(e) => setGeserX(Number(e.target.value) || 0)} className="h-9" />
-                </label>
-                <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-                  Geser Y (mm)
-                  <Input type="number" min={-20} max={20} value={geserY} onChange={(e) => setGeserY(Number(e.target.value) || 0)} className="h-9" />
+                  Crop bawah resi (mm)
+                  <Input type="number" min={0} max={80} value={crop} onChange={(e) => setCrop(Number(e.target.value) || 0)} className="h-9" data-testid="crop-bawah" />
                 </label>
               </div>
               <p className="text-[11px] text-muted-foreground">
-                Logo toko dipakai sebagai “Gambar watermark sendiri” — otomatis jadi hitam-putih
-                agar tajam di printer termal.
+                Resi diskalakan ke area di atas pita; potong bagian bawah resi bila ada ruang
+                kosong supaya barcode tidak mengecil.
               </p>
             </CardContent>
           </Card>
@@ -1100,6 +981,11 @@ export function PrintingWorkspace() {
                   ? "Belum ada berkas."
                   : `${jumlahCetak} halaman akan dicetak.`}
               </p>
+              {halamanKosong > 0 ? (
+                <p className="text-xs text-muted-foreground" data-testid="halaman-kosong-otomatis">
+                  {halamanKosong} halaman tanpa isi dilewati otomatis.
+                </p>
+              ) : null}
               <Button onClick={() => void cetak()} disabled={sibuk || jumlahCetak === 0} data-testid="tombol-cetak">
                 {sibuk ? <Spinner data-icon="inline-start" /> : <Printer className="size-4" aria-hidden />}
                 Cetak
@@ -1117,13 +1003,6 @@ export function PrintingWorkspace() {
           </CardContent>
         </Card>
       </div>
-
-      {/*
-        Zona cetak di luar alur dokumen (position:fixed, ukuran nol) supaya tidak ikut
-        menggeser layout layar. Visibilitasnya diatur murni oleh stylesheet cetak di atas —
-        `hidden` dari Tailwind adalah `display:none` yang membuat isinya TIDAK tercetak.
-      */}
-      <div id="area-cetak-printing" aria-hidden style={{ position: "fixed", left: 0, top: 0, width: 0, height: 0, overflow: "hidden" }} />
     </>
   );
 }

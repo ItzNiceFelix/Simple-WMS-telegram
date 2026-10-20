@@ -10,7 +10,7 @@
 ## Peta file
 | file | peran | export/entry penting |
 |---|---|---|
-| `lib/printing/watermark.ts` | Bangun PDF resi client-side, menempel halaman asli vektor + watermark | `bangunPdf`, `dasarPita`, `OpsiCetak`, `PosisiWatermark` |
+| `lib/printing/watermark.ts` | Bangun PDF resi client-side: resi vektor + pita di band bawah | `bangunPdf`, `hitungTataLetak`, `OpsiCetak`, `IkonGaris` |
 | `lib/printing/ekstraksi.ts` | Ekstrak saran nomor order/resi dari teks label; murni tanpa PDF/DOM/jaringan | `bacaNomorLabel`, `bacaNomorDariHalaman`, `NomorLabel` |
 | `lib/printing/watermark.test.ts`, `lib/printing/ekstraksi.test.ts` | Unit test printing | test colocated; watermark memakai `pdf-lib` |
 | `lib/desain/skemaLayout.ts` | Model/validasi layout kanvas normalized | `JenisElemen`, `ElemenLayout`, `LayoutBanner`, `validasiLayout`, `UKURAN_PRESET`, `FONT_AMAN` |
@@ -19,8 +19,9 @@
 | `lib/desain/*.test.ts` | Test skema layout/operasi | test colocated |
 | `lib/d1/desain.ts` | Persistensi folder/desain/latar D1 | `daftarFolder`, `UKURAN_SAH`, tipe `DesainPenuh`/`LatarPenuh` |
 | `lib/d1/elemenDesain.ts` | Elemen SVG & kategori (ikon/bentuk/panah/hiasan) | `daftarElemen`, `ambilElemen`, `KATEGORI_ELEMEN`, `MAKS_ELEMEN_BYTE` |
-| `components/dashboard/printing-workspace.tsx` | Halaman kerja cetak (client): preset watermark, konversi ikon SVG→PNG, panggil `bangunPdf` | `PrintingWorkspace`; internal: `PRESET` (fragile, unboxing, jangan, hati, cod, terima, buka, tanpa), `kePngHitamPutih(File\|Blob, maksPx=480)`, `BASE_PATH` |
+| `components/dashboard/printing-workspace.tsx` | Halaman kerja cetak (client): preset pita, deteksi halaman kosong, pratinjau, panggil `bangunPdf` | `PrintingWorkspace`; internal: `PRESET` (fragile, unboxing, jangan, hati, cod, terima, buka, tanpa), `periksaHalaman`, `BASE_PATH` |
 | `public/wm/*.svg` | Aset ikon preset watermark (Tabler Icons, MIT) + `LISENSI.txt` | `cod`, `dilarang-buka`, `fragile`, `hati-hati`, `jangan-dibanting`, `terima-kasih`, `video-unboxing` |
+| `public/pdf.worker.min.mjs`, `scripts/salin-worker-pdf.mjs` | Worker pdf.js seversi, dilayani sendiri (tanpa CDN) | salinan dari `pdfjs-dist/build`; hook `postinstall`/`prebuild`/`predev` |
 | `lib/d1/picklistPdf.ts` | PDF picklist per SKU | `bangunPdfPicklist` |
 | `lib/d1/picklistPaketPdf.ts` | PDF picklist paket | `bangunPdfPicklistPaket` |
 | `lib/d1/picklistGabungPdf.ts` | PDF gabungan order + advance | `bangunPdfPicklistGabung`, `gabungPerSku` |
@@ -40,7 +41,7 @@
 ## Alur data
 1. `app/printing/page.tsx` -> `components/dashboard/printing-workspace.tsx`; dokumen resi diproses browser karena berisi nama/alamat/telepon. File tidak diunggah; nomor order saja dikirim setelah cetak untuk catatan.
 2. Workspace membaca teks dengan `pdfjs-dist`; `lib/printing/ekstraksi.ts` (`bacaNomorLabel`, `bacaNomorDariHalaman`) memberi kandidat nomor. Ini saran, label yang nomornya tak terbaca tetap boleh dicetak.
-3. `lib/printing/watermark.ts` (`bangunPdf`) memuat sumber dengan `pdf-lib` (`PDFDocument.load`, `embedPage`) lalu menggambar lapisan watermark, mempertahankan barcode vektor. Pita memakai Helvetica/HelveticaBold; ikon garis digambar lokal, ikon PNG opsional melalui `embedPng`.
+3. `lib/printing/watermark.ts` (`bangunPdf`) memuat sumber dengan `pdf-lib` (`PDFDocument.load`, `embedPage`) lalu menata halaman: `hitungTataLetak` men-scale resi ke area (tinggi − strip) dan meletakkannya di atas band; `gambarPita` mengisi band bawah. Barcode tetap vektor. Font standar `pdf-lib`: Helvetica/HelveticaBold; ikon pita digambar sebagai garis vektor.
 4. Picklist per SKU: `lib/d1/picklistPdf.ts` (`bangunPdfPicklist`), menerima `BarisPicklist[]` dan jumlah order; PDF `pdf-lib`, Helvetica/HelveticaBold.
 5. Picklist paket: `lib/d1/picklistPaketPdf.ts` (`bangunPdfPicklistPaket`), menerima `PaketPicklist[]`/`BarisPaket[]`; PDF `pdf-lib`, Helvetica/HelveticaBold.
 6. Gabung order+advance: `lib/d1/picklistGabungPdf.ts` (`gabungPerSku`, `bangunPdfPicklistGabung`), menerima baris bertipe order/advance; PDF `pdf-lib`, Helvetica/HelveticaBold.
@@ -61,12 +62,14 @@
 - Test e2e: `e2e/printing-sinkronisasi.spec.ts` (watermark/pita + impor), `e2e/preview-picklist.spec.ts` (pratinjau vs cetak), `e2e/excel.spec.ts` (ekspor). Jalankan satu spec: `npm run e2e:build` lalu `npx playwright test e2e/printing-sinkronisasi.spec.ts --project=desktop`.
 
 ## Gotcha / konvensi
-- Watermark resi memiliki pita: strip dibatasi 0..45 mm, digambar di y=0 (bawah) atau y=tinggi-strip (atas); ini lapisan pada output cetak, bukan ruang di dalam label asli.
-- Motif watermark diulang di sekitar sepertiga tepi yang tersisa sesudah pita. Sudut rotasi dibatasi -90..90 derajat; cap tengah diletakkan di pusat halaman. Posisi tepi ditentukan `dasarPita`.
-- Ikon garis pada pita berupa vektor (`gambarIkonGaris`); PNG opsional hanya ditanam bila opsi ikon menyediakan byte yang valid. Font standar `pdf-lib`: Helvetica dan HelveticaBold.
+- Pita resi memakai BAND, bukan lapisan overlay: `stripMm` (0..45 mm) memakan ruang di tepi bawah; resi diskalakan ke `tinggi − strip` lewat `hitungTataLetak` (y ≥ strip). Tidak ada motif/cap/nama toko di badan resi.
+- Detail cetak: area `#area-cetak-printing` dibuat sebagai anak langsung `<body>` oleh `cetak()`, CSS print `body>*:not(#area-cetak-printing){display:none}` + `@page{size:100mm <tinggi>mm;margin:0}`. Area yang bersarang di AppShell membuat dialog cetak keluar satu halaman kosong.
+- Halaman kosong: `periksaHalaman` merender thumbnail kecil dan menghitung piksel gelap; hasilnya hanya SARAN (`terlihatKosong`). Tombol `lewati-kosong` melewati semua saran sekaligus; centang per halaman tetap keputusan user.
+- Ikon garis pada pita berupa vektor (`gambarIkonGaris`); tidak ada lagi unggahan PNG/logo. Font standar `pdf-lib`: Helvetica dan HelveticaBold.
+- Worker pdf.js DILAYANI SENDIRI: `public/pdf.worker.min.mjs` disalin dari `pdfjs-dist/build` oleh `scripts/salin-worker-pdf.mjs` (hook `postinstall`, `prebuild`, `predev`), URL `${BASE_PATH}/pdf.worker.min.mjs?v=<versi>`. Jangan kembalikan ke CDN: offline/CSP memblokir jsdelivr mematikan seluruh halaman.
+- Setiap pemakaian pdf.js lewat `denganDokumen()` yang membuka loading task lalu `destroy()` di `finally` — pdf.js v6 membebaskan buffer/worker resource lewat loading task, bukan `doc.destroy()`.
 - Lima generator server (picklist biasa/paket/gabung, permintaan, laba, advance) memakai `pdf-lib`; data masuk dalam objek/baris siap pakai. Caller dan tabel sumber spesifik belum ditelusuri. Source generator tidak menunjukkan aset ikon/font/watermark eksternal.
-- Pita di tepi (commit `0dbfff8`): dulu `posisi` diabaikan dan motif digambar menutupi seluruh halaman, jadi motif/pita bertumpuk di tepi dan menutupi isi label. Sekarang `OpsiCetak.stripMm` (dibatasi 0..45 mm) + `gambarPita`, titik tempel ditentukan `dasarPita(tinggiHalamanPt, stripPt, diAtas)` (`y = 0` atau `y = tinggi - strip`), dan area motif dikurangi pita (`Math.max(strip, H - strip - tinggiArea)`) supaya tidak tergambar di bawah pita.
-- Ikon watermark tidak termuat (commit `5becf5b`): opsi dulu bernama `logo` dan menanam PNG yang belum tentu ada; sekarang opsi `ikon: {png, rasio}` diisi hasil `kePngHitamPutih` (SVG `public/wm/*.svg` → `<img>` → canvas → PNG ≤480px) lalu ditanam `embedPng(opsi.ikon.png)` dengan rasio dari gambar yang benar-benar ditanam. Aset ikon + `LISENSI.txt` ikut di-commit di `public/wm/`.
+- Sebelum perbaikan (commit sebelumnya): pita digambar DI ATAS resi (persegi putih + kotak menimpa 20 mm bawah, barcode hilang), area cetak bersarang di AppShell + `body>*{display:none}` (hasil print = satu halaman kosong), dan motif/nama toko menutupi badan resi. Ketiganya sudah dihapus.
 - Skema layout memakai elemen koordinat ternormalisasi 0..1 dan z-order; validator membuang jenis tak dikenal. Operasi kanvas dibatasi daftar dikenal; `bangun_ulang` bersifat destruktif.
 - `0028_desain.sql` menyimpan dokumen elemen JSON, bukan render desain; raster latar AI/unggahan disimpan terpisah. Penghapusan folder tidak menghapus desain/latar terkait secara otomatis (FK SET NULL pada yang bersangkutan).
 - Migrasi `0037` menambah preferensi model pribadi editor; server tetap memeriksa model/izin saat digunakan.

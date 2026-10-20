@@ -9,6 +9,9 @@
   },
   "scripts": {
     "dev": "next dev",
+    "postinstall": "node scripts/salin-worker-pdf.mjs",
+    "prebuild": "node scripts/salin-worker-pdf.mjs",
+    "predev": "node scripts/salin-worker-pdf.mjs",
     "test": "node --test \"test/**/*.test.js\" && npx esbuild worker/auth.test.ts --bundle --platform=node --format=esm --outfile=.tmp-auth-npm.test.mjs --log-level=error && node --test .tmp-auth-npm.test.mjs && rm -f .tmp-auth-npm.test.mjs",
     "test:worker": "node scripts/jalankan-tes-worker.mjs",
     "peta:indeks": "node scripts/peta-indeks.mjs",

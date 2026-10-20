@@ -152,10 +152,10 @@ Repo: `Simple-WMS-telegram` @ `0dbfff8`. Dibuat 2026-10-20 dari isi kode (bukan 
 | pemakaian/biaya tidak tercatat, token 0 | `07-ai.md` | `provider.ts::catatPemakaian` + `ai_pemakaian` | provider tidak mengirim `usage` → 0; tanggal WIB |
 | tarik model kosong, impor model gagal, kapabilitas model | `07-ai.md` | `app/api/pengaturan/ai/route.ts` (`tarikModel`) + `lib/d1/aiModel.ts` + `lib/ai/kapabilitas.ts` | OpenRouter publik; key absen hanya menurunkan rate limit |
 | bot legacy (Vercel/Firestore) error, `GEMINI_API_KEY`, `/settings` | `07-ai.md` | `lib/gemini/client.js` + `lib/ai/index.js` + `lib/router/routePesan.js` | stack lama; jangan tertukar dengan jalur D1 |
-| Resi tidak tercetak / tombol cetak | `08-printing-desain.md` | `app/printing/page.tsx` | Lanjut ke workspace client. |
+| Resi tidak tercetak / tombol cetak | `08-printing-desain.md` | `app/printing/page.tsx` | Area cetak WAJIB anak langsung `<body>`; CSS `body>*:not(#area-cetak-printing)`. |
 | Pratinjau kosong / gagal membaca label | `08-printing-desain.md` | `lib/printing/ekstraksi.ts` | Ekstraksi teks murni; lihat test colocated. |
-| Watermark pita di tepi / posisi atas-bawah | `08-printing-desain.md` | `lib/printing/watermark.ts` | `dasarPita`, `gambarPita`, `OpsiCetak.stripMm` (0..45 mm). |
-| Ikon watermark hilang | `08-printing-desain.md` | `components/dashboard/printing-workspace.tsx` → `lib/printing/watermark.ts` | `kePngHitamPutih` (SVG `public/wm/*.svg` → PNG) lalu `embedPng`; cek `BASE_PATH`/`NEXT_PUBLIC_BASE_PATH` bila 404. |
+| Watermark pita di tepi / posisi band | `08-printing-desain.md` | `lib/printing/watermark.ts` | `hitungTataLetak` + `gambarPita`; `stripMm` (0..45 mm) memakan ruang sendiri, tidak menimpa resi. |
+| Halaman kosong ikut tercetak / boros kertas | `08-printing-desain.md` | `components/dashboard/printing-workspace.tsx` | `periksaHalaman` menandai "terlihat kosong"; tombol `lewati-kosong` + centang per halaman. |
 | Barcode jadi kabur | `08-printing-desain.md` | `lib/printing/watermark.ts` | Kode mempertahankan halaman asli vektor lewat `embedPage`. |
 | Jumlah halaman preview dan cetak beda | `08-printing-desain.md` | `lib/printing/watermark.ts` | Periksa opsi gambar watermark halaman pertama. |
 | Picklist per SKU salah | `08-printing-desain.md` | `lib/d1/picklistPdf.ts` | `bangunPdfPicklist`. |
