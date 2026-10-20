@@ -135,7 +135,7 @@ export async function imporPerforma(
   for (const b of hasil.baris) unik.set(`${b.kodeProduk}\u0000${b.sku}`, b);
 
   await simpanPetaProduk(db, [...unik.values()]);
-  await simpanPertanyaan(db, hasil.pertanyaan);
+  await simpanPertanyaan(db, presetId, hasil.pertanyaan);
   // Hanya baris ber-SKU sah yang masuk `performa_produk` (lihat catatan di `simpanPerforma`).
   await simpanPerforma(db, presetId, periode, hasil.baris);
 
@@ -144,7 +144,9 @@ export async function imporPerforma(
     ringkas: hasil.ringkas,
     jumlahBaris: hasil.baris.length,
     jumlahPertanyaan: hasil.pertanyaan.length,
-    jumlahPerforma: hasil.baris.length,
+    // SKU unik yang BENAR-BENAR ditulis (simpanPerforma menggabungkan per SKU lalu membuang
+    // SKU kosong), bukan jumlah baris berkas: angka baris membuat ringkasan impor melebihkan.
+    jumlahPerforma: new Set(hasil.baris.filter((b) => b.sku !== "").map((b) => b.sku)).size,
     periode,
   };
 }

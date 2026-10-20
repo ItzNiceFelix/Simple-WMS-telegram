@@ -441,6 +441,34 @@ describe("bangunPeta pada header nyata", () => {
     assert.equal(variasi?.klik, 0);
   });
 
+  it("metrik baris induk DISALURKAN ke SKU variasi bila induk tak punya SKU sendiri", () => {
+    // Kasus nyata: baris induk kosong ketiga kolom SKU, angkanya ada di situ, sedangkan SKU
+    // kita hanya muncul di baris variasi. Tanpa penyaluran, performa_produk menyimpan 0.
+    const rows = [
+      HEADER,
+      baris({ kodeProduk: "904", produk: "Jaket", kodeVariasiShopee: "-", skuVariasi: "-", skuInduk: "-", dilihat: "1.000", klik: "100", kunjungan: "50", pesanan: "4", omzet: "400.000" }),
+      baris({ kodeProduk: "904", produk: "Jaket", kodeVariasiShopee: "555", namaVariasi: "BIRU", skuVariasi: "001770" }),
+      baris({ kodeProduk: "904", produk: "Jaket", kodeVariasiShopee: "556", namaVariasi: "MERAH", skuVariasi: "001771" }),
+    ];
+    const h = bangunPeta(rows, new Set(["001770", "001771"]));
+    const a = h.baris.find((b) => b.sku === "001770");
+    const b = h.baris.find((b) => b.sku === "001771");
+    assert.equal(a?.dilihat, 500, "metrik induk dibagi rata ke 2 SKU");
+    assert.equal(b?.dilihat, 500);
+    assert.equal((a?.kunjungan ?? 0) + (b?.kunjungan ?? 0), 50, "total kunjungan tidak berubah");
+    assert.equal((a?.pesanan ?? 0) + (b?.pesanan ?? 0), 4);
+  });
+
+  it("metrik induk TIDAK disalurkan dua kali bila baris induk sudah ber-SKU", () => {
+    const rows = [
+      HEADER,
+      baris({ kodeProduk: "904", produk: "Jaket", kodeVariasiShopee: "-", skuVariasi: "-", skuInduk: "001770", dilihat: "1.000", klik: "100", kunjungan: "50", pesanan: "4" }),
+    ];
+    const h = bangunPeta(rows, new Set(["001770"]));
+    assert.equal(h.baris[0].dilihat, 1000, "tidak boleh berlipat jadi 2000");
+    assert.equal(h.baris[0].kunjungan, 50);
+  });
+
   it("pertanyaan memakai kolom yang DIDETEKSI, bukan posisi KOL yang dipakai di baris", () => {
     // Judul dipindah ke posisi lain (8 dan 15 dikosongkan) lalu header menunjuk ke sana:
     // pertanyaan HARUS ikut kolom terdeteksi — dulu ia membaca `KOL.omzet`/`KOL.pesanan`.

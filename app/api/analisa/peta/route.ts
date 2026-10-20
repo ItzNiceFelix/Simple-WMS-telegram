@@ -31,9 +31,14 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const db = getDb();
   const semua = url.searchParams.get("semua") === "1";
+  // Toko WAJIB: pertanyaan milik toko lain tidak boleh tampil di sini (lihat migrasi 0044).
+  const presetId = Number(url.searchParams.get("presetId"));
+  if (!Number.isInteger(presetId) || presetId <= 0) {
+    return json({ ok: false, error: "presetId wajib diisi." }, 400);
+  }
   // Satu kali baca saja: `semua=1` mengambil seluruh baris (termasuk yang sudah diputuskan),
   // lalu dipisah di memori. Dua kali baca hanya membebani D1 tanpa manfaat.
-  const daftar = semua ? await daftarPertanyaanSemua(db) : await daftarPertanyaanBelum(db);
+  const daftar = semua ? await daftarPertanyaanSemua(db, presetId) : await daftarPertanyaanBelum(db, presetId);
   const belum = semua ? daftar.filter((p) => p.diputuskanSku === null) : daftar;
   const diputuskan = semua ? daftar.filter((p) => p.diputuskanSku !== null) : [];
 
@@ -79,11 +84,15 @@ export async function POST(request: Request) {
     // Parse xlsx bisa melempar kalau berkasnya bukan Excel atau rusak. Ditangkap di sini
     // supaya user dapat pesan yang bisa ditindaklanjuti, bukan 500 tanpa keterangan.
     // `presetId` = toko pemilik angka; tabel `performa_produk` berkunci (preset, periode, sku)
-    // sehingga tanpa ini angka dua toko saling menimpa. 0 = belum dipilih (tetap diteruskan
-    // apa adanya, bukan ditebak ke toko pertama).
-    const presetId = Number(body.presetId ?? 0);
+    // sehingga tanpa ini angka dua toko saling menimpa. DITOLAK bila kosong: dulu nilai 0
+    // diteruskan apa adanya, lalu INSERT-nya gagal FK (atau menulis baris yatim) sementara
+    // /sinkronisasi mencatat "sukses".
+    const presetId = Number(body.presetId);
+    if (!Number.isInteger(presetId) || presetId <= 0) {
+      return json({ ok: false, error: "Pilih toko dulu sebelum mengimpor performa." }, 400);
+    }
     try {
-      const h = await imporPerforma(db, buf.buffer as ArrayBuffer, oleh, Number.isFinite(presetId) ? presetId : 0);
+      const h = await imporPerforma(db, buf.buffer as ArrayBuffer, oleh, presetId);
       return json(h, 200);
     } catch (e) {
       return json({ ok: false, error: `Berkas tidak bisa dibaca sebagai Excel: ${e instanceof Error ? e.message : "tidak diketahui"}.` }, 400);
@@ -96,6 +105,10 @@ export async function POST(request: Request) {
     //   diputuskan_sku = "SKU-XYZ"               → dipetakan, jangan tampil lagi
     // Karena itu `sku: ""` di sini SAH: ia menandai baris sudah diputuskan (diputuskan_at diisi),
     // bukan dianggap "belum dijawab". Tanpa ini user dipaksa menjawab produk yang tidak ada di sistem.
+    const presetId = Number(body.presetId);
+    if (!Number.isInteger(presetId) || presetId <= 0) {
+      return json({ ok: false, error: "presetId wajib diisi." }, 400);
+    }
     const mentah = Array.isArray(body.jawaban) ? body.jawaban : [];
     if (mentah.length === 0) return json({ ok: false, error: "Tidak ada jawaban yang dikirim." }, 400);
 
@@ -136,7 +149,7 @@ export async function POST(request: Request) {
       return json({ ok: false, error: "Semua jawaban ditolak.", ditolak }, 400);
     }
 
-    const h = await jawabPertanyaan(db, sah, oleh);
+    const h = await jawabPertanyaan(db, presetId, sah, oleh);
     if (!h.ok) return json(h, h.status);
     // `h` sudah memuat ok:true; tambahkan `ditolak` tanpa menimpa `ok`.
     return json({ ...h, ditolak });

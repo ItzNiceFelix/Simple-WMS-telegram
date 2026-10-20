@@ -30,7 +30,7 @@ import { tampilkanGagalTulis } from "@/components/dashboard/umpan-tulis";
 import { formatTanggalJamWib } from "@/lib/dashboard/format";
 
 type Jenis = "order" | "laba" | "performa" | "iklan";
-type Log = { jenis: Jenis; file: string; baris: number; gagal: number; ringkas: string; at: number; oleh: string | null };
+type Log = { id: number; jenis: Jenis; file: string; baris: number; gagal: number; ringkas: string; at: number; oleh: string | null };
 type Toko = { id: number; nama: string; status_toko: string };
 
 export default function HalamanSinkronisasi() {
@@ -45,6 +45,14 @@ function Sinkronisasi() {
   const [toko, setToko] = useState<Toko[]>([]);
   const [presetId, setPresetId] = useState<number | null>(null);
   const [log, setLog] = useState<Record<string, Log[]> | null>(null);
+  /**
+   * Pesan kegagalan muat (toko ATAU riwayat). Tanpa state ini, `log` tetap null dan kartu
+   * menampilkan skeleton selamanya — layar yang "sedang memuat" padahal requestnya sudah
+   * mati, tanpa satu pun petunjuk bagi user.
+   */
+  const [galat, setGalat] = useState<string | null>(null);
+  /** Pemicu ulang pemuatan daftar toko lewat tombol "Coba lagi". */
+  const [cobaLagi, setCobaLagi] = useState(0);
   const [bukaOrder, setBukaOrder] = useState(false);
   const [bukaLaba, setBukaLaba] = useState(false);
   const [sibukPerforma, setSibukPerforma] = useState(false);
@@ -52,6 +60,7 @@ function Sinkronisasi() {
 
   useEffect(() => {
     void (async () => {
+      setGalat(null);
       try {
         const res = await fetch("/api/preset", { credentials: "include" });
         // `presets`, bukan `preset`: salah kunci membuat daftar kosong TANPA error, sehingga
@@ -64,21 +73,27 @@ function Sinkronisasi() {
         // Tanpa toko, tidak ada yang bisa dimuat: selesaikan loading agar kartu tidak
         // menampilkan skeleton selamanya.
         if (daftar.length === 0) setLog({});
-      } catch {
-        tampilkanGagalTulis("Gagal memuat daftar toko.");
+      } catch (e) {
+        // `log` TETAP diisi objek kosong: skeleton hanya boleh muncul selama request hidup.
+        // Pesan + tombol "Coba lagi" menggantikannya supaya user tahu harus berbuat apa.
+        setLog({});
+        setGalat(e instanceof Error ? e.message : "Gagal memuat daftar toko.");
       }
     })();
-  }, []);
+  }, [cobaLagi]);
 
   const muatLog = useCallback(async (id: number) => {
+    setGalat(null);
     try {
       const res = await fetch(`/api/sinkronisasi?presetId=${id}`, { credentials: "include" });
       const d = (await res.json().catch(() => null)) as { ok?: boolean; perJenis?: Record<string, Log[]>; error?: string } | null;
       if (!res.ok || !d?.ok) throw new Error(d?.error ?? `Gagal memuat riwayat (${res.status}).`);
       setLog(d.perJenis ?? {});
     } catch (e) {
-      tampilkanGagalTulis(e instanceof Error ? e.message : "Gagal memuat riwayat impor.");
+      // Riwayat gagal dimuat BUKAN "belum pernah impor": tanpa pesan galat, kartu akan
+      // berbohong menyatakan toko ini belum punya berkas. Kosongkan log + tampilkan galat.
       setLog({});
+      setGalat(e instanceof Error ? e.message : "Gagal memuat riwayat impor.");
     }
   }, []);
 
@@ -86,19 +101,41 @@ function Sinkronisasi() {
     if (presetId) void muatLog(presetId);
   }, [presetId, muatLog]);
 
+  /**
+   * "Coba lagi" mengulang SUMBER yang gagal: daftar toko bila belum ada toko sama sekali,
+   * selain itu riwayat toko aktif. Memuat ulang daftar toko padahal toko sudah ada akan
+   * mengembalikan pilihan ke toko pertama dan mengejutkan user.
+   */
+  function ulangiMuat() {
+    if (toko.length === 0) {
+      setCobaLagi((n) => n + 1);
+      return;
+    }
+    if (presetId) void muatLog(presetId);
+  }
+
   /** Catat satu impor selesai. Gagal mencatat tidak membatalkan impor yang sudah terjadi. */
   async function catat(jenis: Jenis, file: string, baris: number, gagal: number, ringkas: string) {
     if (!presetId) return;
     try {
-      await fetch("/api/sinkronisasi", {
+      const res = await fetch("/api/sinkronisasi", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
         body: JSON.stringify({ presetId, jenis, file, baris, gagal, ringkas }),
       });
+      // Status HTTP WAJIB diperiksa: `fetch` tidak melempar untuk 4xx/5xx, jadi dulu log yang
+      // ditolak server (mis. sesi kedaluwarsa) hilang tanpa sepatah kata — dan halaman
+      // Sinkronisasi lalu menampilkan riwayat yang tidak memuat impor barusan.
+      if (!res.ok) {
+        const d = (await res.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(d?.error ?? `Riwayat impor gagal dicatat (${res.status}).`);
+      }
       await muatLog(presetId);
-    } catch {
-      // sengaja diam
+    } catch (e) {
+      tampilkanGagalTulis(
+        `${e instanceof Error ? e.message : "Riwayat impor gagal dicatat."} Impor tetap tersimpan; catat ulang dengan mengimpor berkasnya lagi bila perlu.`
+      );
     }
   }
 
@@ -137,7 +174,15 @@ function Sinkronisasi() {
         `Performa diimpor: ${r.terpetakan ?? 0}/${r.kodeProdukTotal ?? 0} produk terpetakan` +
           ` (${jumlah} baris${d.jumlahPertanyaan ? `, ${d.jumlahPertanyaan} perlu keputusan` : ""}, periode ${d.periode ?? "-"}).`
       );
-      await catat("performa", f.name, jumlah, 0, `periode ${d.periode ?? "-"} · ${r.kodeProdukTotal ?? 0} kode produk`);
+      // `gagal` = pertanyaan yang belum bisa dipetakan mesin (butuh keputusan manusia).
+      // Dulu di-hardcode 0, sehingga produk tak terpetakan tampak "tidak ada masalah".
+      await catat(
+        "performa",
+        f.name,
+        jumlah,
+        d.jumlahPertanyaan ?? 0,
+        `periode ${d.periode ?? "-"} · ${r.kodeProdukTotal ?? 0} kode produk · ${d.jumlahPertanyaan ?? 0} perlu keputusan`
+      );
     } catch (e) {
       tampilkanGagalTulis(e instanceof Error ? e.message : "Impor performa gagal.");
     } finally {
@@ -157,11 +202,14 @@ function Sinkronisasi() {
         body: JSON.stringify({ aksi: "impor-iklan", presetId, teks }),
       });
       const d = (await res.json().catch(() => null)) as
-        | { ok?: boolean; tersimpan?: number; dilewatiTanpaPeta?: number; error?: string }
+        | { ok?: boolean; tersimpan?: number; barisDibaca?: number; dilewatiTanpaPeta?: number; error?: string }
         | null;
       if (!res.ok || !d?.ok) throw new Error(d?.error ?? `Impor iklan gagal (${res.status}).`);
-      toast.success(`${d.tersimpan ?? 0} baris iklan tersimpan.`);
-      await catat("iklan", f.name, d.tersimpan ?? 0, d.dilewatiTanpaPeta ?? 0, `${d.dilewatiTanpaPeta ?? 0} baris tanpa peta SKU`);
+      // `tersimpan` = jumlah SKU unik; `barisDibaca` = jumlah baris berkas. Yang dilaporkan
+      // ke user adalah baris berkas — "12 baris" untuk CSV 300 baris terlihat seperti data hilang.
+      const barisBerkas = d.barisDibaca ?? d.tersimpan ?? 0;
+      toast.success(`${barisBerkas} baris iklan tersimpan (${d.tersimpan ?? 0} SKU).`);
+      await catat("iklan", f.name, barisBerkas, d.dilewatiTanpaPeta ?? 0, `${d.tersimpan ?? 0} SKU · ${d.dilewatiTanpaPeta ?? 0} baris tanpa peta SKU`);
     } catch (e) {
       tampilkanGagalTulis(e instanceof Error ? e.message : "Impor iklan gagal.");
     } finally {
@@ -206,6 +254,19 @@ function Sinkronisasi() {
           </CardContent>
         </Card>
 
+        {galat ? (
+          <div
+            className="flex flex-wrap items-center gap-3 rounded-lg border border-red-500/50 bg-red-500/10 p-3 text-sm"
+            role="alert"
+            data-testid="galat-sinkronisasi"
+          >
+            <span className="text-red-700 dark:text-red-400">{galat}</span>
+            <Button variant="outline" size="sm" onClick={ulangiMuat} data-testid="coba-lagi-sinkronisasi">
+              Coba lagi
+            </Button>
+          </div>
+        ) : null}
+
         <div className="grid gap-3 md:grid-cols-2" data-testid="kartu-sinkron">
           {KARTU.map(({ jenis, judul, ket, ikon: Ikon }) => {
             const terakhir = log?.[jenis]?.[0];
@@ -228,6 +289,10 @@ function Sinkronisasi() {
                         {formatTanggalJamWib(terakhir.at)} · {terakhir.baris} baris
                         {terakhir.gagal > 0 ? ` · ${terakhir.gagal} gagal` : ""}
                         {terakhir.ringkas ? ` · ${terakhir.ringkas}` : ""}
+                        {/* `oleh` = id Telegram pencatat, satu-satunya identitas yang disimpan
+                            server. Ditampilkan supaya "siapa yang mengimpor" bisa ditanyakan
+                            balik tanpa membuka D1. */}
+                        {terakhir.oleh ? ` · oleh ${terakhir.oleh}` : ""}
                       </p>
                     </div>
                   ) : (
@@ -282,10 +347,10 @@ function Sinkronisasi() {
 
                   {log?.[jenis] && log[jenis].length > 1 ? (
                     <details className="text-xs">
-                      <summary className="cursor-pointer text-muted-foreground">Riwayat sebelumnya ({log[jenis].length - 1})</summary>
+                      <summary className="cursor-pointer text-muted-foreground">{log[jenis].length} impor terakhir ditampilkan</summary>
                       <ul className="mt-1 flex flex-col gap-1">
-                        {log[jenis].slice(1).map((l, i) => (
-                          <li key={`${l.at}-${i}`} className="flex justify-between gap-2 text-muted-foreground">
+                        {log[jenis].slice(1).map((l) => (
+                          <li key={l.id} className="flex justify-between gap-2 text-muted-foreground">
                             <span className="truncate">{l.file || "-"}</span>
                             <span className="whitespace-nowrap">{formatTanggalJamWib(l.at)} · {l.baris}</span>
                           </li>
@@ -317,8 +382,7 @@ function Sinkronisasi() {
         ) : null}
 
         <p className="text-[11px] text-muted-foreground">
-          Riwayat dicatat setelah impor selesai. Impor yang gagal di tengah jalan tetap muncul dengan jumlah baris
-          yang benar-benar tersimpan.
+          Impor yang gagal sebelum tersimpan tidak tercatat di sini.
         </p>
       </div>
     </>

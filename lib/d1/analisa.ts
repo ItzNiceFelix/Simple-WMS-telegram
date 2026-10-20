@@ -33,8 +33,14 @@ export type SnapshotAnalisa = {
   rincian: RincianSnapshot[];
 };
 
-/** Daftar tanggal snapshot yang tersedia untuk satu preset, terbaru dulu. */
-export async function daftarTanggalSnapshot(db: D1Database, presetId: number, batas = 60): Promise<string[]> {
+/**
+ * Daftar tanggal snapshot yang tersedia untuk satu preset, terbaru dulu.
+ *
+ * Default 200 (batas maksimum query di bawah), bukan 60: daftar yang terpotong membuat
+ * periode lama tidak bisa dipilih sama sekali — bukan sekadar tampil lebih sedikit. Pemanggil
+ * yang hanya butuh tanggal terbaru tetap boleh meminta batas kecil (mis. 1).
+ */
+export async function daftarTanggalSnapshot(db: D1Database, presetId: number, batas = 200): Promise<string[]> {
   const { results } = await db
     .prepare("SELECT tanggal FROM laba_snapshot WHERE preset_id = ? ORDER BY tanggal DESC LIMIT ?")
     .bind(presetId, Math.min(Math.max(batas, 1), 200))
@@ -502,7 +508,13 @@ export async function volumeSkuRentang(
   db: D1Database,
   presetId: number,
   dari: string,
-  sampai: string
+  sampai: string,
+  /**
+   * Bila diberikan, hanya SKU ini yang dihitung. Dipakai saat qty dibandingkan dengan omzet
+   * snapshot: snapshot hanya memuat SKU yang lolos hitung laba, jadi qty dari SKU yang ditolak
+   * snapshot membuat laju/kelas SKU tidak sebanding dengan omzet di halaman yang sama.
+   */
+  skuSah?: Set<string>
 ): Promise<Map<string, { qty: number }>> {
   // `orders.tanggal` adalah epoch detik (lihat migrasi 0006), bukan teks tanggal. Batas
   // akhir memakai 23:59:59 di hari `sampai` supaya order siang hari terakhir ikut.
@@ -515,6 +527,9 @@ export async function volumeSkuRentang(
       "SELECT i.sku AS sku, COALESCE(SUM(i.qty), 0) AS qty " +
         "FROM orders o JOIN order_items i ON i.marketplace = o.marketplace AND i.no_pesanan = o.no_pesanan " +
         "WHERE o.preset_id = ? AND o.tanggal >= ? AND o.tanggal <= ? AND o.status_fulfill <> 'batal' " +
+        // Penanda "+PERLU-SKU-…" bukan produk nyata: qty-nya akan tampil sebagai SKU asing
+        // di panel klasifikasi dan tidak punya padanan omzet di snapshot.
+        "AND i.sku NOT LIKE '+PERLU-SKU-%' " +
         "GROUP BY i.sku"
     )
     .bind(presetId, epochDari, epochSampai)
@@ -523,6 +538,7 @@ export async function volumeSkuRentang(
   for (const r of hasil?.results ?? []) {
     const sku = String(r.sku ?? "");
     if (sku === "") continue;
+    if (skuSah && !skuSah.has(sku)) continue;
     const qty = Number(r.qty ?? 0);
     if (!Number.isFinite(qty)) continue;
     peta.set(sku, { qty });

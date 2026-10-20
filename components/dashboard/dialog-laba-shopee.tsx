@@ -177,19 +177,36 @@ export function DialogLabaShopee({
       toast.success(`Perhitungan tersimpan untuk ${raw.tanggal.length} tanggal.`);
       // Riwayat impor dicatat di sini, bukan di route: route /api/laba melayani hitung DAN
       // simpan, dan hanya "simpan" yang layak muncul di halaman Sinkronisasi.
-      void fetch("/api/sinkronisasi", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({
-          presetId: preset.id,
-          jenis: "laba",
-          file: file?.name ?? "",
-          baris: raw.tanggal.length,
-          gagal: 0,
-          ringkas: `${raw.tanggalPenuh.length} penuh, ${raw.tanggalParsial.length} sebagian`,
-        }),
-      }).catch(() => undefined);
+      //
+      // `baris` = ORDER yang benar-benar tersimpan, bukan jumlah tanggal. Dulu `raw.tanggal.length`
+      // dipakai, sehingga berkas 7 hari berisi 1.500 order dilaporkan sebagai "7 baris" — angka
+      // yang tidak bisa dicocokkan dengan apa pun di layar lain.
+      // `gagal` = baris tanpa tanggal yang dibuang saat potong; dulu hardcode 0 sehingga
+      // pembuangan itu tidak pernah terlihat.
+      // Di-`await` sebelum `onSukses()`: kalau tidak, pemuatan ulang riwayat di halaman
+      // Sinkronisasi berbalapan dengan POST ini dan impor barusan bisa tidak muncul.
+      try {
+        const resLog = await fetch("/api/sinkronisasi", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            presetId: preset.id,
+            jenis: "laba",
+            file: file?.name ?? "",
+            baris: raw.agregat?.jml_order ?? 0,
+            gagal: raw.tanpaTanggal,
+            ringkas:
+              `${raw.tanggalPenuh.length} penuh, ${raw.tanggalParsial.length} sebagian` +
+              `${raw.tanpaTanggal > 0 ? `, ${raw.tanpaTanggal} baris tanpa tanggal` : ""}`,
+          }),
+        });
+        if (!resLog.ok) {
+          tampilkanGagalTulis(`Riwayat impor gagal dicatat (HTTP ${resLog.status}). Perhitungan tetap tersimpan.`);
+        }
+      } catch {
+        tampilkanGagalTulis("Riwayat impor gagal dicatat (jaringan). Perhitungan tetap tersimpan.");
+      }
       tutup(false);
       onSukses?.();
     } catch {

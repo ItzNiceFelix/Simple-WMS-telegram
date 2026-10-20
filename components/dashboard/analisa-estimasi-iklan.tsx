@@ -86,7 +86,9 @@ export function AnalisaEstimasiIklan({
   const [pilihan, setPilihan] = useState<string | null>(null);
   const [terpilih, setTerpilih] = useState<string[]>([]);
   const [setelan, setSetelan] = useState<Record<string, SetelanSku>>({});
-  const [hariKe, setHariKe] = useState("");
+  // Default "1", bukan kosong: kosong dulu dikirim sebagai 0 dan menghasilkan "hari ke-0"
+  // yang tidak berarti apa-apa di judul maupun langkah skenario.
+  const [hariKe, setHariKe] = useState("1");
   const [hasil, setHasil] = useState<HasilEstimasi[] | null>(null);
   const [ringkas, setRingkas] = useState<RingkasEstimasi | null>(null);
   const [memuat, setMemuat] = useState(false);
@@ -98,6 +100,9 @@ export function AnalisaEstimasiIklan({
   /** Paket angka dari server (fakta + tiga skenario) — tiba SEBELUM narasi mengalir. */
   const [paket, setPaket] = useState<PaketSkenario | null>(null);
   const [memuatSaran, setMemuatSaran] = useState(false);
+  /** Pesan gagal saran iklan. Ditampilkan DI DALAM kartu: event `{error}` datang setelah
+   *  `{paket}`, dan toast saja membuat kartu tampak kosong tanpa sebab. */
+  const [galatSaran, setGalatSaran] = useState("");
 
   // Daftar produk untuk pemilih. Endpoint ini yang dipakai repo (tidak ada /api/produk).
   useEffect(() => {
@@ -125,6 +130,7 @@ export function AnalisaEstimasiIklan({
     setPikir("");
     setSelesaiAlasan("");
     setPaket(null);
+    setGalatSaran("");
   }, [presetId]);
 
   const opsi = useMemo(
@@ -192,9 +198,9 @@ export function AnalisaEstimasiIklan({
   /**
    * Saran langkah iklan (narasi AI). Angka tetap dari tabel di atas; AI hanya menarasikan.
    *
-   * Memakai `saran-iklan-stream`, BUKAN `mendalam-stream`. Alasannya dua, dan keduanya
-   * nyata di pemakaian:
-   *   1. `mendalam-stream` menjawab pertanyaan analisa penjualan umum (prompt `PROMPT_SISTEM`),
+   * Memakai `saran-iklan-stream`, BUKAN `mendalam`. Alasannya dua, dan keduanya nyata di
+   * pemakaian:
+   *   1. `mendalam` menjawab pertanyaan analisa penjualan umum (prompt `PROMPT_SISTEM`),
    *      sedangkan tombol ini menanyakan rencana bertahap per keadaan iklan (prompt
    *      `PROMPT_SISTEM_SKENARIO`). Memakai yang pertama membuat jawabannya tidak menyambung
    *      dengan yang ditanyakan user.
@@ -216,6 +222,7 @@ export function AnalisaEstimasiIklan({
     setPikir("");
     setSelesaiAlasan("");
     setPaket(null);
+    setGalatSaran("");
     // modalIklan = jumlah modal semua SKU terpilih; targetRoas = rata-rata target yang
     // diisi (0 bila tidak ada). Server memakai keduanya sebagai angka paket skenario.
     const modalIklan = terpilih.reduce((t, sku) => {
@@ -238,7 +245,9 @@ export function AnalisaEstimasiIklan({
           aksi: "saran-iklan-stream",
           presetId,
           tanggal,
-          hariKe: hariKe === "" ? 0 : Number(hariKe),
+          // Server menolak < 1; nilai kosong/aneh dikirim sebagai 1 supaya user tidak
+          // menerima 400 hanya karena kolom hari belum disentuh.
+          hariKe: Number.isInteger(Number(hariKe)) && Number(hariKe) >= 1 ? Number(hariKe) : 1,
           modalIklan,
           targetRoas,
         }),
@@ -246,7 +255,9 @@ export function AnalisaEstimasiIklan({
       // Gagal sebelum stream dimulai masih balas JSON/status non-200 biasa.
       if (!res.ok || !res.body) {
         const d = (await res.json().catch(() => null)) as { error?: string } | null;
-        throw new Error(d?.error ?? `Saran gagal (${res.status}).`);
+        const pesan = d?.error ?? `Saran gagal (${res.status}).`;
+        setGalatSaran(pesan);
+        throw new Error(pesan);
       }
       const pembaca = res.body.getReader();
       const dekoder = new TextDecoder();
@@ -300,7 +311,11 @@ export function AnalisaEstimasiIklan({
       }
       if (teks.trim() === "") throw new Error("Model tidak mengembalikan narasi.");
     } catch (e) {
-      tampilkanGagalTulis(e instanceof Error ? e.message : "Saran langkah iklan gagal.");
+      const pesan = e instanceof Error ? e.message : "Saran langkah iklan gagal.";
+      // Disimpan juga sebagai state: event `{error}` bisa datang SETELAH `{paket}` terkirim,
+      // dan saat itu kartu sudah tampil — tanpa teks inline ia terlihat kosong/selesai.
+      setGalatSaran(pesan);
+      tampilkanGagalTulis(pesan);
     } finally {
       setMemuatSaran(false);
     }
@@ -469,9 +484,9 @@ export function AnalisaEstimasiIklan({
           <div className="rounded-xl border border-border bg-muted/40 p-3" data-testid="ringkas-estimasi">
             <p className="text-sm">
               {ringkas.jumlahSku} SKU · total modal <b>{formatRupiah(ringkas.totalModal)}</b> ·
-              profit konservatif <b>{formatRupiah(ringkas.totalProfit1)}</b> ·
-              netral <b>{formatRupiah(ringkas.totalProfit2)}</b> ·
-              optimis <b>{formatRupiah(ringkas.totalProfit3)}</b>
+              profit konservatif <b>{rupiah(ringkas.totalProfit1)}</b> ·
+              netral <b>{rupiah(ringkas.totalProfit2)}</b> ·
+              optimis <b>{rupiah(ringkas.totalProfit3)}</b>
             </p>
             <p className="mt-1 text-xs text-muted-foreground">
               Aman {ringkas.jumlahAman} · tipis {ringkas.jumlahTipis} · rugi {ringkas.jumlahRugi} ·
@@ -557,7 +572,7 @@ export function AnalisaEstimasiIklan({
         ) : null}
 
         {/* ── Kartu saran AI ── */}
-        {memuatSaran || saran !== "" || paket !== null || pikir !== "" || selesaiAlasan !== "" ? (
+        {memuatSaran || saran !== "" || paket !== null || pikir !== "" || selesaiAlasan !== "" || galatSaran !== "" ? (
           <Card data-testid="kartu-saran-langkah">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-base">
@@ -632,11 +647,22 @@ export function AnalisaEstimasiIklan({
                 </p>
               ) : null}
 
+              {/* Gagal di tengah aliran: teks sebabnya di sini, bukan hanya toast yang hilang
+                  setelah beberapa detik. Tombol ulang memakai tombol yang sama di atas. */}
+              {galatSaran !== "" ? (
+                <p
+                  className="rounded-xl border border-red-500/40 bg-red-500/10 p-3 text-sm text-red-700 dark:text-red-400"
+                  data-testid="galat-saran-langkah"
+                >
+                  Saran gagal: {galatSaran}
+                </p>
+              ) : null}
+
               {memuatSaran ? (
                 <p className="flex items-center gap-2 text-sm text-muted-foreground">
                   <Spinner aria-hidden /> Menyusun saran…
                 </p>
-              ) : (
+              ) : galatSaran !== "" && saran === "" ? null : (
                 <p className="whitespace-pre-wrap text-sm leading-relaxed" data-testid="teks-saran-langkah">
                   {saran}
                 </p>

@@ -53,6 +53,8 @@ type BarisRanking = {
 type ResponsDetail = {
   ok: boolean;
   error?: string;
+  /** Jumlah SKU terjual yang TIDAK masuk snapshot laba (ditolak hitung laba) → tidak diranking. */
+  skuDikecualikan?: number;
   periode: string[];
   dipakai?: string;
   pembanding?: string | null;
@@ -137,7 +139,25 @@ const GAYA_TOOLTIP = {
   border: "1px solid var(--border)",
 } as const;
 
-export function AnalisaDetailProduk({ presetId }: { presetId: number; tanggal: string }) {
+/**
+ * Periode impor yang paling dekat dengan tanggal snapshot: periode yang RENTANGNYA memuat
+ * tanggal itu, atau periode terbaru yang tidak lebih baru dari tanggal tersebut. Tanpa ini
+ * prop `tanggal` diabaikan dan tab ini selalu membuka periode terbaru — pembaca mengira angka
+ * periode yang dipilih di atas adalah angka tanggal itu.
+ */
+function pilihPeriode(daftar: string[], tanggal: string): string {
+  if (daftar.length === 0) return "";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(tanggal)) return daftar[0];
+  const memuat = daftar.find((p) => {
+    const [dari, sampai = dari] = p.split("_");
+    return tanggal >= dari && tanggal <= sampai;
+  });
+  if (memuat) return memuat;
+  const lebihLama = daftar.filter((p) => p.split("_").at(-1)! <= tanggal);
+  return lebihLama[0] ?? daftar[0];
+}
+
+export function AnalisaDetailProduk({ presetId, tanggal }: { presetId: number; tanggal: string }) {
   const [periode, setPeriode] = useState<string[]>([]);
   const [dipilih, setDipilih] = useState<string>("");
   const [data, setData] = useState<ResponsDetail | null>(null);
@@ -160,7 +180,9 @@ export function AnalisaDetailProduk({ presetId }: { presetId: number; tanggal: s
         if (!res.ok || !d?.ok) throw new Error(d?.error ?? `Gagal memuat periode (${res.status}).`);
         const daftar = d.periode ?? [];
         setPeriode(daftar);
-        setDipilih((lama) => (daftar.includes(lama) ? lama : daftar[0] ?? ""));
+        // Pilihan mengikuti `tanggal` (snapshot yang sedang dilihat di halaman), bukan selalu
+        // periode terbaru: dua bagian halaman yang membicarakan periode berbeda membingungkan.
+        setDipilih((lama) => (daftar.includes(lama) ? lama : pilihPeriode(daftar, tanggal)));
       } catch (e) {
         if (batal) return;
         tampilkanGagalTulis(e instanceof Error ? e.message : "Gagal memuat periode.");
@@ -170,7 +192,20 @@ export function AnalisaDetailProduk({ presetId }: { presetId: number; tanggal: s
       }
     })();
     return () => { batal = true; };
-  }, [presetId]);
+  }, [presetId, tanggal]);
+
+  // Tanggal snapshot berubah → periode yang ditampilkan menyesuaikan, kecuali user sudah
+  // memilih periode lain secara sadar dan periode itu masih memuat tanggal baru.
+  useEffect(() => {
+    if (periode.length === 0) return;
+    setDipilih((lama) => {
+      const cocok = lama !== "" && (() => {
+        const [dari, sampai = dari] = lama.split("_");
+        return tanggal >= dari && tanggal <= sampai;
+      })();
+      return cocok ? lama : pilihPeriode(periode, tanggal);
+    });
+  }, [tanggal, periode]);
 
   // Pembanding = periode berikutnya di daftar (lebih lama). Dihitung di klien karena
   // daftarnya sudah lengkap; server tetap memvalidasi dan mengabaikannya bila tidak ada.
@@ -288,6 +323,13 @@ export function AnalisaDetailProduk({ presetId }: { presetId: number; tanggal: s
         <Badge variant="outline" data-testid="label-pembanding">
           {pembanding ? `pembanding: ${pembanding}` : "belum ada pembanding"}
         </Badge>
+        {/* Disebut, bukan disembunyikan: qty dibatasi ke SKU yang lolos snapshot laba, jadi
+            SKU terjual yang ditolak tidak muncul di ranking dan pembaca berhak tahu. */}
+        {(data?.skuDikecualikan ?? 0) > 0 ? (
+          <span className="text-xs text-amber-700 dark:text-amber-400" data-testid="sku-dikecualikan">
+            {data?.skuDikecualikan} SKU terjual tidak masuk snapshot laba — tidak diranking
+          </span>
+        ) : null}
         {memuat ? <span className="text-xs text-muted-foreground">memuat…</span> : null}
       </div>
 

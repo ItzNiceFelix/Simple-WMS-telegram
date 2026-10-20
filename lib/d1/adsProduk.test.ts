@@ -69,7 +69,7 @@ function buatDb() {
     async batch(stmts: { _sql: string; _args: unknown[] }[]) {
       for (const s of stmts) {
         if (!s._sql.startsWith("INSERT INTO ads_produk")) continue;
-        // Meniru ON CONFLICT(preset_id, tanggal, sku) DO UPDATE SET biaya = excluded.biaya + biaya, ...
+        // Meniru ON CONFLICT(preset_id, tanggal, sku) DO UPDATE SET biaya = excluded.biaya, ...
         const [presetId, tanggal, sku, biaya, klik, dilihat, omzet] = s._args as [number, string, string, number, number, number, number];
         const k = `${presetId}|${tanggal}|${sku}`;
         const lama = ads.get(k);
@@ -77,7 +77,7 @@ function buatDb() {
           preset_id: presetId,
           tanggal,
           sku,
-          biaya: Number(lama?.["biaya"] ?? 0) + biaya,
+          biaya,
           klik: Number(lama?.["klik"] ?? 0) + klik,
           dilihat: Number(lama?.["dilihat"] ?? 0) + dilihat,
           omzet_iklan: Number(lama?.["omzet_iklan"] ?? 0) + omzet,
@@ -179,7 +179,7 @@ describe("imporIklan", () => {
 
   it("kode tanpa peta dihitung + dicontohkan; kode dengan peta ditulis; biaya akumulatif", async () => {
     const db = buatDb();
-    const peta = new Map([[KODE_A, "SKU-A"]]);
+    const peta = new Map([[KODE_A, ["SKU-A"]]]);
     const r = await imporIklan(db, teks, 7, null, peta);
     assert.equal(r.ok, true);
     if (!r.ok) return;
@@ -188,7 +188,7 @@ describe("imporIklan", () => {
     assert.deepEqual(r.kodeTanpaPeta, [KODE_B]);
     assert.equal(r.tersimpan, 1);
 
-    // Dua baris iklan dengan SKU & tanggal sama -> biaya dijumlahkan, bukan ditimpa.
+    // Dua baris iklan dengan SKU & tanggal sama dalam SATU impor -> dijumlahkan di memori.
     const row = db.ads.get("7|2026-10-14|SKU-A");
     assert.ok(row);
     assert.equal(row["biaya"], 442500);
@@ -198,13 +198,15 @@ describe("imporIklan", () => {
     assert.equal(db.ads.size, 1);
   });
 
-  it("impor kedua pada tanggal sama mengakumulasi ke baris yang sudah ada", async () => {
+  it("impor kedua pada tanggal sama MENIMPA (idempoten), tidak menggandakan biaya", async () => {
     const db = buatDb();
-    const peta = new Map([[KODE_A, "SKU-A"]]);
+    const peta = new Map([[KODE_A, ["SKU-A"]]]);
     await imporIklan(db, teks, 7, null, peta);
     await imporIklan(db, teks, 7, null, peta);
     assert.equal(db.ads.size, 1);
-    assert.equal(db.ads.get("7|2026-10-14|SKU-A")?.["biaya"], 885000);
+    // Dulu 885000 (dua kali lipat) karena ON CONFLICT menjumlahkan. Berkas yang sama
+    // diunggah ulang tidak boleh mengubah angka.
+    assert.equal(db.ads.get("7|2026-10-14|SKU-A")?.["biaya"], 442500);
   });
 
   it("gagal 400 bila header tidak ada", async () => {
@@ -223,8 +225,8 @@ describe("totalIklan", () => {
 
   it("ada baris -> jumlah baris & biaya benar", async () => {
     const db = buatDb();
-    await imporIklan(db, teksUji([baris("Iklan A", KODE_A, "Berjalan", "1", "1", "100", "1000")]), 7, null, new Map([[KODE_A, "SKU-A"]]));
-    await imporIklan(db, teksUji([baris("Iklan B", KODE_B, "Berjalan", "1", "1", "100", "2500")]), 7, null, new Map([[KODE_B, "SKU-B"]]));
+    await imporIklan(db, teksUji([baris("Iklan A", KODE_A, "Berjalan", "1", "1", "100", "1000")]), 7, null, new Map([[KODE_A, ["SKU-A"]]]));
+    await imporIklan(db, teksUji([baris("Iklan B", KODE_B, "Berjalan", "1", "1", "100", "2500")]), 7, null, new Map([[KODE_B, ["SKU-B"]]]));
     const t = await totalIklan(db, 7, "2026-10-14", "2026-10-14");
     assert.deepEqual(t, { baris: 2, biaya: 3500 });
     // Rentang di luar tanggal laporan -> null.

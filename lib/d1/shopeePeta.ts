@@ -31,6 +31,15 @@ export type JawabanSku = { jenis: PertanyaanPeta["jenis"]; acuan: string; sku: s
 
 const KOLOM_PERTANYAAN = "jenis, acuan, nama_shopee, pesanan, omzet, kandidat_json, diputuskan_sku";
 
+/**
+ * Filter toko untuk `peta_putusan`.
+ *
+ * KENAPA NULL IKUT: baris warisan sebelum migrasi 0044 tidak menyimpan asal toko. Baris itu
+ * harus tetap terlihat (dan bisa dijawab) di toko mana pun; jawaban pertama yang mengisi
+ * `preset_id`-nya. Tanpa `OR preset_id IS NULL`, riwayat lama menghilang dari UI.
+ */
+const FILTER_TOKO = "(preset_id = ? OR preset_id IS NULL)";
+
 /** Batas per `db.batch()` — D1 menolak batch besar; 50 sama dengan pola repo lain. */
 const POTONG = 50;
 /** Batas parameter per query: D1 mentok 100; 90 menyisakan ruang untuk klausa lain. */
@@ -61,22 +70,25 @@ function keBaris(
 }
 
 /** Pertanyaan yang belum dijawab manusia, terbesar dulu (yang menentukan omzet lebih dulu). */
-export async function daftarPertanyaanBelum(db: D1Database, batas = 200): Promise<PertanyaanDb[]> {
+export async function daftarPertanyaanBelum(db: D1Database, presetId: number, batas = 200): Promise<PertanyaanDb[]> {
   const { results } = await db
     .prepare(
-      `SELECT ${KOLOM_PERTANYAAN} FROM peta_putusan WHERE diputuskan_at IS NULL ` +
+      `SELECT ${KOLOM_PERTANYAAN} FROM peta_putusan WHERE diputuskan_at IS NULL AND ${FILTER_TOKO} ` +
         "ORDER BY pesanan DESC, omzet DESC LIMIT ?",
     )
-    .bind(batas)
+    .bind(presetId, batas)
     .all<Omit<PertanyaanDb, "kandidat_json"> & { kandidat_json: unknown }>();
   return results.map(keBaris);
 }
 
 /** Semua pertanyaan termasuk yang sudah dijawab (untuk audit "siapa memutuskan apa"). */
-export async function daftarPertanyaanSemua(db: D1Database, batas = 500): Promise<PertanyaanDb[]> {
+export async function daftarPertanyaanSemua(db: D1Database, presetId: number, batas = 500): Promise<PertanyaanDb[]> {
   const { results } = await db
-    .prepare(`SELECT ${KOLOM_PERTANYAAN} FROM peta_putusan ORDER BY pesanan DESC, omzet DESC LIMIT ?`)
-    .bind(batas)
+    .prepare(
+      `SELECT ${KOLOM_PERTANYAAN} FROM peta_putusan WHERE ${FILTER_TOKO} ` +
+        "ORDER BY pesanan DESC, omzet DESC LIMIT ?",
+    )
+    .bind(presetId, batas)
     .all<Omit<PertanyaanDb, "kandidat_json"> & { kandidat_json: unknown }>();
   return results.map(keBaris);
 }
@@ -85,17 +97,17 @@ export async function daftarPertanyaanSemua(db: D1Database, batas = 500): Promis
  * Simpan pertanyaan hasil pemetaan (upsert per jenis+acuan, idempoten).
  * Kolom keputusan manusia sengaja DIKOSONGKAN dari DO UPDATE.
  */
-export async function simpanPertanyaan(db: D1Database, daftar: PertanyaanPeta[]): Promise<void> {
+export async function simpanPertanyaan(db: D1Database, presetId: number, daftar: PertanyaanPeta[]): Promise<void> {
   if (daftar.length === 0) return;
   const at = sekarang();
   const stmts = daftar.map((p) =>
     db
       .prepare(
-        "INSERT INTO peta_putusan (jenis, acuan, nama_shopee, pesanan, omzet, kandidat_json, at) VALUES (?, ?, ?, ?, ?, ?, ?) " +
-          "ON CONFLICT(jenis, acuan) DO UPDATE SET pesanan = excluded.pesanan, omzet = excluded.omzet, " +
+        "INSERT INTO peta_putusan (preset_id, jenis, acuan, nama_shopee, pesanan, omzet, kandidat_json, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
+          "ON CONFLICT(preset_id, jenis, acuan) DO UPDATE SET pesanan = excluded.pesanan, omzet = excluded.omzet, " +
           "nama_shopee = excluded.nama_shopee, kandidat_json = excluded.kandidat_json",
       )
-      .bind(p.jenis, p.kodeProduk, p.namaShopee, p.pesanan, p.omzet, JSON.stringify(p.kandidat), at),
+      .bind(presetId, p.jenis, p.kodeProduk, p.namaShopee, p.pesanan, p.omzet, JSON.stringify(p.kandidat), at),
   );
   for (let i = 0; i < stmts.length; i += POTONG) await db.batch(stmts.slice(i, i + POTONG));
 }
@@ -131,6 +143,7 @@ export async function simpanPetaProduk(db: D1Database, baris: BarisPeta[]): Prom
  */
 export async function jawabPertanyaan(
   db: D1Database,
+  presetId: number,
   jawaban: JawabanSku[],
   oleh: string,
 ): Promise<Hasil<{ tersimpan: number; diabaikan: number }>> {
@@ -138,8 +151,13 @@ export async function jawabPertanyaan(
   const at = sekarang();
   const stmts = jawaban.map((j) =>
     db
-      .prepare("UPDATE peta_putusan SET diputuskan_sku = ?, diputuskan_at = ?, diputuskan_oleh = ? WHERE jenis = ? AND acuan = ?")
-      .bind(j.sku, at, oleh, j.jenis, j.acuan),
+      // Baris warisan (preset_id NULL) DIKLAIM oleh toko yang menjawab pertama: tanpa ini
+      // pertanyaan yang sama akan terus muncul di toko lain dan jawabannya bisa saling timpa.
+      .prepare(
+        "UPDATE peta_putusan SET diputuskan_sku = ?, diputuskan_at = ?, diputuskan_oleh = ?, " +
+          "preset_id = COALESCE(preset_id, ?) WHERE jenis = ? AND acuan = ? AND " + FILTER_TOKO,
+      )
+      .bind(j.sku, at, oleh, presetId, j.jenis, j.acuan, presetId),
   );
   let tersimpan = 0;
   let diabaikan = 0;

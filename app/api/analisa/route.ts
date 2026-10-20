@@ -7,9 +7,13 @@
 // GET  ?aksi=model-analisa                → model yang AKAN dipakai analisa + provider yang dilewati
 // GET  ?aksi=tren&presetId=&tanggal=&rentang=7|14|30 → seri harian, delta, per jam, komposisi biaya, produk
 // GET  ?aksi=detail-produk&presetId=&periode=&pembanding= → funnel, organik vs iklan, bucket, ranking SKU
-// POST { aksi:'mendalam', ... }          → narasi AI (T8; dibalas jelas bila belum siap)
-// POST { aksi:'mendalam-stream', ... }   → narasi AI sebagai text/event-stream (potongan bertahap)
+// POST { aksi:'mendalam', ... }          → narasi AI; presetId/tanggal kosong = snapshot terakhir
 // POST { aksi:'saran-iklan-stream', ... } → paket skenario iklan + narasi bertahap (text/event-stream)
+//
+// KEPERCAYAAN: `aksi=mendalam` TIDAK membaca blok konteks dari body. Angka yang masuk prompt
+// dihitung ulang di server dari DB untuk preset/tanggal yang diminta — body klien bisa diubah
+// siapa pun yang punya sesi, jadi angka kiriman browser tidak boleh dipakai sebagai "sudah
+// dihitung sistem". Hanya modal/target/hariKe (asumsi yang diisi user) yang datang dari UI.
 //
 // PRINSIP: angka SELALU dari lib/analisa/hitung.ts. AI tidak pernah menghitung.
 // Karena itu endpoint `cepat` tidak menyentuh AI sama sekali.
@@ -22,7 +26,7 @@ import {
 } from "@/lib/d1/analisa";
 import {
   bandingkan, geserHari, jendelaSebelum, komposisiBiaya, ringkasRentang, seriHarian,
-  type BarisProdukTren, type Pembanding,
+  type BarisProdukTren,
 } from "@/lib/analisa/tren";
 import type { MasukanEstimasi } from "@/lib/analisa/iklanEstimasi";
 import { estimasiIklan, ringkasEstimasi } from "@/lib/analisa/iklanEstimasi";
@@ -30,7 +34,7 @@ import { ambilSettingAnalisa } from "@/lib/d1/aiAnalisaSetting";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
 import { imporIklan, parseIklan } from "@/lib/d1/adsProduk";
 import { petaSkuDariKodeProduk } from "@/lib/d1/shopeePeta";
-import { analisaMendalam, susunBahan, susunPesanMendalam, susunPesanSkenario, type Kedalaman, type KonteksBahan } from "@/lib/analisa/ai";
+import { analisaMendalam, susunPesanSkenario, type Kedalaman, type KonteksBahan } from "@/lib/analisa/ai";
 import { bangunPaketSkenario } from "@/lib/analisa/skenarioIklan";
 import { panggilTeksStream } from "@/lib/ai/provider";
 import { ambilPengaturanAI } from "@/lib/d1/pengaturan";
@@ -38,7 +42,7 @@ import { ambilKredensial } from "@/lib/d1/aiKredensial";
 import type { HasilAnalisa } from "@/lib/analisa/tipe";
 import { bahanTren } from "@/lib/analisa/tren";
 import {
-  analisaCepat, janganDiiklankan, urutSaranIklan,
+  analisaCepat, janganDiiklankan, kelasProduk, urutSaranIklan,
   AMBANG_MARGIN_TIPIS, type MasukanAnalisa,
 } from "@/lib/analisa/hitung";
 
@@ -230,14 +234,9 @@ function hitungDetailProduk(m: {
     const stokSku = stok ? (stok.get(sku) ?? 0) : null;
     const terjual = m.volSekarang.get(sku)?.qty ?? 0;
     const lajuHarian = laju.get(sku) ?? 0;
-    const status: RankDetail["status"] =
-      terjual === 0 && stokSku !== null && stokSku > 0
-        ? "dead"
-        : rataLaju !== null && terjual > 0 && lajuHarian >= rataLaju
-          ? "fast"
-          : rataLaju !== null && terjual > 0 && lajuHarian < rataLaju / 3
-            ? "slow"
-            : "normal";
+    // Satu definisi untuk kedua tab (lib/analisa/hitung.ts `kelasProduk`): dulu tab ini dan
+    // tab tren punya salinan sendiri dan memberi label berbeda untuk SKU yang sama.
+    const status: RankDetail["status"] = kelasProduk({ terjual, lajuHarian, stok: stokSku, rataLaju });
     return {
       sku,
       nama: m.rincian.rincian.get(sku)?.nama ?? null,
@@ -291,6 +290,167 @@ function hitungDetailProduk(m: {
 function bacaKedalaman(v: unknown): Kedalaman {
   const t = String(v ?? "").trim().toLowerCase();
   return t === "ringkas" || t === "panjang" ? t : "sedang";
+}
+
+/**
+ * Hitung seluruh blok `tren` dari D1: seri harian, pembanding, per jam, klasifikasi produk.
+ *
+ * Dipakai GET `aksi=tren` DAN `aksi=mendalam`. Jalur AI TIDAK menerima blok konteks dari body
+ * klien: angka yang masuk prompt harus berasal dari DB lewat fungsi ini, supaya label "dihitung
+ * sistem" di prompt benar-benar bisa dipertanggungjawabkan. Satu fungsi = satu rumus untuk
+ * layar dan untuk prompt.
+ */
+async function hitungTren(db: D1Database, idPreset: number, ujung: string, rentang: number) {
+  // `dari` inklusif: 7 hari berarti ujung + 6 hari sebelumnya (7 titik, bukan 8).
+  const dari = geserHari(ujung, -(rentang - 1));
+
+  const sebelum = jendelaSebelum(dari, rentang);
+  const [snapSekarang, snapSebelum, semuaTanggal, stok] = await Promise.all([
+    snapshotRentang(db, idPreset, dari, ujung),
+    snapshotRentang(db, idPreset, sebelum.dari, sebelum.sampai),
+    daftarTanggalSnapshot(db, idPreset, 200),
+    petaStok(db),
+  ]);
+
+  const seri = seriHarian(snapSekarang, dari, ujung);
+  const ringkas = ringkasRentang(seri);
+  const bandingPeriode = bandingkan(seri, seriHarian(snapSebelum, sebelum.dari, sebelum.sampai), {
+    tanggalAcuan: sebelum.dari, hari: rentang,
+  });
+
+  // Per jam hanya dari hari yang snapshot-nya ADA dan sudah lewat 2 hari: hari berjalan
+  // masih menerima pesanan, jadi kurvanya akan tampak turun di jam terakhir — bukan
+  // karena penjualan sepi, tetapi karena harinya belum selesai.
+  const tanggalPerJam = snapSekarang
+    .map((s) => s.tanggal)
+    .filter((t) => t < geserHari(hariIniWIB(), -1));
+  const perJam = await orderPerJam(db, idPreset, tanggalPerJam);
+
+  const hariBerdata = Math.max(1, semuaTanggal.filter((t) => t >= dari && t <= ujung).length);
+  // Nama produk diambil dari rincian snapshot TERAKHIR di rentang (bukan semua snapshot):
+  // rincian_json hanya sumber nama yang tersedia di sini, dan snapshot terbaru yang
+  // paling mungkin masih memuat SKU yang dijual sekarang.
+  const snapshotTerakhir = snapSekarang.at(-1);
+  const rincianTerakhir = snapshotTerakhir ? await ambilSnapshot(db, idPreset, snapshotTerakhir.tanggal) : null;
+  const namaSku = new Map<string, string>();
+  for (const r of rincianTerakhir?.rincian ?? []) {
+    const nama = String(r.nama ?? "").trim();
+    if (nama !== "" && !namaSku.has(r.sku)) namaSku.set(r.sku, nama);
+  }
+  // Produk: qty dari order NYATA, laju dibagi jumlah hari yang benar-benar punya snapshot di
+  // rentang (bukan `rentang`), supaya SKU tidak tampak lambat hanya karena setengah rentang
+  // belum diimpor. Qty dibatasi ke SKU yang lolos snapshot supaya sebanding dengan omzet.
+  const volumeMentah = await volumeSkuRentang(db, idPreset, dari, ujung);
+  const skuSnapshot = new Set((rincianTerakhir?.rincian ?? []).map((r) => r.sku));
+  const volume = new Map([...volumeMentah].filter(([sku]) => skuSnapshot.has(sku)));
+  // Dilaporkan, bukan disembunyikan: SKU terjual yang ditolak hitung laba tidak muncul di panel.
+  const skuDikecualikan = volumeMentah.size - volume.size;
+  // Rata-rata laju hanya dari SKU yang BERGERAK: memasukkan SKU mati ke rata-rata akan
+  // menurunkan ambang "fast" sampai hampir semua SKU tampak laku — persis yang ingin
+  // dideteksi panel ini.
+  const skuBergerak = [...volume.values()].filter((v) => v.qty > 0);
+  const rataLaju = skuBergerak.length > 0
+    ? skuBergerak.reduce((a, v) => a + v.qty / hariBerdata, 0) / skuBergerak.length
+    : 0;
+
+  // Gabungan SKU terjual + SKU berstok: SKU yang stoknya ada tetapi tidak pernah terjual
+  // justru target utama panel dead stock.
+  const daftarSku = new Set<string>([...volume.keys(), ...(stok?.keys() ?? [])]);
+  // Cadangan: master produk. `rincian_json` bisa kosong (snapshot lama / hasil impor yang
+  // rinciannya dibuang), dan tabel produk tetap punya nama yang dipakai halaman lain.
+  const tanpaNama = [...daftarSku].filter((sku) => !namaSku.has(sku));
+  if (tanpaNama.length > 0) {
+    // D1 membatasi jumlah parameter per query: potong per 90 (gaya sama dengan petaHppMaster).
+    for (let i = 0; i < tanpaNama.length; i += 90) {
+      const bagian = tanpaNama.slice(i, i + 90);
+      const jawab = await db
+        .prepare(`SELECT sku, nama_accurate FROM products WHERE sku IN (${bagian.map(() => "?").join(",")})`)
+        .bind(...bagian)
+        .all<{ sku: string; nama_accurate: string | null }>()
+        .catch(() => null);
+      for (const m of jawab?.results ?? []) {
+        const nama = String(m.nama_accurate ?? "").trim();
+        if (nama !== "") namaSku.set(m.sku, nama);
+      }
+    }
+  }
+
+  const produk: BarisProdukTren[] = [...daftarSku].map((sku) => {
+    const qty = volume.get(sku)?.qty ?? 0;
+    const lajuHarian = qty / hariBerdata;
+    // Stok null = data gudang tidak ada (petaStok null), BUKAN stok nol. Hari persediaan
+    // pun ikut null supaya tidak tampil "habis besok" untuk data yang tak diketahui.
+    const sisa = stok === null ? null : (stok.get(sku) ?? 0);
+    // Definisi dari `kelasProduk` (satu sumber dengan tab Detail Produk). Panel ini hanya punya
+    // tiga label, jadi "normal" digabung ke "slow" — sama seperti perilaku sebelumnya, tetapi
+    // batas dead/fast tidak lagi disalin di dua tempat.
+    const kelasPenuh = kelasProduk({ terjual: qty, lajuHarian, stok: sisa, rataLaju });
+    const kelas: "fast" | "slow" | "dead" = kelasPenuh === "normal" ? "slow" : kelasPenuh;
+    return {
+      sku,
+      nama: namaSku.get(sku) ?? null,
+      qty,
+      lajuHarian: Math.round(lajuHarian * 100) / 100,
+      stok: sisa,
+      hariPersediaan: sisa === null || lajuHarian <= 0 ? null : Math.round(sisa / lajuHarian),
+      kelas,
+    };
+  });
+  // Urut qty turun: tabel 20 baris pertama harus berisi SKU yang paling berpengaruh,
+  // bukan urutan alfabetis kunci Map yang tidak berarti bagi pemilik toko.
+  produk.sort((a, b) => b.qty - a.qty || a.sku.localeCompare(b.sku));
+
+  return {
+    dari,
+    sampai: ujung,
+    rentang,
+    seri,
+    ringkas,
+    bandingPeriode,
+    perJam,
+    tanggalDipakai: tanggalPerJam,
+    komposisiBiaya: komposisiBiaya(ringkas),
+    // Bahan teks untuk analisa mendalam: dihitung di sini (sumber angka SAMA) dan
+    // ditampilkan di UI supaya pengguna bisa memeriksa angka yang dibaca AI.
+    bahanAi: bahanTren({ seri, ringkas, bandingPeriode, perJam, produk }),
+    produk,
+    hariBerdata,
+    skuDikecualikan,
+  };
+}
+
+/**
+ * Preset/tanggal untuk `aksi=mendalam`.
+ *
+ * Body klien hanya menentukan PERIODE yang ingin dibahas; angka tetap dihitung server. Bila
+ * salah satunya tidak dikirim, periode diambil dari snapshot TERAKHIR (preset yang diminta,
+ * atau preset pertama yang punya data) — supaya klien lama yang tidak mengirim periode tetap
+ * mendapat analisa yang sah, bukan error. Nilai yang dikirim tetapi bentuknya salah tetap
+ * ditolak: menebak arti "31-12-2026" akan menghasilkan analisa untuk periode yang salah.
+ */
+async function presetTanggalAnalisa(
+  db: D1Database,
+  presetIdMentah: unknown,
+  tanggalMentah: unknown
+): Promise<{ ok: true; presetId: number; tanggal: string } | { ok: false; error: string }> {
+  const presetTeks = String(presetIdMentah ?? "").trim();
+  const tanggalTeks = String(tanggalMentah ?? "").trim();
+  let presetId = 0;
+  if (presetTeks !== "") {
+    presetId = Number(presetTeks);
+    if (!Number.isInteger(presetId) || presetId <= 0) return { ok: false, error: "presetId wajib diisi." };
+  }
+  if (tanggalTeks !== "" && !/^\d{4}-\d{2}-\d{2}$/.test(tanggalTeks)) {
+    return { ok: false, error: "Tanggal harus YYYY-MM-DD." };
+  }
+  if (presetId > 0 && tanggalTeks !== "") return { ok: true, presetId, tanggal: tanggalTeks };
+
+  const kandidat = presetId > 0 ? [presetId] : (await daftarPresetAnalisa(db)).map((p) => p.id);
+  for (const id of kandidat) {
+    const [terakhir] = await daftarTanggalSnapshot(db, id, 1);
+    if (terakhir) return { ok: true, presetId: id, tanggal: terakhir };
+  }
+  return { ok: false, error: "Belum ada snapshot laba. Impor file laba dulu di halaman Laba." };
 }
 
 export async function GET(request: Request) {
@@ -361,15 +521,22 @@ export async function GET(request: Request) {
 
     const rentangSekarang = pecahPeriode(dimintaPeriode);
 
-    const [performaSekarang, rincian, performaBanding, stok, volSekarang] = await Promise.all([
+    const [performaSekarang, rincian, performaBanding, stok] = await Promise.all([
       performaSemuaSku(db, idPreset, dimintaPeriode),
       // Rincian snapshot hanya untuk nama/harga/margin. Daftar SKU TIDAK berasal dari sini:
       // SKU tanpa penjualan (dead stock) juga wajib muncul di ranking.
       rincianPeriode(db, idPreset, rentangSekarang),
       pembanding ? performaSemuaSku(db, idPreset, pembanding) : Promise.resolve(null),
       petaStok(db),
-      volumeSkuRentang(db, idPreset, rentangSekarang.dari, rentangSekarang.sampai),
     ]);
+    // Qty dibatasi ke SKU yang LOLOS snapshot: snapshot hanya memuat SKU yang menghasilkan laba,
+    // sedangkan qty dari order mencakup semua. Mencampur keduanya membuat omzet dan qty di
+    // halaman yang sama berasal dari populasi berbeda (ROAS/CR SKU jadi tidak sebanding).
+    // Penyaringan dilakukan di sini (bukan lewat argumen `skuSah`) supaya jumlah SKU yang
+    // dikecualikan bisa DILAPORKAN, bukan hilang diam-diam.
+    const volMentah = await volumeSkuRentang(db, idPreset, rentangSekarang.dari, rentangSekarang.sampai);
+    const volSekarang = new Map([...volMentah].filter(([sku]) => rincian.rincian.has(sku)));
+    const skuDikecualikan = volMentah.size - volSekarang.size;
     // Metrik iklan PERIODE PEMBANDING sengaja tidak diambil: hanya iklan periode ini yang
     // dipakai (organik vs iklan), dan tidak ada blok yang membandingkan biaya antar periode.
     const iklanSekarang = await metrikIklanPerSku(db, idPreset, rentangSekarang.dari, rentangSekarang.sampai);
@@ -379,6 +546,7 @@ export async function GET(request: Request) {
       periode: periodeTersedia,
       dipakai: dimintaPeriode,
       pembanding,
+      skuDikecualikan,
       ...hitungDetailProduk({ performaSekarang, performaBanding, iklanSekarang, rincian, stok, volSekarang }),
     });
   }
@@ -459,133 +627,9 @@ export async function GET(request: Request) {
     // diam-diam memanjangkan rentang (grafik 90 titik sulit dibaca dan query lebih berat).
     const minta = Number(url.searchParams.get("rentang"));
     const rentang = minta === 14 || minta === 30 ? minta : 7;
-    // `dari` inklusif: 7 hari berarti ujung + 6 hari sebelumnya (7 titik, bukan 8).
-    const dari = geserHari(ujung, -(rentang - 1));
-
-    const sebelum = jendelaSebelum(dari, rentang);
-    // Bulan sebelumnya pada tanggal yang SAMA (bukan "30 hari lalu"): pembanding yang
-    // dipahami pemilik toko saat melihat "bulan lalu".
-    const acuanBulan = geserHari(ujung, -30);
-    const [snapSekarang, snapSebelum, snapBulan, semuaTanggal, stok] = await Promise.all([
-      snapshotRentang(db, idPreset, dari, ujung),
-      snapshotRentang(db, idPreset, sebelum.dari, sebelum.sampai),
-      snapshotRentang(db, idPreset, geserHari(dari, -30), acuanBulan),
-      daftarTanggalSnapshot(db, idPreset, 200),
-      petaStok(db),
-    ]);
-
-    const seri = seriHarian(snapSekarang, dari, ujung);
-    const ringkas = ringkasRentang(seri);
-    const bandingPeriode = bandingkan(seri, seriHarian(snapSebelum, sebelum.dari, sebelum.sampai), {
-      tanggalAcuan: sebelum.dari, hari: rentang,
-    });
-    // Snapshot pembanding tidak ada sama sekali → `ringkas.hari === 0` membuat semua delta
-    // null lewat `bandingkan`; UI menampilkannya sebagai "belum cukup data", bukan 0%.
-    const bandingBulan: Pembanding = bandingkan(
-      seri,
-      seriHarian(snapBulan, geserHari(dari, -30), acuanBulan),
-      { tanggalAcuan: acuanBulan, hari: rentang }
-    );
-
-    // Per jam hanya dari hari yang snapshot-nya ADA dan sudah lewat 2 hari: hari berjalan
-    // masih menerima pesanan, jadi kurvanya akan tampak turun di jam terakhir — bukan
-    // karena penjualan sepi, tetapi karena harinya belum selesai.
-    const tanggalPerJam = snapSekarang
-      .map((s) => s.tanggal)
-      .filter((t) => t < geserHari(hariIniWIB(), -1));
-    const perJam = await orderPerJam(db, idPreset, tanggalPerJam);
-
-    // Produk: qty dari order NYATA, laju dibagi jumlah hari yang benar-benar punya
-    // snapshot di rentang (bukan `rentang`), supaya SKU tidak tampak lambat hanya karena
-    // setengah rentang belum diimpor.
-    const volume = await volumeSkuRentang(db, idPreset, dari, ujung);
-    const hariBerdata = Math.max(1, semuaTanggal.filter((t) => t >= dari && t <= ujung).length);
-    // Nama produk diambil dari rincian snapshot TERAKHIR di rentang (bukan semua snapshot):
-    // rincian_json hanya sumber nama yang tersedia di sini, dan snapshot terbaru yang
-    // paling mungkin masih memuat SKU yang dijual sekarang.
-    const snapshotTerakhir = snapSekarang.at(-1);
-    const rincianTerakhir = snapshotTerakhir ? await ambilSnapshot(db, idPreset, snapshotTerakhir.tanggal) : null;
-    const namaSku = new Map<string, string>();
-    for (const r of rincianTerakhir?.rincian ?? []) {
-      const nama = String(r.nama ?? "").trim();
-      if (nama !== "" && !namaSku.has(r.sku)) namaSku.set(r.sku, nama);
-    }
-    // Rata-rata laju hanya dari SKU yang BERGERAK: memasukkan SKU mati ke rata-rata akan
-    // menurunkan ambang "fast" sampai hampir semua SKU tampak laku — persis yang ingin
-    // dideteksi panel ini.
-    const skuBergerak = [...volume.values()].filter((v) => v.qty > 0);
-    const rataLaju = skuBergerak.length > 0
-      ? skuBergerak.reduce((a, v) => a + v.qty / hariBerdata, 0) / skuBergerak.length
-      : 0;
-
-    // Gabungan SKU terjual + SKU berstok: SKU yang stoknya ada tetapi tidak pernah terjual
-    // justru target utama panel dead stock.
-    const daftarSku = new Set<string>([...volume.keys(), ...(stok?.keys() ?? [])]);
-    // Cadangan: master produk. `rincian_json` bisa kosong (snapshot lama / hasil impor yang
-    // rinciannya dibuang), dan tabel produk tetap punya nama yang dipakai halaman lain.
-    const tanpaNama = [...daftarSku].filter((sku) => !namaSku.has(sku));
-    if (tanpaNama.length > 0) {
-      // D1 membatasi jumlah parameter per query: potong per 90 (gaya sama dengan petaHppMaster).
-      for (let i = 0; i < tanpaNama.length; i += 90) {
-        const bagian = tanpaNama.slice(i, i + 90);
-        const jawab = await db
-          .prepare(`SELECT sku, nama_accurate FROM products WHERE sku IN (${bagian.map(() => "?").join(",")})`)
-          .bind(...bagian)
-          .all<{ sku: string; nama_accurate: string | null }>()
-          .catch(() => null);
-        for (const m of jawab?.results ?? []) {
-          const nama = String(m.nama_accurate ?? "").trim();
-          if (nama !== "") namaSku.set(m.sku, nama);
-        }
-      }
-    }
-
-    const produk: BarisProdukTren[] = [...daftarSku].map((sku) => {
-      const qty = volume.get(sku)?.qty ?? 0;
-      const lajuHarian = qty / hariBerdata;
-      // Stok null = data gudang tidak ada (petaStok null), BUKAN stok nol. Hari persediaan
-      // pun ikut null supaya tidak tampil "habis besok" untuk data yang tak diketahui.
-      const sisa = stok === null ? null : (stok.get(sku) ?? 0);
-      // laju 0 sementara stok > 0 = tidak laku sama sekali: itu DEFINISI dead, bukan slow.
-      // Selain dead, dua batas: >= rata-rata = fast; di bawah 1/3 rata-rata = slow.
-      // Di antaranya tetap "slow" karena hanya fast/slow/dead yang dipakai UI.
-      const kelas: "fast" | "slow" | "dead" = qty === 0 && sisa !== null && sisa > 0
-        ? "dead"
-        : rataLaju > 0 && lajuHarian >= rataLaju
-          ? "fast"
-          : "slow";
-      return {
-        sku,
-        nama: namaSku.get(sku) ?? null,
-        qty,
-        lajuHarian: Math.round(lajuHarian * 100) / 100,
-        stok: sisa,
-        hariPersediaan: sisa === null || lajuHarian <= 0 ? null : Math.round(sisa / lajuHarian),
-        kelas,
-      };
-    });
-    // Urut qty turun: tabel 20 baris pertama harus berisi SKU yang paling berpengaruh,
-    // bukan urutan alfabetis kunci Map yang tidak berarti bagi pemilik toko.
-    produk.sort((a, b) => b.qty - a.qty || a.sku.localeCompare(b.sku));
-
-    return json({
-      ok: true,
-      dari,
-      sampai: ujung,
-      rentang,
-      seri,
-      ringkas,
-      bandingPeriode,
-      bandingBulan,
-      perJam,
-      tanggalDipakai: tanggalPerJam,
-      komposisiBiaya: komposisiBiaya(ringkas),
-      // Bahan teks untuk analisa mendalam: dihitung di sini (sumber angka SAMA) dan
-      // ditampilkan di UI supaya pengguna bisa memeriksa angka yang dibaca AI.
-      bahanAi: bahanTren({ seri, ringkas, bandingPeriode, perJam, produk }),
-      produk,
-      hariBerdata,
-    });
+    // Seluruh perhitungan ada di `hitungTren` — dipakai bersama jalur AI supaya angka di
+    // layar dan angka di prompt tidak pernah berasal dari dua rumus berbeda.
+    return json({ ok: true, ...(await hitungTren(db, idPreset, ujung, rentang)) });
   }
 
   if (aksi === "preset") {
@@ -595,7 +639,9 @@ export async function GET(request: Request) {
     // dan mengasumsikan preset pertama membuat halaman tampil kosong padahal datanya ada.
     const petaTanggal: Record<string, string[]> = {};
     for (const p of preset) {
-      petaTanggal[String(p.id)] = await daftarTanggalSnapshot(db, p.id);
+      // 200 = batas maksimum `daftarTanggalSnapshot`: daftar tanggal yang terpotong membuat
+      // periode lama tidak bisa dipilih sama sekali, bukan sekadar tampil lebih sedikit.
+      petaTanggal[String(p.id)] = await daftarTanggalSnapshot(db, p.id, 200);
     }
     const pertamaDenganData = preset.find((p) => (petaTanggal[String(p.id)] ?? []).length > 0) ?? preset[0];
     const idAwal = pertamaDenganData?.id ?? 0;
@@ -622,7 +668,7 @@ export async function GET(request: Request) {
     return json({ ok: false, error: `Belum ada data laba untuk ${tanggal}. Impor file laba dulu di halaman Laba.` }, 404);
   }
 
-  const semuaTanggal = await daftarTanggalSnapshot(db, presetId);
+  const semuaTanggal = await daftarTanggalSnapshot(db, presetId, 200);
   const { dari, sampai } = rentangMundur(tanggal, 6);
   const [hppMaster, stok, biayaIklan, performaAda, iklanPerSku, performa] = await Promise.all([
     petaHppMaster(db, snap.rincian.map((r) => r.sku)),
@@ -704,47 +750,40 @@ export async function POST(request: Request) {
     // memuat koma di dalam tanda kutip — split naif akan menggeser kolomnya.
     const kode = [...new Set(parseIklan(teks).baris.map((b) => b.kodeProduk))];
     const petaArr = await petaSkuDariKodeProduk(db, kode.slice(0, 500));
-    const peta = new Map<string, string>();
+    // SEMUA SKU per kode, bukan yang pertama: satu kode produk Shopee bisa menaungi beberapa
+    // variasi dengan SKU berbeda. Mengambil `daftar[0]` membuat biaya seluruh variasi
+    // menumpuk ke satu SKU (ROAS/CR SKU itu salah, total toko tetap benar).
+    const peta = new Map<string, string[]>();
     for (const [kp, daftar] of petaArr) {
-      // SKU variasi sudah didahulukan oleh query; ambil yang pertama sebagai pilihan utama.
-      if (daftar.length > 0) peta.set(kp, daftar[0].sku);
+      if (daftar.length > 0) peta.set(kp, daftar.map((d) => d.sku));
     }
 
     const h = await imporIklan(db, teks, presetId, oleh, peta);
     return json(h, h.ok ? 200 : h.status);
   }
 
-  if (aksi !== "mendalam" && aksi !== "mendalam-stream" && aksi !== "saran-iklan-stream") {
+  if (aksi !== "mendalam" && aksi !== "saran-iklan-stream") {
     return json({ ok: false, error: `Aksi tidak dikenal: ${aksi || "(kosong)"}` }, 400);
   }
 
-  if (aksi === "mendalam-stream") {
-    // Dijalankan lewat alirMendalam: seluruh validasi yang gagal SEBELUM stream dimulai
-    // pun tetap dibalas sebagai event error (lihat komentar di fungsinya).
-    return alirMendalam(db, oleh, body, sesi.user.role);
-  }
-
   if (aksi === "saran-iklan-stream") {
-    // Jalur TERPISAH, bukan pengalihan ke alirMendalam. Lihat komentar alirSaranIklan:
-    // pertanyaan "langkah iklan bertahap" butuh prompt skenario, bukan prompt analisa umum.
+    // Jalur TERPISAH dari `mendalam`. Lihat komentar alirSaranIklan: pertanyaan "langkah
+    // iklan bertahap" butuh prompt skenario, bukan prompt analisa penjualan umum.
     return alirSaranIklan(db, oleh, body, sesi.user.role);
   }
 
   // Rakit ulang masukan yang SAMA dengan endpoint cepat, supaya AI menerima angka
   // yang persis sama dengan yang dilihat user di halaman. Kalau dihitung terpisah,
   // narasi dan tabel bisa berbeda dan tidak ada yang tahu mana yang benar.
-  const presetId = Number(body.presetId);
-  const tanggal = String(body.tanggal ?? "").trim();
-  if (!Number.isInteger(presetId) || presetId <= 0) {
-    return json({ ok: false, error: "presetId wajib diisi." }, 400);
-  }
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(tanggal)) {
-    return json({ ok: false, error: "Tanggal harus YYYY-MM-DD." }, 400);
-  }
+  // Preset/tanggal yang tidak dikirim = "pakai snapshot terakhir". Pemanggil lama yang hanya
+  // mengirim `aksi` tetap mendapat analisa yang sah, dan tidak ada lagi tanggal tebakan klien.
+  const periode = await presetTanggalAnalisa(db, body.presetId, body.tanggal);
+  if (!periode.ok) return json({ ok: false, error: periode.error }, 400);
+  const { presetId, tanggal } = periode;
   const snap = await ambilSnapshot(db, presetId, tanggal);
   if (!snap) return json({ ok: false, error: `Belum ada data laba untuk ${tanggal}.` }, 404);
 
-  const semuaTanggal = await daftarTanggalSnapshot(db, presetId);
+  const semuaTanggal = await daftarTanggalSnapshot(db, presetId, 200);
   const { dari, sampai } = rentangMundur(tanggal, 6);
   const [hppMaster, stok, biayaIklan, performaAda, iklanPerSku, performa] = await Promise.all([
     petaHppMaster(db, snap.rincian.map((r) => r.sku)),
@@ -774,7 +813,10 @@ export async function POST(request: Request) {
   // Reasoning + plafon token + kedalaman dari pengaturan PER USER; kosong = default model.
   const setting = await ambilSettingAnalisa(db, oleh);
   const kedalaman = bacaKedalaman(setting.kedalaman);
-  const konteks = bacaKonteksAi(body);
+  // Konteks tren TIDAK diambil dari body: klien bisa mengubahnya, dan angka kiriman browser
+  // tidak boleh masuk prompt sebagai "sudah dihitung sistem". Dihitung di sini dari DB untuk
+  // preset/tanggal yang benar-benar dipakai — rumus sama dengan `aksi=tren` di layar.
+  const konteks: KonteksBahan = (await hitungTren(db, presetId, tanggal, 7)).bahanAi;
   const hasilAi = await analisaMendalam(
     { db, kunci: getKunciEnkripsi(), env: getEnvAi(), role: sesi.user.role },
     hasil,
@@ -809,9 +851,9 @@ export async function POST(request: Request) {
  * potongan dan user baru melihat teks setelah model selesai (keluhan awal streaming).
  *
  * Kesalahan yang terjadi SETELAH header ini terkirim TIDAK bisa lagi mengubah status HTTP,
- * jadi kedua jalur di bawah mengirimnya sebagai event `{"error": "..."}` dengan status
- * tetap 200; kalau dibalas status non-200, klien hanya melihat "gagal membaca respons"
- * dan sebab sebenarnya hilang.
+ * jadi jalur streaming mengirimnya sebagai event `{"error": "..."}` dengan status tetap 200;
+ * kalau dibalas status non-200, klien hanya melihat "gagal membaca respons" dan sebab
+ * sebenarnya hilang.
  */
 const HEADER_SSE = {
   "Content-Type": "text/event-stream; charset=utf-8",
@@ -821,10 +863,8 @@ const HEADER_SSE = {
 };
 
 /**
- * Siapkan angka satu preset/tanggal untuk jalur streaming. Dipakai BERSAMA oleh
- * `mendalam-stream` dan `saran-iklan-stream`: kalau tiap jalur memuat dan menghitung
- * sendiri-sendiri, dua endpoint bisa memakai angka yang berbeda untuk periode yang sama —
- * dan narasi yang angkanya tidak sama dengan tabel di halaman tidak bisa dipercaya.
+ * Siapkan angka satu preset/tanggal untuk jalur streaming (`saran-iklan-stream`).
+ * Angka WAJIB dihitung di sini, bukan diterima dari body: klien hanya memilih periode.
  * Kesalahan DIKEMBALIKAN sebagai pesan, bukan dilempar: pemanggil harus bisa membalasnya
  * sebagai event `{error}` karena status HTTP sudah terkirim saat stream dimulai.
  */
@@ -838,7 +878,7 @@ async function siapkanAnalisa(
   const snap = await ambilSnapshot(db, presetId, tanggal);
   if (!snap) return { ok: false, error: `Belum ada data laba untuk ${tanggal}.` };
 
-  const semuaTanggal = await daftarTanggalSnapshot(db, presetId);
+  const semuaTanggal = await daftarTanggalSnapshot(db, presetId, 200);
   const { dari, sampai } = rentangMundur(tanggal, 6);
   const [hppMaster, stok, biayaIklan, performaAda, iklanPerSku, performa] = await Promise.all([
     petaHppMaster(db, snap.rincian.map((r) => r.sku)),
@@ -870,101 +910,14 @@ async function siapkanAnalisa(
 }
 
 /**
- * Narasi AI sebagai text/event-stream (`aksi=mendalam-stream`).
- * Alasan endpoint terpisah, bukan mengubah `mendalam`: pemakai lama (halaman/klien
- * yang menunggu JSON utuh) tidak boleh berubah perilakunya hanya karena ada jalur baru.
- * Gate sesi/role SAMA seperti aksi lain — streaming bukan alasan melewati pemeriksaan.
- */
-/**
- * Blok konteks dari klien (hasil `aksi=tren`). Bentuknya SUDAH teks jadi: angka diformat
- * server saat aksi tren dihitung, sehingga AI membaca angka yang sama dengan yang tampil
- * di layar. Bidang tak dikenal/kosong dilewati — analisa tetap berjalan tanpa tren.
- */
-function bacaKonteksAi(body: Record<string, unknown>): KonteksBahan {
-  const k = body.konteks;
-  if (!k || typeof k !== "object") return {};
-  const ambil = (v: unknown): string | undefined =>
-    typeof v === "string" && v.trim() !== "" ? v.trim() : undefined;
-  const o = k as Record<string, unknown>;
-  return {
-    trenHarian: ambil(o.trenHarian),
-    perJam: ambil(o.perJam),
-    fastSlowDead: ambil(o.fastSlowDead),
-    komposisiBiaya: ambil(o.komposisiBiaya),
-    pertanyaan: ambil(o.pertanyaan),
-  };
-}
-
-async function alirMendalam(
-  db: D1Database,
-  oleh: string,
-  body: Record<string, unknown>,
-  role: string
-): Promise<Response> {
-  const presetId = Number(body.presetId);
-  const tanggal = String(body.tanggal ?? "").trim();
-  const encoder = new TextEncoder();
-  const alir = new ReadableStream<Uint8Array>({
-    async start(controller) {
-      const kirim = (v: unknown): void => controller.enqueue(encoder.encode(`data: ${JSON.stringify(v)}\n\n`));
-      const tutup = (): void => controller.close();
-      const galat = (pesan: string): void => {
-        kirim({ error: pesan });
-        tutup();
-      };
-      const siap = await siapkanAnalisa(db, presetId, tanggal);
-      if (!siap.ok) return galat(siap.error);
-
-      const setting = await ambilSettingAnalisa(db, oleh);
-      const kedalaman = bacaKedalaman(setting.kedalaman);
-      const konteks = bacaKonteksAi(body);
-      // Alasan stream berakhir; kosong = provider tidak melaporkannya.
-      let selesaiAlasan: string | undefined;
-      const aliran = await panggilTeksStream(
-        { db, kunci: getKunciEnkripsi(), env: getEnvAi(), role },
-        {
-          pesan: susunPesanMendalam(susunBahan(siap.hasil, konteks), kedalaman, konteks.pertanyaan),
-          reasoning: setting.reasoning,
-          // Teks pikiran diminta terpisah dari narasi (dikirim sebagai event `{pikir}`):
-          // user bisa melihat proses berpikir tanpa tercampur ke jawaban.
-          reasoningHilir: true,
-          ...(setting.maks_token !== undefined ? { maksToken: setting.maks_token } : {}),
-          // Analisa keuangan: HANYA model yang dipilih user (lihat lib/analisa/ai.ts).
-          hanyaModelDipilih: true,
-        }
-      );
-      if (!aliran.ok) return galat(aliran.error);
-
-      try {
-        for await (const p of aliran.potongan) {
-          if (p.delta) kirim({ delta: p.delta });
-          // Pikiran model dikirim sebagai event TERPISAH supaya `{delta}` tetap murni narasi.
-          if (p.pikir) kirim({ pikir: p.pikir });
-          // Alasan stream berakhir (`length` = jawaban terpotong, `content_filter` = diblokir)
-          // ikut di event `{selesai}` supaya UI bisa menjelaskan jawaban yang tidak selesai.
-          if (p.selesaiAlasan) selesaiAlasan = p.selesaiAlasan;
-        }
-      } catch (e) {
-        // Kegagalan SETELAH potongan pertama tidak difallback (teks sudah sampai ke user);
-        // sampaikan sebabnya supaya jawaban yang terpotong tidak terlihat seperti selesai.
-        return galat(e instanceof Error ? e.message : String(e));
-      }
-      kirim({ selesai: true, provider: aliran.provider, model: aliran.model, ...(selesaiAlasan ? { selesaiAlasan } : {}) });
-      tutup();
-    },
-  });
-  return new Response(alir, { status: 200, headers: HEADER_SSE });
-}
-
-/**
  * Saran langkah iklan sebagai text/event-stream (`aksi=saran-iklan-stream`).
  *
- * KENAPA AKSI INI TERPISAH dari `mendalam-stream` — inilah keluhan pemilik repo:
- * kedua jalur menjawab pertanyaan yang BERBEDA. `mendalam-stream` memakai `PROMPT_SISTEM`
- * (analisa penjualan umum: temuan, konsentrasi laba, prioritas tindakan), sedangkan tombol
- * "Saran Langkah Iklan" menanyakan rencana BERTAHAP per keadaan iklan. Saat tombol itu
- * memakai prompt analisa umum, jawabannya tidak menyambung dengan yang ditanyakan user
- * (di pemakaian nyata: model malah membahas diagram Venn). Karena itu jalur ini memakai
+ * KENAPA AKSI INI TERPISAH dari `mendalam` — inilah keluhan pemilik repo: kedua jalur
+ * menjawab pertanyaan yang BERBEDA. `mendalam` memakai `PROMPT_SISTEM` (analisa penjualan
+ * umum: temuan, konsentrasi laba, prioritas tindakan), sedangkan tombol "Saran Langkah
+ * Iklan" menanyakan rencana BERTAHAP per keadaan iklan. Saat tombol itu memakai prompt
+ * analisa umum, jawabannya tidak menyambung dengan yang ditanyakan user (di pemakaian
+ * nyata: model malah membahas diagram Venn). Karena itu jalur ini memakai
  * `PROMPT_SISTEM_SKENARIO` + `susunPesanSkenario` atas paket dari `bangunPaketSkenario`.
  *
  * Urutan event sengaja begini: `{paket}` dikirim DULU supaya user melihat angka yang
@@ -982,6 +935,13 @@ async function alirSaranIklan(
   const hariKeDiminta = Number(body.hariKe);
   const modalDiminta = Number(body.modalIklan);
   const targetDiminta = Number(body.targetRoas);
+  // `hariKe` 0 menghasilkan "hari ke-0" yang tidak berarti apa-apa di paket maupun judul
+  // skenario. Ditolak SEBELUM stream dimulai supaya klien menerima 400 yang jelas, bukan
+  // event error di tengah aliran.
+  if (body.hariKe !== undefined && body.hariKe !== null && String(body.hariKe).trim() !== ""
+      && (!Number.isInteger(hariKeDiminta) || hariKeDiminta < 1)) {
+    return json({ ok: false, error: "Hari ke-N minimal 1." }, 400);
+  }
   const encoder = new TextEncoder();
   const alir = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -994,9 +954,10 @@ async function alirSaranIklan(
       const siap = await siapkanAnalisa(db, presetId, tanggal);
       if (!siap.ok) return galat(siap.error);
 
-      // Angka dari form UI; kosong/negatif = 0 (paket tetap dibangun dan MENYATAKAN
-      // bahwa nilainya nol, bukan menebak modal yang tidak diisi user).
-      const hariKe = Number.isFinite(hariKeDiminta) && hariKeDiminta > 0 ? Math.floor(hariKeDiminta) : 0;
+      // Angka dari form UI = ASUMSI YANG DIISI USER (modal & target ROAS), bukan hasil
+      // hitung sistem; kosong/negatif = 0 supaya paket tetap dibangun dan MENYATAKAN
+      // nilainya nol, bukan menebak modal yang tidak diisi user. `hariKe` default 1.
+      const hariKe = Number.isInteger(hariKeDiminta) && hariKeDiminta >= 1 ? hariKeDiminta : 1;
       const paket = bangunPaketSkenario({
         hariKe,
         baris: siap.hasil.baris,
@@ -1014,7 +975,7 @@ async function alirSaranIklan(
         {
           pesan: susunPesanSkenario(paket, hariKe),
           reasoning: setting.reasoning,
-          // Sama seperti `alirMendalam`: teks pikiran diminta terpisah dari narasi.
+          // Teks pikiran diminta terpisah dari narasi (dikirim sebagai event `{pikir}`).
           reasoningHilir: true,
           ...(setting.maks_token !== undefined ? { maksToken: setting.maks_token } : {}),
           // Analisa keuangan: HANYA model yang dipilih user (lihat lib/analisa/ai.ts).

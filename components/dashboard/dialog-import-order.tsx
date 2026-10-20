@@ -452,7 +452,41 @@ export function DialogImportOrder({ open, onOpenChange, onSukses, preset }: Prop
       }
 
       setDilewatiHasil(dilewati)
+      // Riwayat dicatat SEBELUM `onSukses()` dan di-`await`: dulu POST-nya di-`void` lalu
+      // `onSukses()` langsung memuat ulang riwayat, sehingga halaman Sinkronisasi sering
+      // menampilkan daftar TANPA impor yang baru saja selesai (balapan POST vs GET).
+      // Kegagalan mencatat tidak membatalkan impor yang sudah tersimpan — hanya diberitahukan.
+      try {
+        const res = await fetch("/api/sinkronisasi", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify({
+            presetId: preset.id,
+            jenis: "order",
+            // Berkas yang gagal disebut juga: tanpa itu riwayat hanya menyebut yang sukses,
+            // dan impor yang seluruh berkasnya gagal tidak punya nama berkas sama sekali.
+            file: (sukses.length > 0 ? sukses : siap.map((h) => h.nama)).join(", ").slice(0, 200),
+            // `total.item` = order yang benar-benar tersimpan. `total.order` hanya jumlah order
+            // DI BERKAS, jadi dulu kartu Sinkronisasi mengaku menyimpan baris yang dilewati.
+            baris: total.item,
+            // Dua sebab berbeda sama-sama "tidak masuk": baris ditolak D1 dan berkas yang gagal
+            // total. Menghitung salah satunya saja membuat angka gagal lebih kecil dari kenyataan.
+            gagal: dilewati.length + gagal.length,
+            ringkas:
+              `${sukses.length} berkas sukses` +
+              `${gagal.length > 0 ? `, ${gagal.length} gagal: ${gagal.join("; ")}` : ""}`,
+          }),
+        })
+        if (!res.ok) {
+          tampilkanGagalTulis(`Riwayat impor gagal dicatat (HTTP ${res.status}). Impor tetap tersimpan.`)
+        }
+      } catch {
+        tampilkanGagalTulis("Riwayat impor gagal dicatat (jaringan). Impor tetap tersimpan.")
+      }
       if (sukses.length === 0) {
+        // Log di atas SUDAH terkirim dengan `baris: 0`: impor yang gagal seluruhnya tetap
+        // terlihat di halaman Sinkronisasi, bukan hilang tanpa jejak.
         tampilkanGagalTulis(`Semua konfirmasi gagal: ${gagal.join("; ")}`)
         return
       }
@@ -463,22 +497,6 @@ export function DialogImportOrder({ open, onOpenChange, onSukses, preset }: Prop
       )
       // Daftar order di belakang dialog perlu disegarkan walau dialog tetap terbuka: order
       // yang sehat SUDAH tersimpan walau ada baris dilewati.
-      // Riwayat impor Order dicatat di halaman Sinkronisasi; kegagalan mencatat tidak
-      // membatalkan impor yang sudah tersimpan.
-      void fetch("/api/sinkronisasi", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        // `total.order` = order yang benar-benar tersimpan; `dilewati` = baris yang ditolak.
-        body: JSON.stringify({
-          presetId: preset?.id ?? 0,
-          jenis: "order",
-          file: sukses.join(", ").slice(0, 200),
-          baris: total.order,
-          gagal: dilewati.length,
-          ringkas: `${sukses.length} berkas${gagal.length > 0 ? `, ${gagal.length} gagal` : ""}`,
-        }),
-      }).catch(() => undefined);
       onSukses?.()
       // Ada baris ditolak → JANGAN tutup dialog; user harus melihat mana yang perlu diperbaiki.
       if (dilewati.length === 0) tutup(false)

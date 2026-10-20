@@ -4,7 +4,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
-  analisaCepat, bangunBaris, buatRingkasan, keputusanIklan, median, organikCr, roasImpas,
+  analisaCepat, bangunBaris, buatRingkasan, buatTemuan, kelasProduk, keputusanIklan, median, organikCr, roasImpas,
   urutSaranIklan, janganDiiklankan, AMBANG_CTR_SEHAT, AMBANG_DILIHAT_MIN, AMBANG_MARGIN_TIPIS,
   type MasukanAnalisa,
 } from "./hitung";
@@ -244,6 +244,24 @@ describe("bangunBaris", () => {
     assert.ok(baris.every((b) => b.stok === null));
   });
 
+  it("SKU tanpa baris di map stok -> null, bukan 0", async () => {
+    const fx = await muatFixture();
+    // Map stok ada (data gudang tersedia) tapi hanya memuat SATU SKU: SKU lain tak diketahui,
+    // dan 0 akan memunculkan temuan "stok habis" palsu.
+    const stok = new Map([[fx.rincian[0].sku, 7]]);
+    const baris = bangunBaris(masukan(fx, { stok }));
+    for (const b of baris) {
+      assert.equal(b.stok, b.sku === fx.rincian[0].sku ? 7 : null, `${b.sku} stok harus null bila tak ada barisnya`);
+    }
+  });
+
+  it("temuan stok tidak dibuat dari SKU berstok tak diketahui", async () => {
+    const fx = await muatFixture();
+    const h = analisaCepat(masukan(fx, { stok: new Map() }));
+    assert.equal(h.temuan.find((x) => x.kode === "stok_tipis_penyumbang"), undefined);
+    assert.equal(h.temuan.find((x) => x.kode === "stok_mati"), undefined);
+  });
+
   it("roasImpas null untuk SKU merugi di data nyata", async () => {
     const fx = await muatFixture();
     const baris = bangunBaris(masukan(fx));
@@ -265,7 +283,7 @@ describe("buatRingkasan", () => {
 
 describe("metrik iklan per SKU (Dilihat → Klik → CTR → CR)", () => {
   async function barisDenganIklan(
-    iklan: { dilihat: number; klik: number; biaya: number; omzet: number },
+    iklan: { dilihat: number; klik: number; biaya: number; omzet: number; pesanan?: number },
     ubahUnit?: number
   ): Promise<BarisSku> {
     const fx = await muatFixture();
@@ -312,6 +330,24 @@ describe("metrik iklan per SKU (Dilihat → Klik → CTR → CR)", () => {
     const b = await barisDenganIklan({ dilihat: 1000, klik: 50, biaya: 20000, omzet: 100000 }, 5);
     assert.equal(b.cr, 10);
     assert.equal(b.roasAktual, 5);
+    assert.equal(b.crSumber, "snapshot", "tanpa pesanan iklan, CR memakai unit snapshot");
+  });
+
+  it("CR memakai pesanan iklan bila tersedia (populasi sama dengan klik)", async () => {
+    const b = await barisDenganIklan({ dilihat: 1000, klik: 50, biaya: 20000, omzet: 100000, pesanan: 4 }, 5);
+    assert.equal(b.cr, 8, "4 pesanan iklan / 50 klik, bukan 5 unit snapshot");
+    assert.equal(b.crSumber, "iklan");
+  });
+
+  it("pesanan iklan 0 dianggap 'tidak diisi' → tetap unit snapshot", async () => {
+    const b = await barisDenganIklan({ dilihat: 1000, klik: 50, biaya: 20000, omzet: 100000, pesanan: 0 }, 5);
+    assert.equal(b.cr, 10);
+    assert.equal(b.crSumber, "snapshot");
+  });
+
+  it("CR null tanpa klik: crSumber tidak diisi (tidak ada yang bisa dijelaskan)", async () => {
+    const b = await barisDenganIklan({ dilihat: 5000, klik: 0, biaya: 1000, omzet: 0 }, 3);
+    assert.equal(b.crSumber, undefined);
   });
 
   it("tidak ada angka tak terhingga yang lolos ke UI", async () => {
@@ -497,6 +533,44 @@ describe("pesan 'Data kunjungan/konversi' tidak muncul saat adaPerforma true", (
     const fx = await muatFixture();
     const h = analisaCepat(masukan(fx, { adaPerforma: false }));
     assert.ok(h.kurang.some((k) => /kunjungan\/konversi/i.test(k)));
+  });
+});
+
+describe("kelasProduk — satu definisi fast/slow/dead/normal", () => {
+  it("stok ada & tidak terjual = dead", () => {
+    assert.equal(kelasProduk({ terjual: 0, lajuHarian: 0, stok: 5, rataLaju: 2 }), "dead");
+  });
+
+  it("stok tak diketahui & tidak terjual = normal, bukan dead", () => {
+    assert.equal(kelasProduk({ terjual: 0, lajuHarian: 0, stok: null, rataLaju: 2 }), "normal");
+  });
+
+  it("laju ≥ rata-rata = fast; di bawah 1/3 rata-rata = slow; di antaranya normal", () => {
+    assert.equal(kelasProduk({ terjual: 10, lajuHarian: 3, stok: 5, rataLaju: 2 }), "fast");
+    assert.equal(kelasProduk({ terjual: 2, lajuHarian: 0.5, stok: 5, rataLaju: 2 }), "slow");
+    assert.equal(kelasProduk({ terjual: 5, lajuHarian: 1.5, stok: 5, rataLaju: 2 }), "normal");
+  });
+
+  it("rata-rata belum ada (belum ada SKU bergerak) = normal, bukan fast", () => {
+    assert.equal(kelasProduk({ terjual: 1, lajuHarian: 1, stok: 5, rataLaju: null }), "normal");
+  });
+});
+
+describe("temuan sku_merugi memakai laba total sebagai pembanding", () => {
+  it("dariTotal = |laba|, bukan kontribusi 10 teratas", async () => {
+    const fx = await muatFixture();
+    const r0 = fx.rincian[0];
+    const rincian = [
+      { ...r0, sku: "RUGI", unit: 2, hppSatuan: 12000, hargaJual: 10000, marginSatuan: -2000, marginPersen: -20, kontribusi: -4000 },
+      { ...r0, sku: "UNTUNG", unit: 5, kontribusi: 10000 },
+    ];
+    const m = masukan(fx, { snapshot: { ...masukan(fx).snapshot, omzet: 60000, hpp: 49000, biaya: 9000, pajak: 0, laba: 2000, rincian } });
+    const baris = bangunBaris(m);
+    const ringkas = buatRingkasan(m, baris);
+    const t = buatTemuan(m, baris, ringkas).find((x) => x.kode === "sku_merugi");
+    assert.ok(t, "temuan SKU merugi harus muncul");
+    assert.equal(t.angka.dariTotal, Math.abs(ringkas.laba));
+    assert.notEqual(t.angka.dariTotal, Math.abs(ringkas.kontribusi10Teratas));
   });
 });
 

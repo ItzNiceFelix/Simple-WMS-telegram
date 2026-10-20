@@ -124,7 +124,12 @@ export function estimasiIklan(m: MasukanEstimasi): HasilEstimasi {
     ? bulat2(omzetRata2 / m.modalIklan)
     : null;
 
-  const { status, alasan } = nilaiStatus(m, impas, omzetRata1, omzetRata3, profitRata1, profitRata2, profitRata3);
+  // Margin yang dipakai di kalimat alasan HARUS margin `acuan` (hari netral), bukan
+  // `histori[0]`: hari pertama bisa hari ekstrem, sehingga alasan menyebut angka yang
+  // tidak dipakai perhitungan mana pun.
+  const { status, alasan } = nilaiStatus(
+    m, impas, marginSatuan, omzetRata1, omzetRata3, profitRata1, profitRata2, profitRata3
+  );
 
   const hasil: HasilEstimasi = {
     sku: m.sku,
@@ -159,6 +164,7 @@ export function estimasiIklan(m: MasukanEstimasi): HasilEstimasi {
 function nilaiStatus(
   m: MasukanEstimasi,
   impas: number | null,
+  marginSatuan: number,
   omzet1: number | null,
   omzet3: number | null,
   profit1: number | null,
@@ -177,7 +183,7 @@ function nilaiStatus(
   if (impas === null) {
     return {
       status: "rugi",
-      alasan: `Margin per unit ${rp(m.histori[0].marginSatuan)} (≤ 0), jadi tidak ada titik impas: `
+      alasan: `Margin per unit ${rp(marginSatuan)} (≤ 0), jadi tidak ada titik impas: `
         + "produk ini rugi sebelum iklan berjalan. Perbaiki harga atau HPP dulu.",
     };
   }
@@ -206,9 +212,10 @@ function nilaiStatus(
 export type RingkasEstimasi = {
   jumlahSku: number;
   totalModal: number;
-  totalProfit1: number;
-  totalProfit2: number;
-  totalProfit3: number;
+  /** null = TIDAK ADA satu pun SKU yang profitnya terukur. Bukan 0: 0 berarti "impas". */
+  totalProfit1: number | null;
+  totalProfit2: number | null;
+  totalProfit3: number | null;
   jumlahAman: number;
   jumlahTipis: number;
   jumlahRugi: number;
@@ -217,12 +224,27 @@ export type RingkasEstimasi = {
 
 /** Ringkas semua baris untuk baris ringkasan di atas tabel. Murni. */
 export function ringkasEstimasi(baris: HasilEstimasi[]): RingkasEstimasi {
+  // Menjumlahkan `null` sebagai 0 membuat "belum ada data" tampil sebagai "impas" (Rp0).
+  // Jadi total hanya 0 bila memang TIDAK ADA SKU (jumlah kosong = 0), dan null bila ada SKU
+  // tetapi tak satu pun profitnya terukur.
+  const jumlahProfit = (pilih: (b: HasilEstimasi) => number | null): number | null => {
+    if (baris.length === 0) return 0;
+    let total = 0;
+    let ada = false;
+    for (const b of baris) {
+      const v = pilih(b);
+      if (v === null) continue;
+      ada = true;
+      total += v;
+    }
+    return ada ? bulat2(total) : null;
+  };
   return {
     jumlahSku: baris.length,
     totalModal: bulat2(baris.reduce((a, b) => a + b.modalIklan, 0)),
-    totalProfit1: bulat2(baris.reduce((a, b) => a + (b.profitRata1 ?? 0), 0)),
-    totalProfit2: bulat2(baris.reduce((a, b) => a + (b.profitRata2 ?? 0), 0)),
-    totalProfit3: bulat2(baris.reduce((a, b) => a + (b.profitRata3 ?? 0), 0)),
+    totalProfit1: jumlahProfit((b) => b.profitRata1),
+    totalProfit2: jumlahProfit((b) => b.profitRata2),
+    totalProfit3: jumlahProfit((b) => b.profitRata3),
     jumlahAman: baris.filter((b) => b.status === "aman").length,
     jumlahTipis: baris.filter((b) => b.status === "tipis").length,
     jumlahRugi: baris.filter((b) => b.status === "rugi").length,

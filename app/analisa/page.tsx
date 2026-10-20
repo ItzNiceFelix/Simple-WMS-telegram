@@ -144,14 +144,9 @@ function Analisa() {
   const [hasil, setHasil] = useState<Hasil | null>(null);
   const [iklan, setIklan] = useState<SaranIklan | null>(null);
   const [mendalam, setMendalam] = useState<{ narasi: string; model: string; reasoning: string; bahan?: string } | null>(null);
-  /**
-   * Blok kondisi (tren harian/per jam/klasifikasi/komposisi) dari aksi `tren`. Dikirim
-   * bersama permintaan analisa mendalam supaya AI menafsirkan kondisi — bukan hanya
-   * temuan yang sudah dirumuskan sistem. `null` = belum termuat; analisa tetap jalan.
-   */
-  const [konteksAi, setKonteksAi] = useState<{
-    trenHarian: string; perJam: string; fastSlowDead: string; komposisiBiaya: string;
-  } | null>(null);
+  /** Kegagalan memuat saran iklan. Tanpa state ini kartu tertahan di "Memuat saran iklan…"
+   *  selamanya saat `/api/preset` atau endpoint saran gagal. */
+  const [galatIklan, setGalatIklan] = useState<string | null>(null);
   /** Kegagalan analisa mendalam + rincian percobaan; disimpan sebagai state karena daftarnya
    *  panjang dan tidak terbaca di dalam toast. Toast hanya menunjukkan sebab utamanya. */
   const [mendalamGagal, setMendalamGagal] = useState<{ pesan: string; ringkas: RingkasanGagal } | null>(null);
@@ -238,6 +233,7 @@ function Analisa() {
     if (!pid || !tgl) return;
     setMemuat(true);
     setIklan(null);
+    setGalatIklan(null);
     // Narasi lama dibuang: narasi itu milik periode sebelumnya. Menampilkannya bersama
     // tabel periode baru akan membuat pembaca mengira keduanya berbicara hal yang sama.
     setMendalam(null);
@@ -264,34 +260,25 @@ function Analisa() {
     void muatAnalisa(presetId, tanggal);
   }, [presetId, tanggal, muatAnalisa]);
 
-  // Konteks tren diambil saat periode berubah; kegagalannya DIAM (bukan toast): tanpa konteks
-  // analisa mendalam tetap sah, dan toast akan mengganggu setiap kali halaman dibuka.
-  useEffect(() => {
-    if (!presetId || !tanggal) return;
-    let batal = false;
-    void (async () => {
-      try {
-        const res = await fetch(`/api/analisa?aksi=tren&presetId=${presetId}&tanggal=${tanggal}&rentang=7`, { credentials: "include" });
-        const d = (await res.json().catch(() => null)) as { ok?: boolean; bahanAi?: typeof konteksAi } | null;
-        if (!batal && d?.ok && d.bahanAi) setKonteksAi(d.bahanAi);
-      } catch {
-        // diabaikan dengan sengaja
-      }
-    })();
-    return () => { batal = true; };
-  }, [presetId, tanggal]);
-
   // Saran iklan dimuat HANYA saat tab dibuka — tidak membebani tampilan awal.
-  async function muatIklan() {
-    if (iklan || memuatIklan || !presetId || !tanggal) return;
+  // `ulang` memaksa muat ulang: tanpa itu tombol "Coba lagi" tidak melakukan apa pun
+  // karena `iklan`/`memuatIklan` sudah dianggap selesai.
+  async function muatIklan(ulang = false) {
+    if (memuatIklan || !presetId || !tanggal) return;
+    if (iklan && !ulang) return;
     setMemuatIklan(true);
+    setGalatIklan(null);
     try {
       const res = await fetch(`/api/analisa?aksi=saran-iklan&presetId=${presetId}&tanggal=${tanggal}`, { credentials: "include" });
       const d = (await res.json().catch(() => null)) as SaranIklan | null;
       if (!res.ok || !d?.ok) throw new Error(d?.error ?? `Gagal memuat saran iklan (${res.status}).`);
       setIklan(d);
     } catch (e) {
-      tampilkanGagalTulis(e instanceof Error ? e.message : "Gagal memuat saran iklan.");
+      const pesan = e instanceof Error ? e.message : "Gagal memuat saran iklan.";
+      // Pesan disimpan, BUKAN hanya di-toast: toast hilang setelah beberapa detik dan
+      // kartu kembali tampak "memuat" tanpa sebab.
+      setGalatIklan(pesan);
+      tampilkanGagalTulis(pesan);
     } finally {
       setMemuatIklan(false);
     }
@@ -310,7 +297,9 @@ function Analisa() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ aksi: "mendalam", presetId, tanggal, ...(konteksAi ? { konteks: konteksAi } : {}) }),
+        // Hanya periode yang dikirim. Konteks tren dihitung server dari DB: angka kiriman
+        // browser tidak boleh masuk prompt sebagai "sudah dihitung sistem".
+        body: JSON.stringify({ aksi: "mendalam", presetId, tanggal }),
       });
       const d = (await res.json().catch(() => null)) as {
         ok?: boolean; narasi?: string; model?: string; reasoning?: string; bahan?: string; error?: string;
@@ -707,7 +696,17 @@ function Analisa() {
                               <TableCell className="text-right tabular-nums">{metrik(b.dilihat)}</TableCell>
                               <TableCell className="text-right tabular-nums">{metrik(b.klik)}</TableCell>
                               <TableCell className="text-right tabular-nums">{metrik(b.ctr, "%")}</TableCell>
-                              <TableCell className="text-right tabular-nums">{metrik(b.cr, "%")}</TableCell>
+                              <TableCell className="text-right tabular-nums">
+                                {metrik(b.cr, "%")}
+                                {/* Tanda sumber: CR dari unit snapshot memakai populasi order yang
+                                    berbeda dari klik iklan, jadi angkanya cenderung terlalu tinggi.
+                                    Ditandai, bukan disembunyikan — CR null tetap "—". */}
+                                {b.crSumber === "snapshot" ? (
+                                  <span className="ml-0.5 text-amber-700 dark:text-amber-400" title="CR memakai unit snapshot (ekspor iklan tidak memuat pesanan) — cenderung dilebih-lebihkan.">
+                                    *
+                                  </span>
+                                ) : null}
+                              </TableCell>
                               <TableCell className="text-right tabular-nums">{metrik(b.roasAktual, "×")}</TableCell>
                               <TableCell className="text-right tabular-nums">{metrik(b.organikKunjungan)}</TableCell>
                               <TableCell className="text-right tabular-nums">{metrik(b.organikPesanan)}</TableCell>
@@ -725,6 +724,13 @@ function Analisa() {
                       </TableBody>
                     </Table>
                   </div>
+                  {hasil.baris.some((b) => b.crSumber === "snapshot") ? (
+                    <p className="mt-2 text-xs text-muted-foreground" data-testid="catatan-cr-snapshot">
+                      * CR bertanda bintang dihitung dari unit snapshot, bukan pesanan iklan: ekspor
+                      iklan SKU itu tidak memuat jumlah pesanan, sehingga CR-nya cenderung
+                      dilebih-lebihkan. Perlakukan sebagai perkiraan.
+                    </p>
+                  ) : null}
                 </CardContent>
               </Card>
             </TabsContent>
@@ -755,8 +761,28 @@ function Analisa() {
 
               {memuatIklan ? (
                 <Skeleton className="h-48 w-full rounded-xl" />
+              ) : galatIklan ? (
+                <Alert variant="destructive" data-testid="galat-saran-iklan">
+                  <TriangleAlert aria-hidden />
+                  <AlertTitle>Saran iklan gagal dimuat</AlertTitle>
+                  <AlertDescription className="flex flex-col items-start gap-2">
+                    <span>{galatIklan}</span>
+                    <Button variant="outline" className="h-11 md:h-8" onClick={() => void muatIklan(true)} data-testid="ulang-saran-iklan">
+                      Coba lagi
+                    </Button>
+                  </AlertDescription>
+                </Alert>
               ) : !iklan ? (
-                <Card><CardContent className="pt-6 text-sm text-muted-foreground">Memuat saran iklan…</CardContent></Card>
+                // Tidak ada data dan tidak ada error: beri tombol, jangan teks "memuat"
+                // yang tidak pernah berubah (tab bisa dibuka sebelum periode siap).
+                <Card>
+                  <CardContent className="flex flex-col items-start gap-2 pt-6 text-sm text-muted-foreground">
+                    <span>Saran iklan belum dimuat untuk periode ini.</span>
+                    <Button variant="outline" className="h-11 md:h-8" onClick={() => void muatIklan(true)} data-testid="muat-saran-iklan">
+                      Muat saran iklan
+                    </Button>
+                  </CardContent>
+                </Card>
               ) : (
                 <>
                   {/* BATAS KERAS: keterbatasan selalu tampil, tidak boleh disembunyikan */}

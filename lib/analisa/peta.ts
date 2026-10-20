@@ -207,6 +207,19 @@ export function bangunPeta(rows: unknown[][], master: Set<string>, mesin?: Kandi
   // dan baris induk itu kosong ketiga kolom SKU-nya. Kalau keputusan "ini perlu ditanya?"
   // diambil sambil jalan, setiap produk akan ditanyakan dari baris induknya padahal SKU-nya
   // ada di baris variasi di bawahnya. Hasilnya ratusan pertanyaan palsu.
+  // Metrik per kode produk diambil dari baris INDUK, sedangkan SKU kita biasanya hanya ada
+  // di baris VARIASI. Tanpa penyaluran di bawah, metrik induk dibuang bersama barisnya dan
+  // `performa_produk` menyimpan 0 untuk SKU yang jelas punya kunjungan.
+  const metrikInduk = new Map<string, { dilihat: number; klik: number; kunjungan: number; keranjang: number; tanpaBeli: number; pesanan: number; omzet: number }>();
+  const skuPerKode = new Map<string, string[]>();
+  /**
+   * SKU yang metriknya SUDAH dibawa baris induk.
+   *
+   * KENAPA per-SKU, bukan per-kode: baris induk bisa menyebut SKU-nya sendiri (kolom SKU
+   * Induk terisi). Baris seperti itu sudah membawa angka yang benar, jadi penyaluran metrik
+   * di bawah tidak boleh menambahkannya lagi — itu menggandakan kunjungan/pesanan.
+   */
+  const skuBerMetrikInduk = new Set<string>();
   const terpetakanAwal = new Set<string>();
   for (let i = 1; i < rows.length; i++) {
     const row = rows[i];
@@ -236,6 +249,23 @@ export function bangunPeta(rows: unknown[][], master: Set<string>, mesin?: Kandi
       const omzet = bacaAngka(row[kol.omzet]);
       pesananPerProduk.set(kodeProduk, (pesananPerProduk.get(kodeProduk) ?? 0) + pesanan);
       omzetPerProduk.set(kodeProduk, (omzetPerProduk.get(kodeProduk) ?? 0) + omzet);
+      const lama = metrikInduk.get(kodeProduk);
+      const tambah = {
+        dilihat: bacaAngka(row[kol.dilihat]),
+        klik: bacaAngka(row[kol.klik]),
+        kunjungan: bacaAngka(row[kol.kunjungan]),
+        keranjang: bacaAngka(row[kol.keranjang]),
+        tanpaBeli: bacaAngka(row[kol.tanpaBeli]),
+        pesanan,
+        omzet,
+      };
+      if (lama) {
+        lama.dilihat += tambah.dilihat; lama.klik += tambah.klik; lama.kunjungan += tambah.kunjungan;
+        lama.keranjang += tambah.keranjang; lama.tanpaBeli += tambah.tanpaBeli;
+        lama.pesanan += tambah.pesanan; lama.omzet += tambah.omzet;
+      } else {
+        metrikInduk.set(kodeProduk, tambah);
+      }
     }
 
     // Aturan 2: SKU variasi menang atas SKU induk.
@@ -246,6 +276,10 @@ export function bangunPeta(rows: unknown[][], master: Set<string>, mesin?: Kandi
 
     if (sku !== "" && master.has(sku)) {
       produkTerpetakan.add(kodeProduk);
+      const daftarSku = skuPerKode.get(kodeProduk) ?? [];
+      if (!daftarSku.includes(sku)) daftarSku.push(sku);
+      skuPerKode.set(kodeProduk, daftarSku);
+      if (iniInduk) skuBerMetrikInduk.add(sku);
       baris.push({
         kodeProduk, sku, tingkat, variasi, kodeVariasiShopee: kodeVariasiShopee || null, namaShopee,
         dilihat: iniInduk ? bacaAngka(row[kol.dilihat]) : 0,
@@ -299,6 +333,38 @@ export function bangunPeta(rows: unknown[][], master: Set<string>, mesin?: Kandi
     };
     petaPertanyaan.set(kodeProduk, baru);
     pertanyaan.push(baru);
+  }
+
+  // Salurkan metrik baris INDUK ke SKU yang benar.
+  //
+  // Kenapa perlu: baris induk hampir selalu kosong kolom SKU-nya, jadi baris itu tidak pernah
+  // masuk `baris` — dan metriknya (dilihat/klik/kunjungan/pesanan) ikut hilang. Selama ini
+  // `performa_produk` menyimpan 0, sehingga CR organik tampil null dan temuan "dilihat banyak
+  // tapi tak dibeli" tidak pernah muncul walau datanya ada.
+  //
+  // Pembagian: satu kode produk bisa menaungi beberapa variasi. Metriknya dibagi rata ke
+  // semua SKU variasi produk itu (jumlah total per produk tetap sama), sama seperti perlakuan
+  // impor iklan. Baris INDUK yang punya SKU sendiri tidak disentuh — metriknya sudah benar.
+  const indeksBaris = new Map<string, typeof baris[number]>();
+  for (const b of baris) indeksBaris.set(`${b.kodeProduk}\u0000${b.sku}`, b);
+  for (const [kode, m] of metrikInduk) {
+    const daftar = skuPerKode.get(kode);
+    if (!daftar || daftar.length === 0) continue;
+    // Hanya SKU yang BELUM membawa metrik induk; kalau semua sudah, tidak ada yang disalurkan.
+    const perlu = daftar.filter((sku) => !skuBerMetrikInduk.has(sku));
+    if (perlu.length === 0) continue;
+    const n = perlu.length;
+    for (const sku of perlu) {
+      const b = indeksBaris.get(`${kode}\u0000${sku}`);
+      if (!b) continue;
+      b.dilihat += Math.round(m.dilihat / n);
+      b.klik += Math.round(m.klik / n);
+      b.kunjungan += Math.round(m.kunjungan / n);
+      b.keranjang += Math.round(m.keranjang / n);
+      b.tanpaBeli += Math.round(m.tanpaBeli / n);
+      b.pesanan += Math.round(m.pesanan / n);
+      b.omzet += Math.round(m.omzet / n);
+    }
   }
 
   // Urutkan pertanyaan: yang punya pesanan lebih dulu. Produk tak pernah terjual tetap

@@ -106,8 +106,8 @@ export function bangunPaketSkenario(m: MasukanSkenario): PaketSkenario {
         patokan === null
           ? "Titik impas belum bisa dihitung: belum ada SKU bermargin positif di data."
           : `Titik impas yang dipakai sebagai patokan: ${patokan} (rata-rata ${nominal.length} SKU bermargin positif; terendah ${impasMin}, tertinggi ${impasMaks}).`,
-        `Target ROAS yang dikejar: ${m.targetRoas}. Target di bawah titik impas berarti target itu sendiri sudah merugi.`,
-        `Modal iklan periode ini: ${rupiah(m.modalIklan)}.`,
+        `Target ROAS yang diisi user: ${m.targetRoas} (asumsi user, bukan hitungan sistem). Target di bawah titik impas berarti target itu sendiri sudah merugi.`,
+        `Modal iklan yang diisi user: ${rupiah(m.modalIklan)} (asumsi user, bukan hitungan sistem).`,
         impasMin === null
           ? "SKU paling aman diiklankan: belum ada."
           : `SKU paling aman (titik impas terendah): ${sebutSku(teraman.slice(0, MAKS_SEBUT))}.`,
@@ -128,7 +128,7 @@ export function bangunPaketSkenario(m: MasukanSkenario): PaketSkenario {
         patokan === null
           ? "Titik impas belum bisa dihitung: belum ada SKU bermargin positif di data."
           : `Batas aman: ROAS minimal ${patokan}; di atas itu iklan tidak merugi.`,
-        `Target ROAS yang dikejar: ${m.targetRoas}; modal iklan berjalan ${rupiah(m.modalIklan)}.`,
+        `Target ROAS yang diisi user: ${m.targetRoas}; modal iklan yang diisi user ${rupiah(m.modalIklan)} (keduanya asumsi user, bukan hitungan sistem).`,
         patokan === null
           ? "SKU layak didorong: belum ada."
           : `SKU layak didorong lebih dulu (titik impas terendah): ${sebutSku(teraman.slice(0, MAKS_SEBUT))}.`,
@@ -184,14 +184,21 @@ function susunFakta(
   terboros: BarisSku[]
 ): string[] {
   const baris = m.baris ?? [];
-  const fakta: string[] = [`Hari ke-${m.hariKe} dari periode berjalan dipakai sebagai titik penilaian.`];
+  // hariKe berasal dari form, bukan dari data: ditulis sebagai asumsi user supaya model
+  // tidak memperlakukannya sebagai angka yang dihitung sistem.
+  const fakta: string[] = [
+    `Hari ke-${m.hariKe} (asumsi yang diisi user) dipakai sebagai titik penilaian.`,
+  ];
 
   if (baris.length === 0) {
     fakta.push(
       "Belum ada data SKU untuk periode ini, jadi titik impas dan SKU paling boros belum bisa dihitung. " +
         "Impor data iklan dan Performa Produk dulu supaya skenario ini memakai angka nyata."
     );
-    fakta.push(`Modal iklan yang tercatat: ${rupiah(m.modalIklan)}; target ROAS: ${m.targetRoas}.`);
+    fakta.push(
+      `Asumsi yang diisi user (BUKAN hasil hitung sistem): modal iklan ${rupiah(m.modalIklan)}, ` +
+        `target ROAS ${m.targetRoas}, hari ke-${m.hariKe}.`
+    );
     return fakta;
   }
 
@@ -236,7 +243,10 @@ function susunFakta(
     }
   }
 
-  fakta.push(`Modal iklan periode ini ${rupiah(m.modalIklan)}; target ROAS yang dikejar ${m.targetRoas}.`);
+  fakta.push(
+    `Asumsi yang diisi user (BUKAN hasil hitung sistem): modal iklan ${rupiah(m.modalIklan)}, ` +
+      `target ROAS ${m.targetRoas}, hari ke-${m.hariKe}.`
+  );
   fakta.push(
     `Ambang yang dipakai berasal dari aturan sistem: CTR sehat minimal ${AMBANG_CTR_SEHAT}% dan tayangan minimal ` +
       `${TAYANGAN_MIN_RAPI} sebelum hasil dinilai (praktik umum, bukan aturan resmi Shopee).`

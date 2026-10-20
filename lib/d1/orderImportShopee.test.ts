@@ -47,7 +47,7 @@ describe("normalisasiSheetShopee", () => {
     assert.deepEqual(r.orders[0].items.map((i) => i.variasi), ["HIJAU", "BIRU"]);
   });
 
-  it("qty bersih retur (Jumlah − Returned quantity), minimal 1", () => {
+  it("qty bersih retur (Jumlah − Returned quantity); retur penuh = 0, baris tetap ada", () => {
     const r = normalisasiSheetShopee(
       [
         { ...HDR, "No. Pesanan": "O-3", "Nomor Referensi SKU": "A", Jumlah: "5", "Returned quantity": "2" },
@@ -56,7 +56,10 @@ describe("normalisasiSheetShopee", () => {
       [],
     );
     assert.equal(r.orders[0].items[0].qty, 3);
-    assert.equal(r.orders[1].items[0].qty, 1);
+    // Retur penuh: qty 0, BUKAN 1 — barang yang dikembalikan tidak boleh terhitung terjual.
+    // Barisnya tetap disimpan supaya alokasi biaya per order tidak bocor.
+    assert.equal(r.orders[1].items.length, 1, "baris qty 0 tidak dibuang");
+    assert.equal(r.orders[1].items[0].qty, 0);
   });
 
   it("status panjang 'Pesanan diterima...' ikut dihitung", () => {

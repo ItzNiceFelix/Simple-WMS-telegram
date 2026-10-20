@@ -38,27 +38,32 @@ function buatDbPeta() {
           const a = st._args;
           panggilan.push(sql);
           if (sql.startsWith("INSERT INTO peta_putusan")) {
-            const k = `${a[0]}|${a[1]}`;
+            // Urutan bind: preset_id, jenis, acuan, nama, pesanan, omzet, kandidat, at.
+            const k = `${a[1]}|${a[2]}`;
             const lama = putusan[k];
             if (lama) {
               // WAJIB meniru DO UPDATE pada kolom pesanan/omzet/nama/kandidat SAJA —
               // kalau mock ikut menulis diputuskan_*, uji tidak membuktikan apa pun.
-              lama["pesanan"] = a[3];
-              lama["omzet"] = a[4];
-              lama["nama_shopee"] = a[2];
-              lama["kandidat_json"] = a[5];
+              lama["pesanan"] = a[4];
+              lama["omzet"] = a[5];
+              lama["nama_shopee"] = a[3];
+              lama["kandidat_json"] = a[6];
             } else {
               putusan[k] = {
-                jenis: a[0], acuan: a[1], nama_shopee: a[2], pesanan: a[3], omzet: a[4],
-                kandidat_json: a[5], diputuskan_sku: null, diputuskan_at: null, diputuskan_oleh: null,
+                preset_id: a[0], jenis: a[1], acuan: a[2], nama_shopee: a[3], pesanan: a[4], omzet: a[5],
+                kandidat_json: a[6], diputuskan_sku: null, diputuskan_at: null, diputuskan_oleh: null,
               };
             }
             return { meta: { changes: 1 } };
           }
           if (sql.startsWith("UPDATE peta_putusan SET diputuskan_sku")) {
-            const k = `${a[3]}|${a[4]}`;
+            // Urutan bind: sku, at, oleh, presetId(COALESCE), jenis, acuan, presetId(filter).
+            const k = `${a[4]}|${a[5]}`;
             const row = putusan[k];
             if (!row) return { meta: { changes: 0 } };
+            // Baris warisan (preset_id null) diklaim toko yang menjawab.
+            if (row["preset_id"] == null) row["preset_id"] = a[3];
+            else if (row["preset_id"] !== a[6]) return { meta: { changes: 0 } };
             row["diputuskan_sku"] = a[0];
             row["diputuskan_at"] = a[1];
             row["diputuskan_oleh"] = a[2];
@@ -84,10 +89,11 @@ function buatDbPeta() {
           const a = st._args;
           panggilan.push(sql);
           if (sql.includes("FROM peta_putusan")) {
-            let r = Object.values(putusan);
+            // Bind: presetId, batas. Filter toko: preset sendiri ATAU baris warisan (null).
+            let r = Object.values(putusan).filter((x) => x["preset_id"] == null || x["preset_id"] === a[0]);
             if (sql.includes("diputuskan_at IS NULL")) r = r.filter((x) => x["diputuskan_at"] == null);
             r = [...r].sort((x, y) => Number(y["pesanan"]) - Number(x["pesanan"]) || Number(y["omzet"]) - Number(x["omzet"]));
-            return { results: r.slice(0, Number(a[0])) };
+            return { results: r.slice(0, Number(a[1])) };
           }
           if (sql.startsWith("SELECT sku, nama_accurate FROM products WHERE sku IN")) {
             const mau = new Set(a.map(String));
@@ -125,11 +131,11 @@ const tanya = (kodeProduk: string, pesanan: number, omzet: number): PertanyaanPe
 describe("simpanPertanyaan", () => {
   it("tidak menimpa keputusan manusia pada impor berikutnya", async () => {
     const db = buatDbPeta();
-    await simpanPertanyaan(db, [tanya("P1", 10, 1000)]);
-    await jawabPertanyaan(db, [{ jenis: "tanpa_sku", acuan: "P1", sku: "" }], "owner1");
+    await simpanPertanyaan(db, 1, [tanya("P1", 10, 1000)]);
+    await jawabPertanyaan(db, 1, [{ jenis: "tanpa_sku", acuan: "P1", sku: "" }], "owner1");
     assert.equal(db.data.putusan["tanpa_sku|P1"]!["diputuskan_sku"], "");
 
-    await simpanPertanyaan(db, [tanya("P1", 99, 9999)]);
+    await simpanPertanyaan(db, 1, [tanya("P1", 99, 9999)]);
 
     const row = db.data.putusan["tanpa_sku|P1"]!;
     assert.equal(row["diputuskan_sku"], "", "diputuskan_sku tertimpa impor");
@@ -142,9 +148,10 @@ describe("simpanPertanyaan", () => {
 describe("jawabPertanyaan", () => {
   it('menyimpan "" sebagai keputusan "bukan produk kita" dan menghitung baris hilang', async () => {
     const db = buatDbPeta();
-    await simpanPertanyaan(db, [tanya("P1", 5, 500), tanya("P2", 4, 400)]);
+    await simpanPertanyaan(db, 1, [tanya("P1", 5, 500), tanya("P2", 4, 400)]);
     const r = await jawabPertanyaan(
       db,
+      1,
       [
         { jenis: "tanpa_sku", acuan: "P1", sku: "" },
         { jenis: "tanpa_sku", acuan: "TIDAK-ADA", sku: "A-1" },
@@ -166,12 +173,12 @@ describe("jawabPertanyaan", () => {
 describe("daftarPertanyaanBelum", () => {
   it("mem-parse kandidat_json dan menahan JSON rusak tanpa melempar", async () => {
     const db = buatDbPeta();
-    await simpanPertanyaan(db, [tanya("P1", 10, 1000)]);
-    await simpanPertanyaan(db, [tanya("P2", 20, 2000)]);
+    await simpanPertanyaan(db, 1, [tanya("P1", 10, 1000)]);
+    await simpanPertanyaan(db, 1, [tanya("P2", 20, 2000)]);
     db.data.putusan["tanpa_sku|P1"]!["kandidat_json"] = "{bukan json";
-    await jawabPertanyaan(db, [{ jenis: "tanpa_sku", acuan: "P2", sku: "B-1" }], "owner1");
+    await jawabPertanyaan(db, 1, [{ jenis: "tanpa_sku", acuan: "P2", sku: "B-1" }], "owner1");
 
-    const belum = await daftarPertanyaanBelum(db);
+    const belum = await daftarPertanyaanBelum(db, 1);
     assert.equal(belum.length, 1);
     assert.equal(belum[0]!.acuan, "P1");
     assert.deepEqual(belum[0]!.kandidat_json, []);
@@ -179,8 +186,8 @@ describe("daftarPertanyaanBelum", () => {
 
   it("mengembalikan kandidat hasil parse dan urut pesanan terbesar", async () => {
     const db = buatDbPeta();
-    await simpanPertanyaan(db, [tanya("P1", 10, 1000), tanya("P2", 30, 3000)]);
-    const belum = await daftarPertanyaanBelum(db);
+    await simpanPertanyaan(db, 1, [tanya("P1", 10, 1000), tanya("P2", 30, 3000)]);
+    const belum = await daftarPertanyaanBelum(db, 1);
     assert.deepEqual(belum.map((b) => b.acuan), ["P2", "P1"]);
     assert.equal(belum[0]!.kandidat_json[0]!.sku, "A-1");
   });

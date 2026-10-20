@@ -20,6 +20,7 @@ const JENIS = { order: true, laba: true, performa: true, iklan: true } as const;
 type Jenis = keyof typeof JENIS;
 
 type BarisLog = {
+  id: number;
   jenis: Jenis;
   file: string;
   baris: number;
@@ -40,23 +41,35 @@ export async function GET(request: Request) {
     return json({ ok: false, error: "presetId wajib diisi." }, 400);
   }
   const jenisDiminta = (url.searchParams.get("jenis") ?? "").trim();
+  // `?jenis=` menyaring ke satu jenis saja. Nilai di luar allowlist ditolak, bukan diabaikan:
+  // mengabaikannya diam-diam akan mengembalikan empat jenis untuk permintaan satu jenis.
+  if (jenisDiminta && !JENIS[jenisDiminta as Jenis]) {
+    return json({ ok: false, error: `jenis harus salah satu: ${Object.keys(JENIS).join(", ")}` }, 400);
+  }
 
   const db = getDb();
-  // Ambil 10 terakhir per jenis, lalu klien memakai yang pertama. Dibatasi di SQL (bukan
-  // memuat seluruh tabel) karena riwayat impor tumbuh tiap hari tanpa batas.
-  const { results } = await db
-    .prepare(
-      "SELECT jenis, file, baris, gagal, ringkas, at, oleh FROM sinkron_log " +
-        "WHERE preset_id = ?" + (jenisDiminta ? " AND jenis = ?" : "") +
-        " ORDER BY at DESC LIMIT 40"
+  const daftarJenis = jenisDiminta ? [jenisDiminta as Jenis] : (Object.keys(JENIS) as Jenis[]);
+  // SATU query per jenis, dijalankan PARALEL. Dulu satu query `LIMIT 40` lintas jenis: jenis
+  // yang ramai (order) menghabiskan jatah 40 sehingga riwayat laba/performa/iklan hilang
+  // seluruhnya. Batas 10 per jenis juga menjaga tabel yang tumbuh tiap hari ini tidak pernah
+  // dibaca penuh. `id DESC` sebagai pemecah seri: `at` beresolusi detik, dan beberapa impor
+  // dalam detik yang sama harus tetap punya urutan yang stabil.
+  const hasil = await Promise.all(
+    daftarJenis.map((jenis) =>
+      db
+        .prepare(
+          "SELECT id, jenis, file, baris, gagal, ringkas, at, oleh FROM sinkron_log " +
+            "WHERE preset_id = ? AND jenis = ? ORDER BY at DESC, id DESC LIMIT 10"
+        )
+        .bind(presetId, jenis)
+        .all<BarisLog>()
     )
-    .bind(...(jenisDiminta ? [presetId, jenisDiminta] : [presetId]))
-    .all<BarisLog>();
+  );
 
   const perJenis: Record<string, BarisLog[]> = { order: [], laba: [], performa: [], iklan: [] };
-  for (const r of results ?? []) {
-    if (perJenis[r.jenis]) perJenis[r.jenis].push(r);
-  }
+  daftarJenis.forEach((jenis, i) => {
+    perJenis[jenis] = hasil[i]?.results ?? [];
+  });
   return json({ ok: true, perJenis });
 }
 

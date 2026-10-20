@@ -88,6 +88,12 @@ export type BarisSku = {
   ctr: number | null;
   /** CR = unit terjual dari iklan ÷ klik × 100 (persen). null bila klik 0/tidak ada. */
   cr: number | null;
+  /**
+   * Asal pembilang `cr`: "iklan" bila ekspor iklan memuat jumlah pesanan, "snapshot" bila
+   * terpaksa memakai unit snapshot (populasi order berbeda → CR cenderung dilebih-lebihkan).
+   * Kosong = CR null (tidak ada yang bisa dijelaskan).
+   */
+  crSumber?: "iklan" | "snapshot";
   /** Biaya iklan SKU ini pada periode. null = belum diimpor, bukan nol. */
   biayaIklan: number | null;
   /** ROAS aktual = omzet iklan ÷ biaya iklan. null bila biaya 0/tidak ada — BUKAN Infinity. */

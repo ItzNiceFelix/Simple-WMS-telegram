@@ -66,7 +66,9 @@ export type MasukanAnalisa = {
    * Metrik iklan per SKU untuk periode ini; kosong bila belum diimpor.
    * Kunci = SKU. Isi: dilihat/klik/biaya/omzet dari `ads_produk` (agregat rentang).
    */
-  iklanPerSku?: Map<string, { dilihat: number; klik: number; biaya: number; omzet: number }>;
+  // `pesanan` opsional: bila ekspor iklan memuat jumlah pesanan, CR dihitung dari pesanan
+  // iklan itu sendiri — bukan dari unit snapshot (populasi order berbeda, CR jadi overstate).
+  iklanPerSku?: Map<string, { dilihat: number; klik: number; biaya: number; omzet: number; pesanan?: number }>;
   /**
    * Metrik ORGANIK per SKU (kunjungan halaman produk TANPA iklan) dari `performa_produk`.
    * Kunci = SKU. Opsional supaya pemanggil lama tetap jalan; kosong = data belum ada.
@@ -113,7 +115,17 @@ export function bangunBaris(m: MasukanAnalisa): BarisSku[] {
     // Pembagi nol → null, BUKAN Infinity/NaN. Angka tak terhingga yang lolos ke UI
     // akan tampil sebagai "∞%" dan merusak kepercayaan pada seluruh halaman.
     const ctr = iklan && iklan.dilihat > 0 ? bulat2((iklan.klik / iklan.dilihat) * 100) : null;
-    const cr = iklan && iklan.klik > 0 ? bulat2((r.unit / iklan.klik) * 100) : null;
+    // CR: pembilang & penyebut harus dari populasi yang SAMA. `unit` berasal dari SEMUA order
+    // (organik + iklan), jadi membaginya dengan klik iklan saja melebih-lebihkan konversi.
+    // Bila ekspor iklan memuat `pesanan`, pakai itu. `> 0` (bukan `!= null`) karena ekspor lama
+    // mengisi kolom pesanan dengan 0 saat tidak dilaporkan — 0 itu "tidak diisi", bukan "nol".
+    const pesananIklan = iklan?.pesanan;
+    const adaPesananIklan = typeof pesananIklan === "number" && Number.isFinite(pesananIklan) && pesananIklan > 0;
+    const cr = iklan && iklan.klik > 0
+      ? bulat2(((adaPesananIklan && pesananIklan !== undefined ? pesananIklan : r.unit) / iklan.klik) * 100)
+      : null;
+    // Ditandai supaya UI bisa menyebut sumbernya saat CR masih memakai unit snapshot.
+    const crSumber: "iklan" | "snapshot" | undefined = cr === null ? undefined : (adaPesananIklan ? "iklan" : "snapshot");
     const roasAktual = iklan && iklan.biaya > 0 ? bulat2(iklan.omzet / iklan.biaya) : null;
     return {
       sku: r.sku,
@@ -128,11 +140,14 @@ export function bangunBaris(m: MasukanAnalisa): BarisSku[] {
       hppMaster,
       // HPP naik SETELAH snapshot dibuat = margin sebenarnya kini lebih jelek.
       hppNaik: hppMaster !== null && hppMaster > r.hppSatuan ? hppMaster - r.hppSatuan : 0,
-      stok: m.stok ? (m.stok.get(r.sku) ?? 0) : null,
+      // SKU tanpa baris stok = TIDAK DIKETAHUI (null), bukan 0. `0` berarti "habis" dan
+      // memunculkan temuan stok mati/tipis palsu untuk SKU yang tak punya catatan gudang.
+      stok: m.stok ? (m.stok.get(r.sku) ?? null) : null,
       dilihat: iklan ? iklan.dilihat : null,
       klik: iklan ? iklan.klik : null,
       ctr,
       cr,
+      crSumber,
       biayaIklan: iklan ? iklan.biaya : null,
       roasAktual,
       // Organik: null bila SKU tidak ada di impor Performa Produk — bukan nol.
@@ -254,7 +269,7 @@ export function buatTemuan(m: MasukanAnalisa, baris: BarisSku[], ringkas: Ringka
       kode: "sku_merugi", keparahan: "kritis",
       judul: `${merugi.length} SKU merugi setiap kali terjual`,
       penjelasan: `Harga jual lebih rendah daripada biaya (HPP + biaya lain). Setiap penjualan menambah kerugian, bukan laba. Periksa harga jual atau hentikan produk ini.`,
-      angka: { nilai: Math.abs(totalRugi), satuan: "rupiah", jumlahTerkena: merugi.length, dariTotal: Math.abs(ringkas.kontribusi10Teratas) || undefined },
+      angka: { nilai: Math.abs(totalRugi), satuan: "rupiah", jumlahTerkena: merugi.length, dariTotal: Math.abs(ringkas.laba) || undefined },
       contohSku: [...merugi].sort((a, b) => a.kontribusi - b.kontribusi).slice(0, 10)
         .map((b) => ({ sku: b.sku, nama: b.nama, nilai: b.kontribusi })),
     });
@@ -385,6 +400,31 @@ export function analisaCepat(m: MasukanAnalisa): HasilAnalisa {
   if (m.jmlSnapshot < 2) kurang.push("Snapshot kurang dari 2 — tren antar periode belum bisa dihitung.");
   if (!m.stok) kurang.push("Data stok tidak diambil — silang kontribusi vs stok belum dihitung.");
   return { ringkasan, temuan, baris, kurang, jmlSnapshot: m.jmlSnapshot };
+}
+
+/** Kelas laju produk. Satu definisi untuk semua tab; `normal` = di antara fast dan slow. */
+export type KelasProduk = "fast" | "slow" | "dead" | "normal";
+
+/**
+ * Klasifikasi fast/slow/dead SATU-SATUNYA. Dulu tab "tren" dan tab "detail" punya aturan
+ * sendiri-sendiri (satu tanpa `normal`, satu dengan) sehingga SKU yang sama bisa berlabel
+ * beda di dua tempat pada halaman yang sama.
+ *
+ * Aturan: terjual 0 + stok > 0 = dead (bukan slow — barangnya ada, tidak bergerak);
+ * laju ≥ rata-rata SKU bergerak = fast; laju < 1/3 rata-rata = slow; sisanya normal.
+ * `rataLaju` null (belum ada SKU bergerak) = tidak bisa membandingkan → normal, bukan fast.
+ */
+export function kelasProduk(p: {
+  terjual: number;
+  lajuHarian: number;
+  stok: number | null;
+  rataLaju: number | null;
+}): KelasProduk {
+  if (p.terjual === 0 && p.stok !== null && p.stok > 0) return "dead";
+  if (p.rataLaju === null || !(p.rataLaju > 0) || !(p.terjual > 0)) return "normal";
+  if (p.lajuHarian >= p.rataLaju) return "fast";
+  if (p.lajuHarian < p.rataLaju / 3) return "slow";
+  return "normal";
 }
 
 /**

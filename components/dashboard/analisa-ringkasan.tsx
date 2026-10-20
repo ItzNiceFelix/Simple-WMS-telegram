@@ -271,8 +271,8 @@ export function AnalisaRingkasan({ presetId, tanggal }: { presetId: number; tang
                 Omzet vs Laba per jam
               </CardTitle>
               <CardDescription>
-                Berdasarkan jam pesanan dibuat. Hanya hari yang snapshot-nya sudah lewat satu
-                hari yang dipakai: {tanggalDipakai.length > 0
+                Berdasarkan jam pesanan dibuat. Dua hari terakhir dikecualikan (harinya belum
+                selesai), jadi yang dipakai: {tanggalDipakai.length > 0
                   ? tanggalDipakai.join(", ")
                   : "belum ada hari yang memenuhi syarat"}.
               </CardDescription>

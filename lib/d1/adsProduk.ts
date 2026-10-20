@@ -170,8 +170,13 @@ export async function imporIklan(
   teks: string,
   presetId: number,
   oleh: string | null,
-  petaSku: Map<string, string>
-): Promise<Hasil<{ tersimpan: number; dilewatiTanpaKode: number; dilewatiTanpaPeta: number; kodeTanpaPeta: string[] }>> {
+  /**
+   * Kode produk → SEMUA SKU kita untuk kode itu (satu kode bisa punya banyak variasi).
+   * Bukan `Map<string, string>`: mengambil hanya SKU pertama membuang biaya variasi lain,
+   * sehingga total iklan per SKU salah walau total toko benar.
+   */
+  petaSku: Map<string, string[]>
+): Promise<Hasil<{ tersimpan: number; dilewatiTanpaKode: number; dilewatiTanpaPeta: number; kodeTanpaPeta: string[]; barisDibaca: number }>> {
   const hasil = parseIklan(teks);
   if (hasil.barisHeader < 0) return gagal(400, "Baris header 'Urutan' tidak ditemukan di berkas iklan");
   const tanggal = hasil.periode?.dari;
@@ -190,29 +195,42 @@ export async function imporIklan(
     }
   }
 
-  // Agregasi di memori sebelum menulis: ON CONFLICT di bawah sudah akumulatif, tapi
-  // menggabungkan lebih dulu membuat jumlah pernyataan D1 jauh lebih kecil.
+  // Agregasi di memori sebelum menulis: satu baris iklan per kode produk, sedangkan tabel
+  // menyimpan per SKU. Satu kode dengan N SKU: biaya dibagi rata ke semua SKU-nya supaya
+  // total toko tetap benar dan tidak ada biaya yang hilang. (Dulu hanya SKU pertama yang
+  // menerima seluruh biaya, sehingga ROAS per SKU melenceng jauh.)
   const perKunci = new Map<string, { sku: string; biaya: number; klik: number; dilihat: number; omzet: number }>();
   for (const b of hasil.baris) {
-    const sku = petaSku.get(b.kodeProduk);
-    if (!sku) continue;
-    const k = `${sku}`;
-    const agg = perKunci.get(k) ?? { sku, biaya: 0, klik: 0, dilihat: 0, omzet: 0 };
-    agg.biaya += b.biaya;
-    agg.klik += b.klik ?? 0;
-    agg.dilihat += b.dilihat ?? 0;
-    agg.omzet += b.omzetIklan;
-    perKunci.set(k, agg);
+    const semua = petaSku.get(b.kodeProduk);
+    if (!semua || semua.length === 0) continue;
+    const n = semua.length;
+    const biaya = Math.round(b.biaya / n);
+    const klik = Math.round((b.klik ?? 0) / n);
+    const dilihat = Math.round((b.dilihat ?? 0) / n);
+    const omzet = Math.round(b.omzetIklan / n);
+    for (const sku of semua) {
+      const agg = perKunci.get(sku) ?? { sku, biaya: 0, klik: 0, dilihat: 0, omzet: 0 };
+      agg.biaya += biaya;
+      agg.klik += klik;
+      agg.dilihat += dilihat;
+      agg.omzet += omzet;
+      perKunci.set(sku, agg);
+    }
   }
 
   const at = sekarang();
+  // TIMPA, BUKAN JUMLAH: satu impor sudah diagregasi per SKU di `perKunci` di atas, jadi
+  // menjumlahkan lagi di ON CONFLICT berarti berkas yang sama diunggah dua kali menggandakan
+  // biaya — dan ROAS/CR jatuh palsu tanpa ada yang menyadarinya. Mengimpor ulang berkas yang
+  // sama sekarang idempoten. (Berkas berbeda untuk tanggal yang sama memang harus dijumlah;
+  // itu ditangani pemanggil dengan menggabungkan berkas sebelum impor, bukan di sini.)
   const stmts = [...perKunci.values()].map((a) =>
     db
       .prepare(
         "INSERT INTO ads_produk (preset_id, tanggal, sku, biaya, klik, dilihat, omzet_iklan, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
           "ON CONFLICT(preset_id, tanggal, sku) DO UPDATE SET " +
-          "biaya = excluded.biaya + biaya, klik = excluded.klik + klik, " +
-          "dilihat = excluded.dilihat + dilihat, omzet_iklan = excluded.omzet_iklan + omzet_iklan, at = excluded.at"
+          "biaya = excluded.biaya, klik = excluded.klik, " +
+          "dilihat = excluded.dilihat, omzet_iklan = excluded.omzet_iklan, at = excluded.at"
       )
       .bind(presetId, tanggal, a.sku, a.biaya, a.klik, a.dilihat, a.omzet, at)
   );
@@ -229,7 +247,16 @@ export async function imporIklan(
     }
   }
 
-  return { ok: true, tersimpan: perKunci.size, dilewatiTanpaKode: hasil.dilewatiTanpaKode, dilewatiTanpaPeta: dilewati, kodeTanpaPeta };
+  return {
+    ok: true,
+    tersimpan: perKunci.size,
+    dilewatiTanpaKode: hasil.dilewatiTanpaKode,
+    dilewatiTanpaPeta: dilewati,
+    kodeTanpaPeta,
+    // Jumlah BARIS berkas (bukan SKU): halaman Sinkronisasi melaporkan "berapa baris dibaca",
+    // dan SKU unik selalu lebih kecil dari baris sehingga terlihat seperti data hilang.
+    barisDibaca: hasil.baris.length,
+  };
 }
 
 /** Total baris + biaya iklan pada rentang tanggal. null = belum ada baris (belum diimpor), bukan nol. */

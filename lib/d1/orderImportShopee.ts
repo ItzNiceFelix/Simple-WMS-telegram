@@ -181,8 +181,11 @@ export function normalisasiSheetShopee(
       gagal.push({ no_pesanan: no, sku, pesan: `Jumlah ${jml} tidak valid (minimal 1).` });
       continue;
     }
-    // F13: qty bersih retur, minimal 1 (baris yang diretur penuh tetap dicatat agar alokasi tak bocor).
-    const qty = Math.max(1, jml - kembali);
+    // F13: qty bersih retur. Retur PENUH menghasilkan 0, bukan 1 — qty 1 membuat barang yang
+    // dikembalikan terhitung terjual. Baris qty 0 TETAP disimpan (tidak `continue`): biaya
+    // per-order dialokasikan lewat baris order, jadi membuang barisnya membuat alokasi bocor
+    // dan omzet order tidak lagi cocok dengan rincian per SKU.
+    const qty = Math.max(0, jml - kembali);
     const harga = angkaShopee(row["Harga Setelah Diskon"]);
     if (!sku) {
       // Baris tanpa SKU: order TETAP dibuat (jangan hilang), item disimpan dengan sku ""

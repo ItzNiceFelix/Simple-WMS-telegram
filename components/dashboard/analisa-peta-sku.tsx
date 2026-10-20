@@ -60,7 +60,8 @@ export function AnalisaPetaSku({ presetId }: { presetId: number }) {
   const muat = useCallback(async () => {
     setMemuat(true);
     try {
-      const res = await fetch("/api/analisa/peta", { credentials: "include" });
+      // Toko WAJIB ikut: pertanyaan milik toko lain tidak boleh tampil di sini (0044).
+      const res = await fetch(`/api/analisa/peta?presetId=${presetId}`, { credentials: "include" });
       const d = (await res.json().catch(() => null)) as {
         ok?: boolean; pertanyaan?: PertanyaanPeta[]; error?: string;
       } | null;
@@ -72,7 +73,7 @@ export function AnalisaPetaSku({ presetId }: { presetId: number }) {
     } finally {
       setMemuat(false);
     }
-  }, []);
+  }, [presetId]);
 
   useEffect(() => {
     void muat();
@@ -83,6 +84,12 @@ export function AnalisaPetaSku({ presetId }: { presetId: number }) {
 
   async function unggah(berkas: File) {
     if (sibuk) return;
+    // Toko harus dipilih: server menolak presetId kosong, dan lebih baik berhenti di sini
+    // daripada user menunggu unggahan 8 MB untuk ditolak.
+    if (!Number.isInteger(presetId) || presetId <= 0) {
+      toast.error("Pilih toko dulu sebelum mengimpor performa.");
+      return;
+    }
     setSibuk(true);
     try {
       // Kirim sebagai base64: route memakai JSON, sama seperti importer lain di repo ini.
@@ -137,7 +144,7 @@ export function AnalisaPetaSku({ presetId }: { presetId: number }) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ aksi: "jawab", jawaban: daftar }),
+        body: JSON.stringify({ aksi: "jawab", presetId, jawaban: daftar }),
       });
       const d = (await res.json().catch(() => null)) as {
         ok?: boolean; tersimpan?: number; diabaikan?: number; ditolak?: { sku: string; alasan: string }[]; error?: string;
