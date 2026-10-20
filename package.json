@@ -11,6 +11,8 @@
     "dev": "next dev",
     "test": "node --test \"test/**/*.test.js\" && npx esbuild worker/auth.test.ts --bundle --platform=node --format=esm --outfile=.tmp-auth-npm.test.mjs --log-level=error && node --test .tmp-auth-npm.test.mjs && rm -f .tmp-auth-npm.test.mjs",
     "test:worker": "node scripts/jalankan-tes-worker.mjs",
+    "peta:indeks": "node scripts/peta-indeks.mjs",
+    "peta:verifikasi": "node scripts/peta-verifikasi.mjs",
     "dev:vercel": "vercel dev",
     "build": "next build",
     "start": "next start",

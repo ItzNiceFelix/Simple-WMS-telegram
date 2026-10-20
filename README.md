@@ -1,3 +1,6 @@
+> **Perhatian: arsitektur README ini sudah usang.** Repo sekarang berjalan sebagai **Next.js 15 (App Router) + OpenNext di Cloudflare Workers + D1**, bukan Vercel + Firestore. `api/webhook.js`, `lib/models/*`, `lib/gemini/*`, dan `vercel.json` adalah jalur lama (sebagian masih dipakai).
+> Untuk peta kode terkini mulai dari **`AGENTS.md`** → **`docs/map/00-index.md`**; ringkasan deploy di `docs/map/01-runtime-deploy.md`.
+
 # Bot SuPrapto Online
 
 Bot Telegram untuk admin toko online: cek stok gudang online, HPP, dan info produk; mencatat pemakaian stok dari screenshot picking list; stok opname; sinkronisasi stok dengan Google Sheets; serta menjawab pertanyaan bebas lewat AI (Gemini/Groq) berbasis tool-calling ke Firestore. Berjalan sebagai Vercel Serverless Function (Node.js CommonJS) dengan Firestore sebagai database dan Google Sheets sebagai sumber master data produk.
