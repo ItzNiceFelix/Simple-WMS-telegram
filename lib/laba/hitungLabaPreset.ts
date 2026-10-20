@@ -57,7 +57,18 @@ export type OpsiHitung = {
   dataLama?: Map<string, { status_pesanan: string; tanggal_snapshot: string }>;
 };
 
-const STATUS_HITUNG = ["perlu dikirim", "telah dikirim", "sedang dikirim", "selesai"];
+/**
+ * Status Shopee yang omzetnya DIHITUNG.
+ *
+ * KENAPA "pesanan diterima" ikut: Shopee memakai kalimat panjang
+ * `"Pesanan diterima, namun Pembeli masih dapat mengajukan pengembalian hingga <tanggal>."`
+ * untuk paket yang SUDAH diterima pembeli. Kalimat itu tidak memuat kata `selesai`/`telah
+ * dikirim`, sehingga dulu order yang benar-benar terjual DIBUANG dari laba — pada data nyata
+ * 4 order hilang di satu berkas, dan omzet satu hari turun 267 order (506 → 239).
+ *
+ * Yang TETAP tidak dihitung: `batal`, `belum bayar`, `pembatalan diajukan`.
+ */
+const STATUS_HITUNG = ["perlu dikirim", "telah dikirim", "sedang dikirim", "selesai", "pesanan diterima"];
 /** Lapis 2 D-2: default ambang HPP basi. */
 const HPP_BASI_HARI_DEFAULT = 30;
 /** Lapis 2 D-4: kunci syarat yang wajib data iklan harian. */

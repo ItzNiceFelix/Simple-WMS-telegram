@@ -140,6 +140,17 @@ describe("E2/E-R3 hitungLabaPreset", () => {
     assert.equal(d.dasar, 112000); // 7 × 16000
   });
 
+  it('status "Pesanan diterima, namun Pembeli masih dapat mengajukan pengembalian…" DIHITUNG', async () => {
+    // Kalimat panjang itu bentuk Shopee untuk paket yang SUDAH diterima pembeli. Dulu tidak
+    // memuat kata "selesai"/"telah dikirim" sehingga order terjual dibuang dari laba.
+    const rows = [
+      baris({ "No. Pesanan": "R1", "Status Pesanan": "Pesanan diterima, namun Pembeli masih dapat mengajukan pengembalian hingga 2026-10-21." }),
+      baris({ "No. Pesanan": "R2", "Status Pesanan": "Pembatalan diajukan" }),
+    ];
+    const a = await hitungLabaPreset(rows, opsi([]));
+    assert.equal(a.jml_order, 1, "hanya pesanan diterima yang dihitung");
+  });
+
   it("Perlu Dikirim dihitung; Batal + Belum Bayar dibuang", async () => {
     const rows = [
       baris({ "No. Pesanan": "B1", "Status Pesanan": "Batal" }),
