@@ -53,3 +53,6 @@ playwright/.cache/
 .tmp-*.mjs
 .tok*.txt
 .s[0-9]*.mjs
+
+# Ekspor D1 untuk pemulihan (berisi data pelanggan; jangan di-commit).
+backup-pre-*.sql
