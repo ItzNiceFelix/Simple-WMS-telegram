@@ -184,7 +184,12 @@ export async function hitungLabaPreset(
     const infoBaris: (InfoSku & { tier: string })[] = [];
     for (const b of skuBaris) {
       const info = await infoSku(b.sku);
-      if (!info || info.hpp == null) { alasanTolak = `SKU ${b.sku} tak cocok master stok`; break; }
+      // PESAN DIBEDAKAN: "tak cocok master" dan "HPP kosong" adalah dua masalah berbeda
+      // dengan tindakan berbeda. Dulu keduanya berbunyi "tak cocok master stok", sehingga
+      // user mencari SKU yang sebenarnya ADA dan hanya belum diisi HPP-nya — pada data nyata
+      // itu 22 order/hari yang hilang dari laba tanpa petunjuk yang benar.
+      if (!info) { alasanTolak = `SKU ${b.sku} tidak ada di master produk`; break; }
+      if (info.hpp == null) { alasanTolak = `SKU ${b.sku} belum punya HPP di master produk`; break; }
       const { tier } = resolveTier(info.kategori, info.tierOverride, o.kategoriTabel);
       if (tier === TIER_UNKNOWN) {
         jml_baris_belum_terpetakan += 1;
