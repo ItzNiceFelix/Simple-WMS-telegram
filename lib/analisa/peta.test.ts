@@ -459,6 +459,19 @@ describe("bangunPeta pada header nyata", () => {
     assert.equal((a?.pesanan ?? 0) + (b?.pesanan ?? 0), 4);
   });
 
+  it("SKU ekspor yang beda huruf besar/kecil tetap cocok ke master", () => {
+    // Ekspor menulis "abc-1", master menyimpan "ABC-1". Dulu ini jadi pertanyaan palsu
+    // "SKU tak ada di master" padahal produknya ada.
+    const rows = [
+      HEADER,
+      baris({ kodeProduk: "910", produk: "Kaos", kodeVariasiShopee: "777", namaVariasi: "HITAM", skuVariasi: "abc-1" }),
+    ];
+    const h = bangunPeta(rows, new Set(["ABC-1"]));
+    assert.equal(h.pertanyaan.length, 0, "tidak boleh jadi pertanyaan");
+    assert.equal(h.baris.length, 1);
+    assert.equal(h.baris[0].sku, "ABC-1", "dipetakan ke penulisan master");
+  });
+
   it("metrik induk TIDAK disalurkan dua kali bila baris induk sudah ber-SKU", () => {
     const rows = [
       HEADER,

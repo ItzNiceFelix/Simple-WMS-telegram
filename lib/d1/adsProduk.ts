@@ -47,6 +47,12 @@ export type HasilParseIklan = {
   dilewatiTanpaKode: number;
   periode: PeriodeIklan | null;
   barisHeader: number;
+  /**
+   * Diisi bila header tidak selebar yang dibutuhkan `KOL`. Ekspor Ads tidak punya tanggal
+   * per baris dan kolomnya dibaca menurut nomor, jadi pergeseran satu kolom berarti angka
+   * uang menunjuk kolom lain tanpa error — impor harus berhenti, bukan menebak.
+   */
+  galatLebar?: string;
 };
 
 /**
@@ -127,6 +133,13 @@ export function parseIklan(teks: string): HasilParseIklan {
   const rows = bacaCsv(teks);
   const barisHeader = cariBarisHeader(rows);
   if (barisHeader < 0) return { baris: [], dilewatiTanpaKode: 0, periode: null, barisHeader: -1 };
+  // VALIDASI LEBAR KOLOM. Kolom dibaca menurut NOMOR (KOL), jadi ekspor yang menyisipkan
+  // satu kolom baru menggeser semuanya — biaya menunjuk kolom lain dan angkanya tetap
+  // "masuk akal", sehingga salahnya tak terlihat. Berhenti dengan pesan jelas lebih baik.
+  const lebar = rows[barisHeader]?.length ?? 0;
+  if (lebar <= KOL.biaya) {
+    return { baris: [], dilewatiTanpaKode: 0, periode: null, barisHeader: -1, galatLebar: `Header iklan hanya ${lebar} kolom; minimal ${KOL.biaya + 1}. Format ekspor Shopee Ads berubah — periksa berkasnya.` };
+  }
   const periode = bacaPeriode(rows, barisHeader);
   const baris: BarisIklan[] = [];
   let dilewatiTanpaKode = 0;
@@ -178,6 +191,7 @@ export async function imporIklan(
   petaSku: Map<string, string[]>
 ): Promise<Hasil<{ tersimpan: number; dilewatiTanpaKode: number; dilewatiTanpaPeta: number; kodeTanpaPeta: string[]; barisDibaca: number }>> {
   const hasil = parseIklan(teks);
+  if (hasil.galatLebar) return gagal(400, hasil.galatLebar);
   if (hasil.barisHeader < 0) return gagal(400, "Baris header 'Urutan' tidak ditemukan di berkas iklan");
   const tanggal = hasil.periode?.dari;
   if (!tanggal) return gagal(400, "Periode laporan tidak ditemukan di berkas iklan");

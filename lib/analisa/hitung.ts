@@ -255,11 +255,6 @@ export function buatRingkasan(m: MasukanAnalisa, baris: BarisSku[]): RingkasanAn
  */
 export function buatTemuan(m: MasukanAnalisa, baris: BarisSku[], ringkas: RingkasanAnalisa): Temuan[] {
   const temuan: Temuan[] = [];
-  const kurang: string[] = [];
-  if (m.biayaIklan === null) kurang.push("Biaya iklan per produk belum diimpor — margin belum memperhitungkan iklan.");
-  // Pesan ini HANYA jujur saat performa benar-benar tidak ada. Begitu `adaPerforma` true,
-  // datanya ada dan dipakai (temuan organik di bawah) — menambahkannya berarti berbohong.
-  if (!m.adaPerforma) kurang.push("Data kunjungan/konversi produk belum ada — belum bisa membedakan 'sedikit dilihat' vs 'dilihat tapi tidak dibeli'.");
 
   // ── 1. SKU merugi (paling mendesak) ──
   const merugi = baris.filter((b) => b.marginSatuan < 0);

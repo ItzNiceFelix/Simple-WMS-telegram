@@ -192,6 +192,17 @@ export function bersih(v: unknown): string {
  *   6. Kandidat hanya untuk tampilan; hasil pemetaan tidak boleh bergantung padanya.
  */
 export function bangunPeta(rows: unknown[][], master: Set<string>, mesin?: KandidatMesin): HasilPeta {
+  // Pencocokan SKU case-sensitive apa adanya (`master.has`). Ekspor Shopee kadang menulis
+  // SKU dengan huruf berbeda dari master, dan dulu itu berakhir sebagai pertanyaan palsu
+  // "SKU tak ada di master" padahal produknya ada. Peta ini hanya memetakan penulisan
+  // ekspor ke penulisan master; nilainya TIDAK diubah agar tidak menciptakan SKU baru.
+  const masterHuruf = new Map<string, string>();
+  for (const s of master) {
+    const k = s.toUpperCase();
+    if (!masterHuruf.has(k)) masterHuruf.set(k, s);
+  }
+  /** SKU master yang cocok (case-insensitive), atau null. */
+  const cocokMaster = (sku: string): string | null => (sku === "" ? null : master.has(sku) ? sku : masterHuruf.get(sku.toUpperCase()) ?? null);
   const baris: BarisPeta[] = [];
   const pertanyaan: PertanyaanPeta[] = [];
   const petaPertanyaan = new Map<string, PertanyaanPeta>();
@@ -229,7 +240,7 @@ export function bangunPeta(rows: unknown[][], master: Set<string>, mesin?: Kandi
     const sv = bersih(row[kol.skuVariasi]);
     const si = bersih(row[kol.skuInduk]);
     const s = sv !== "" ? sv : si;
-    if (s !== "" && master.has(s)) terpetakanAwal.add(kodeProduk);
+    if (cocokMaster(s) !== null) terpetakanAwal.add(kodeProduk);
   }
 
   for (let i = 1; i < rows.length; i++) {
@@ -271,10 +282,12 @@ export function bangunPeta(rows: unknown[][], master: Set<string>, mesin?: Kandi
     // Aturan 2: SKU variasi menang atas SKU induk.
     const skuVariasi = bersih(row[kol.skuVariasi]);
     const skuInduk = bersih(row[kol.skuInduk]);
-    const sku = skuVariasi !== "" ? skuVariasi : skuInduk;
+    // Pakai penulisan MASTER saat cocok tanpa peduli huruf, supaya `performa_produk` dan
+    // `shopee_produk` berkunci SKU yang sama dengan tabel `products`.
+    const sku = cocokMaster(skuVariasi !== "" ? skuVariasi : skuInduk) ?? (skuVariasi !== "" ? skuVariasi : skuInduk);
     const tingkat: "variasi" | "induk" = skuVariasi !== "" ? "variasi" : "induk";
 
-    if (sku !== "" && master.has(sku)) {
+    if (sku !== "" && cocokMaster(sku) !== null) {
       produkTerpetakan.add(kodeProduk);
       const daftarSku = skuPerKode.get(kodeProduk) ?? [];
       if (!daftarSku.includes(sku)) daftarSku.push(sku);

@@ -748,8 +748,12 @@ export async function POST(request: Request) {
     // kemiripan nama DILARANG untuk data uang.
     // Kode produk diambil lewat `parseIklan` (bukan split koma) karena nama iklan bisa
     // memuat koma di dalam tanda kutip — split naif akan menggeser kolomnya.
+    // SELURUH kode, tanpa potongan. Dulu `slice(0, 500)`: kode ke-501 dan seterusnya
+    // dilewati diam-diam, lalu barisnya dihitung sebagai "tanpa peta" — user melihat
+    // "banyak baris tanpa peta" padahal petanya ada. `petaSkuDariKodeProduk` sudah memecah
+    // query per 90 parameter, jadi jumlah besar aman.
     const kode = [...new Set(parseIklan(teks).baris.map((b) => b.kodeProduk))];
-    const petaArr = await petaSkuDariKodeProduk(db, kode.slice(0, 500));
+    const petaArr = await petaSkuDariKodeProduk(db, kode);
     // SEMUA SKU per kode, bukan yang pertama: satu kode produk Shopee bisa menaungi beberapa
     // variasi dengan SKU berbeda. Mengambil `daftar[0]` membuat biaya seluruh variasi
     // menumpuk ke satu SKU (ROAS/CR SKU itu salah, total toko tetap benar).

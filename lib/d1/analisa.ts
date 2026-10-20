@@ -235,9 +235,17 @@ export async function performaPerSku(
 export async function daftarPeriodePerforma(db: D1Database, presetId: number): Promise<string[]> {
   const r = await db
     .prepare(
+      // Urut berdasarkan TANGGAL AKHIR periode, bukan awal.
+      //
+      // KENAPA: periode bisa berupa satu hari (`2026-10-05`) atau rentang
+      // (`2026-10-01_2026-10-13`). Mengurutkan teks apa adanya menaruh rentang 01–13
+      // SEBELUM 05 karena awalnya lebih kecil, padahal akhirnya lebih baru. Akibatnya
+      // "periode pembanding" di UI menunjuk periode yang kronologis lebih lama, dan delta
+      // dibandingkan dengan jendela yang salah. `substr(periode, -10)` mengambil 10 huruf
+      // terakhir = tanggal akhir pada kedua bentuk.
       "SELECT periode, MAX(at) AS at FROM performa_produk " +
         "WHERE preset_id = ? AND periode <> '' AND periode <> 'legacy' GROUP BY periode " +
-        "ORDER BY periode DESC, at DESC"
+        "ORDER BY substr(periode, -10) DESC, at DESC"
     )
     .bind(presetId)
     .all<{ periode: string }>()

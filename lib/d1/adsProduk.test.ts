@@ -209,6 +209,18 @@ describe("imporIklan", () => {
     assert.equal(db.ads.get("7|2026-10-14|SKU-A")?.["biaya"], 442500);
   });
 
+  it("gagal 400 bila header lebih sempit dari kolom yang dibaca (ekspor bergeser)", async () => {
+    // Tanpa validasi ini, `KOL.biaya` menunjuk kolom lain dan angkanya tetap "masuk akal".
+    const db = buatDb();
+    const sempit = "Urutan,Username\r\n1,tokohanaa\r\n";
+    const r: Hasil<unknown> = await imporIklan(db, sempit, 7, null, new Map());
+    assert.equal(r.ok, false);
+    if (!r.ok) {
+      assert.equal(r.status, 400);
+      assert.match(String(r.error), /Format ekspor Shopee Ads berubah/);
+    }
+  });
+
   it("gagal 400 bila header tidak ada", async () => {
     const db = buatDb();
     const r: Hasil<unknown> = await imporIklan(db, "Username,tokohanaa\r\nfoo,bar\r\n", 7, null, new Map());

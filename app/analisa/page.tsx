@@ -9,7 +9,7 @@
 // Analisa cepat langsung tampil tanpa tombol dan tanpa AI — angka benar harus selalu
 // bisa didapat tanpa menunggu model dan tanpa biaya token.
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   ChartNoAxesCombined, ChevronRight, Info, Lightbulb, Megaphone, SlidersHorizontal, Sparkles, TriangleAlert,
 } from "lucide-react";
@@ -151,7 +151,6 @@ function Analisa() {
    *  panjang dan tidak terbaca di dalam toast. Toast hanya menunjukkan sebab utamanya. */
   const [mendalamGagal, setMendalamGagal] = useState<{ pesan: string; ringkas: RingkasanGagal } | null>(null);
   const [memuatMendalam, setMemuatMendalam] = useState(false);
-  const berkasIklanRef = useRef<HTMLInputElement>(null);
   const [memuat, setMemuat] = useState(true);
   const [memuatIklan, setMemuatIklan] = useState(false);
   const [bukaSetting, setBukaSetting] = useState(false);
@@ -324,38 +323,6 @@ function Analisa() {
       tampilkanGagalTulis(e instanceof Error ? e.message : "Analisa mendalam gagal.");
     } finally {
       setMemuatMendalam(false);
-    }
-  }
-
-  /** Impor CSV iklan Shopee. Perlu peta Kode Produk → SKU; tanpa peta, baris dilewati. */
-  async function unggahIklan(berkas: File) {
-    if (!presetId) {
-      toast.error("Pilih preset toko dulu.");
-      return;
-    }
-    try {
-      const teks = await berkas.text();
-      const res = await fetch("/api/analisa", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: "include",
-        body: JSON.stringify({ aksi: "impor-iklan", presetId, teks }),
-      });
-      const d = (await res.json().catch(() => null)) as {
-        ok?: boolean; tersimpan?: number; dilewatiTanpaPeta?: number; kodeTanpaPeta?: string[]; error?: string;
-      } | null;
-      if (!res.ok || !d?.ok) throw new Error(d?.error ?? `Gagal mengimpor (${res.status}).`);
-      const tanpaPeta = d.dilewatiTanpaPeta ?? 0;
-      toast.success(
-        `${d.tersimpan ?? 0} baris iklan tersimpan.` +
-          (tanpaPeta > 0 ? ` ${tanpaPeta} dilewati karena produknya belum dipetakan (tab Peta SKU).` : "")
-      );
-      setIklan(null); // buang hasil lama supaya angka iklan terbaru yang dipakai
-      await muatAnalisa(presetId, tanggal);
-    } catch (e) {
-      tampilkanGagalTulis(e instanceof Error ? e.message : "Gagal mengimpor berkas iklan.");
-    } finally {
-      if (berkasIklanRef.current) berkasIklanRef.current.value = "";
     }
   }
 
