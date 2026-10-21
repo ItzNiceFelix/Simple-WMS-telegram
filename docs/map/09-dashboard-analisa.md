@@ -44,7 +44,7 @@
 |`components/dashboard/input-iklan.tsx`|form impor/input iklan|komponen presentasi|
 |`components/dashboard/app-shell.tsx`, `app-sidebar.tsx`, `nav-config.ts`, `page-header.tsx`, `bottom-nav.tsx`|shell, navigasi dan header lintas halaman|entry/layout UI; `nav-config.ts` konfigurasi nav|
 |`components/dashboard/dialog-import-order.tsx`, `dialog-import-excel.tsx`, `preset-toko.tsx`, `dialog-laba-shopee.tsx`|impor order/excel, preset toko dan laba|UI impor dan pemilihan preset|
-|`components/dashboard/editor-*.tsx`, `printing-workspace.tsx`, `kanvas-anotasi.tsx`|editor desain/AI dan workspace cetak|kelompok fitur desain/cetak|
+|`components/dashboard/editor-*.tsx`, `printing-studio.tsx`, `kanvas-anotasi.tsx`|editor desain/AI dan workspace cetak|kelompok fitur desain/cetak|
 |`components/dashboard/dialog-*.tsx`, `aksi-*.tsx`, `form-master-produk.tsx`, `kelola-admin.tsx`, `kledo-integrasi.tsx`|aksi/dialog stok, admin, gudang, akses dan integrasi|UI lintas domain (71 file total; inventaris terkelompok, tidak dirinci semua)|
 |`docs/dashboard-prd-v3b.md`, `docs/research-dashboard-wms.md`, `docs/rencana-analisa-produk.md`|PRD, riset dashboard dan rancangan analisa|dokumen konteks; implementasi aktual tetap kode/migrasi|
 

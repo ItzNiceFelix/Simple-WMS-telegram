@@ -6,12 +6,12 @@
 // pekerjaan ini bisa selesai tanpa server. Gerbang akses memakai `ButuhAkses` yang sama
 // dengan halaman dashboard lain — halaman ini menyentuh data order, jadi tidak boleh publik.
 import { ButuhAkses } from "@/components/dashboard/butuh-akses";
-import { PrintingWorkspace } from "@/components/dashboard/printing-workspace";
+import { PrintingStudio } from "@/components/dashboard/printing-studio";
 
 export default function HalamanPrinting() {
   return (
     <ButuhAkses href="/printing">
-      <PrintingWorkspace />
+      <PrintingStudio />
     </ButuhAkses>
   );
 }

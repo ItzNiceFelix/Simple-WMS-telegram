@@ -90,6 +90,10 @@ const FLAG_PER_BERKAS = {
   "lib/d1/d1.library.test.ts": EXTERNAL_WORKER,
   "lib/d1/order.test.ts": EXTERNAL_WORKER,
   "lib/analisa/ai.test.ts": EXTERNAL_WORKER,
+  // `xlsx` memuat `stream` lewat `require` dinamis; di bundel ESM itu meledak dengan
+  // "Dynamic require of \"stream\" is not supported". Dibuat external supaya Node memuatnya
+  // sebagai CJS biasa — isi uji tidak berubah.
+  "lib/d1/shopeePetaImpor.test.ts": ["--external:xlsx"],
 };
 
 /**

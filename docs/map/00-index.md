@@ -62,7 +62,7 @@ Repo: `Simple-WMS-telegram` @ `0dbfff8`. Dibuat 2026-10-20 dari isi kode (bukan 
 | "booking advance tidak muncul", "tidak bisa kirim ke Shopee", "booking sudah terkirim" | `03-order.md` | `lib/d1/advanceBelumSku.ts` + `app/api/advance/route.ts` + `app/advance/page.tsx` | status `menunggu/terkirim/batal/timeout`; qty 1 per SN. |
 | "import order besar timeout", "413", "anggaran kueri habis", "potongan ditolak" | `03-order.md` | route `mulai-impor`/`impor-potong` + `UKURAN_POTONG` | resume per `batchId`; `progressBaris` = jumlah order. |
 | "order masuk toko yang salah", "laba campur", "preset kosong" | `03-order.md` | `app/api/order/route.ts` + `migrations/0040_orders_preset.sql` | `presetId` wajib saat tulis; NULL = data lama. |
-| "cetak resi tidak tercatat", "status cetak tidak muncul", "resi asing" | `03-order.md` | `app/api/printing/route.ts` + `petaCetak` + `printing-workspace.tsx` | hanya nomor yang dikenal `preset_id` yang di-upsert ke `order_cetak`. |
+| "cetak resi tidak tercatat", "status cetak tidak muncul", "resi asing" | `03-order.md` | `app/api/printing/route.ts` + `petaCetak` + `printing-studio.tsx` | hanya nomor yang dikenal `preset_id` yang di-upsert ke `order_cetak`. |
 | "draft picking tidak bisa dikonfirmasi", "picking pending" | `03-order.md` | `app/draft/page.tsx` + `lib/dashboard/data/real.ts` (`listPickingDrafts`) | BUKAN order Shopee; data movement `pending_confirmation`. |
 | "impor Excel produk", "template produk", "export stok/hpp" | `03-order.md` | `app/api/excel/route.ts` | `import_batches.tipe='produk'`; bukan impor order Shopee. |
 | laba dobel, order kehitung dua kali, impor berulang, "angka bengkak" | `04-laba.md` | `lib/d1/labaPreset.ts` (`klasifikasikan`, `totalRegistry`, `hitungDanSimpan`) | cek `laba_order` PK + `laba_snapshot.no_json`; pakai `aksi=overlap` |
@@ -155,7 +155,7 @@ Repo: `Simple-WMS-telegram` @ `0dbfff8`. Dibuat 2026-10-20 dari isi kode (bukan 
 | Resi tidak tercetak / tombol cetak | `08-printing-desain.md` | `app/printing/page.tsx` | Area cetak WAJIB anak langsung `<body>`; CSS `body>*:not(#area-cetak-printing)`. |
 | Pratinjau kosong / gagal membaca label | `08-printing-desain.md` | `lib/printing/ekstraksi.ts` | Ekstraksi teks murni; lihat test colocated. |
 | Strip tidak muncul / posisi meleset | `08-printing-desain.md` | `lib/printing/strip.ts` + `lib/printing/watermark.ts` | Kotak `strip`/`resi` (mm dari atas) → `drawPage`; strip ditanam `embedPdf`. |
-| Halaman kosong ikut tercetak / boros kertas | `08-printing-desain.md` | `components/dashboard/printing-workspace.tsx` | Pemindai menandai kosong (<0,2% tinta) dan langsung melewati; klik halaman untuk membalik. |
+| Halaman kosong ikut tercetak / boros kertas | `08-printing-desain.md` | `components/dashboard/printing-studio.tsx` | Pemindai menandai kosong (<0,2% tinta) dan langsung melewati; klik halaman untuk membalik. |
 | Barcode jadi kabur | `08-printing-desain.md` | `lib/printing/watermark.ts` | Kode mempertahankan halaman asli vektor lewat `embedPage`. |
 | Jumlah halaman preview dan cetak beda | `08-printing-desain.md` | `lib/printing/watermark.ts` | Periksa opsi gambar watermark halaman pertama. |
 | Picklist per SKU salah | `08-printing-desain.md` | `lib/d1/picklistPdf.ts` | `bangunPdfPicklist`. |

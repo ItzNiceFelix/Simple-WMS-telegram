@@ -41,7 +41,7 @@ Endpoint = literal `/api/...` yang muncul di page atau komponen dashboard yang d
 | `app/pengaturan/page.tsx` (pengaturan) | client | ai-fallback, ai-izin-model, ai-kredensial, ai-model, ai-model-default, ai-prompt … | `/api/pengaturan/ai`, `/api/pengaturan/kledo`, `/api/preset`, `/api/preset/` |
 | `app/permintaan-gudang/page.tsx` (permintaan-gudang) | server | butuh-akses, dialog-permintaan-export, page-header, umpan-tulis | `/api/permintaan-gudang` |
 | `app/permintaan/page.tsx` (permintaan) | client | butuh-akses, dialog-barang-datang, dialog-ubah-jumlah, page-header, umpan-tulis | - |
-| `app/printing/page.tsx` (printing) | client | butuh-akses, printing-workspace | `/api/preset`, `/api/printing` |
+| `app/printing/page.tsx` (printing) | client | butuh-akses, printing-studio | `/api/preset`, `/api/printing` |
 | `app/produk/[kode]/page.tsx` (produk) | client | butuh-akses, dialog-edit-hpp, dialog-edit-reorder, dialog-koreksi-stok, form-master-produk, page-header … | `/api/produk/`, `/api/produk/kategori` |
 | `app/profil/page.tsx` (profil) | server | page-header, profil-form | `/api/profil`, `/api/profil/password`, `/api/profil/username` |
 | `app/sinkronisasi/page.tsx` (sinkronisasi) | client | butuh-akses, dialog-import-order, dialog-laba-shopee, page-header, umpan-tulis | `/api/analisa`, `/api/analisa/peta`, `/api/baca`, `/api/laba`, `/api/order`, `/api/preset`, `/api/sinkronisasi` |
@@ -98,7 +98,7 @@ Endpoint = literal `/api/...` yang muncul di page atau komponen dashboard yang d
 - **page** (1): `page-header`
 - **pilih** (1): `pilih-sku`
 - **preset** (1): `preset-toko`
-- **printing** (1): `printing-workspace`
+- **printing** (1): `printing-studio`
 - **profil** (1): `profil-form`
 - **role** (1): `role-switcher`
 - **splash** (1): `splash-awal`

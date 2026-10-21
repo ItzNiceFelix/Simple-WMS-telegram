@@ -30,7 +30,7 @@
 | `app/api/excel/route.ts` | Impor/ekspor produk (bukan order) | `GET`, `POST` |
 | `app/order/page.tsx` | UI daftar order, filter/paginasi, transisi massal, mode & pratinjau picklist, hapus | komponen `HalamanOrder` (client); konstanta `MODE_PICKLIST`, `LABEL_EKSPOR` |
 | `app/advance/page.tsx` | UI booking advance: centang, kirim/batal, cetak picklist | `HalamanAdvance` |
-| `app/printing/page.tsx` | Guard halaman cetak resi | merender `components/dashboard/printing-workspace.tsx` (PDF dibuat di browser) |
+| `app/printing/page.tsx` | Guard halaman cetak resi | merender `components/dashboard/printing-studio.tsx` (PDF dibuat di browser) |
 | `app/draft/page.tsx` | Konfirmasi/batal draft picking Telegram (bukan order Shopee) | `HalamanDraft`, `gerbangAksi` |
 | `components/dashboard/dialog-import-order.tsx` | Dialog impor Shopee bertahap (pemanggil `preview-shopee`/`impor-potong`) | `DialogImportOrder` |
 | `docs/refactor-laba/kolom-order-shopee.md` | Bukti nama/arti kolom export Shopee (acuan normalisasi) | — |
@@ -51,7 +51,7 @@ Commit terakhir per modul inti: `lib/d1/order.ts` b29d844; `orderImportShopee.ts
 9. **Pemanggil PDF.** `pisah` -> `bangunPdfPicklist`; `per_paket`/`gabung` -> `bangunPdfPicklistPaket`; `gabung-order` -> `bangunPdfPicklistGabung`; Advance murni -> `/api/advance?aksi=picklist-pdf` -> `bangunPdfAdvance`. Setelah PDF jadi, `catatEksporPicklist` meng-upsert `picklist_ekspor`.
 10. **Urutan baris.** `pisah` default = SKU A-Z (`localeCompare`); `per_paket`/`gabung` default = urutan target/paket apa adanya; `gabung-order` default = lokasi lalu nama (`urutkanBarisGabung`). `urut=sku|nama|lokasi` mengurutkan baris DAN paket (`urutkanPaket`); `default` di `urutkanBaris` berarti "jangan sentuh".
 11. **Pratinjau.** `GET ?aksi=preview-picklist` memakai fungsi yang sama dengan PDF, memberi nomor setelah urutan final; mode `gabung-order` memakai `gabungPerSku` yang sama. `mode=review` di cabang `picklist-pdf` mengembalikan JSON `ringkasReview` (tanpa pemanggil UI saat ini).
-12. **Cetak resi.** `components/dashboard/printing-workspace.tsx` membuat PDF ber-watermark di browser; `GET /api/printing` mencocokkan nomor, `POST /api/printing` meng-upsert `order_cetak` hanya untuk order yang dikenal `preset_id` tersebut. `petaCetak` menampilkan waktu cetak terakhir di `/order`.
+12. **Cetak resi.** `components/dashboard/printing-studio.tsx` membuat PDF ber-watermark di browser; `GET /api/printing` mencocokkan nomor, `POST /api/printing` meng-upsert `order_cetak` hanya untuk order yang dikenal `preset_id` tersebut. `petaCetak` menampilkan waktu cetak terakhir di `/order`.
 
 ## Endpoint & tabel terkait
 - `GET /api/order` -> `app/api/order/route.ts` `GET`: tanpa `aksi` balas header template; `aksi=daftar` (`mp,status,sku,dari,sampai,tanggal,presetId,urut,arah,halaman,ukuran`), `aksi=picklist-pdf`, `aksi=preview-picklist`.
@@ -105,6 +105,6 @@ Commit terakhir per modul inti: `lib/d1/order.ts` b29d844; `orderImportShopee.ts
 | "booking advance tidak muncul", "tidak bisa kirim ke Shopee", "booking sudah terkirim" | `lib/d1/advanceBelumSku.ts` + `app/api/advance/route.ts` + `app/advance/page.tsx` | status `menunggu/terkirim/batal/timeout`; qty 1 per SN. |
 | "import order besar timeout", "413", "anggaran kueri habis", "potongan ditolak" | route `mulai-impor`/`impor-potong` + `UKURAN_POTONG` | resume per `batchId`; `progressBaris` = jumlah order. |
 | "order masuk toko yang salah", "laba campur", "preset kosong" | `app/api/order/route.ts` + `migrations/0040_orders_preset.sql` | `presetId` wajib saat tulis; NULL = data lama. |
-| "cetak resi tidak tercatat", "status cetak tidak muncul", "resi asing" | `app/api/printing/route.ts` + `petaCetak` + `printing-workspace.tsx` | hanya nomor yang dikenal `preset_id` yang di-upsert ke `order_cetak`. |
+| "cetak resi tidak tercatat", "status cetak tidak muncul", "resi asing" | `app/api/printing/route.ts` + `petaCetak` + `printing-studio.tsx` | hanya nomor yang dikenal `preset_id` yang di-upsert ke `order_cetak`. |
 | "draft picking tidak bisa dikonfirmasi", "picking pending" | `app/draft/page.tsx` + `lib/dashboard/data/real.ts` (`listPickingDrafts`) | BUKAN order Shopee; data movement `pending_confirmation`. |
 | "impor Excel produk", "template produk", "export stok/hpp" | `app/api/excel/route.ts` | `import_batches.tipe='produk'`; bukan impor order Shopee. |
