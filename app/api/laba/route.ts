@@ -149,6 +149,22 @@ export async function POST(request: Request) {
   const mode = body.mode === "timpa_semua" ? "timpa_semua" : "tambah_baru";
   const tanggalAwal = potongan.tanggalPenuh[0] ?? potongan.perTanggal[0].tanggal;
 
+  // Konteks D-5 SATU berkas: status semua No (semua tanggal) + rentang tanggalnya.
+  // Tanpa ini, tiap tanggal yang dihitung menuduh order tanggal lain "hilang dari file".
+  const statusBerkas = new Map<string, string>();
+  for (const p of potongan.perTanggal) {
+    for (const r of p.baris) {
+      const no = String(r["No. Pesanan"] ?? "").trim();
+      if (no) statusBerkas.set(no, String(r["Status Pesanan"] ?? "").trim());
+    }
+  }
+  const tanggalUrut = potongan.perTanggal.map((p) => p.tanggal);
+  const berkas = {
+    status: statusBerkas,
+    dari: tanggalUrut[0],
+    sampai: tanggalUrut[tanggalUrut.length - 1],
+  };
+
   // Konteks kumulatif: syarat berbasis volume dinilai "sampai tanggal ini", bukan per hari.
   // Dihitung sekali di awal agar satu file = satu pembacaan registry, bukan satu per tanggal.
   const siap = await siapkanHitung(db, presetId, tanggalAwal);
@@ -160,7 +176,7 @@ export async function POST(request: Request) {
   try {
     for (const p of potongan.perTanggal) {
       const hasil = await hitungDanSimpan(
-        db, siap, p.baris, file, p.tanggal, user.tg_id, aksi === "simpan", mode
+        db, siap, p.baris, file, p.tanggal, user.tg_id, aksi === "simpan", mode, berkas
       );
       // Agregat yang dikembalikan = jumlah seluruh tanggal pada berkas; angka per tanggal
       // tetap tersedia di `ringkasTanggal` supaya UI bisa memeriksa potongannya.

@@ -119,7 +119,8 @@ export async function siapkanHitung(
 /** Hitung + (opsional) simpan snapshot per (preset_id, tanggal). */
 export async function hitungDanSimpan(
   db: D1Database, siap: SiapHitung, rows: BarisPreset[], file: string,
-  tanggal: string, oleh: string | null, simpan: boolean, mode: ModeSimpan = "tambah_baru"
+  tanggal: string, oleh: string | null, simpan: boolean, mode: ModeSimpan = "tambah_baru",
+  berkas?: { status: Map<string, string>; dari: string; sampai: string }
 ): Promise<{ tanggal: string; agregat: AgregatPreset; klasifikasi: Klasifikasi }> {
   // Lapis 2 D-5: status lama untuk deteksi No yang jadi Batal/hilang dari file.
   const { results: lamaRows } = await db.prepare(
@@ -153,6 +154,8 @@ export async function hitungDanSimpan(
       bergabungSejak: siap.bergabungSejak, uploadPertama: siap.uploadPertama,
     },
     dataLama,
+    statusBerkas: berkas?.status,
+    rentangBerkas: berkas ? { dari: berkas.dari, sampai: berkas.sampai } : undefined,
   });
   const klasifikasi = await klasifikasikan(db, siap.presetId, agregat.orders);
   if (simpan && agregat.jml_baris_belum_terpetakan > 0) {

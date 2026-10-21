@@ -352,14 +352,38 @@ describe("Lapis 2 akurasi input laba", () => {
     assert.equal(terisi.peringatan.some((p) => p.includes("iklan harian belum diisi")), false);
   });
 
-  it("status Batal: No lama dihitung tapi hilang dari file → ditandai di peringatan", async () => {
+  it("D-5: order tanggal lain di berkas yang sama BUKAN pembatalan", async () => {
+    // Kasus nyata: impor Order.all.20261010_20261012 memotong per tanggal; saat menghitung
+    // 10-11, order 10-10 masih ada di berkas dengan status dihitung → jangan dituduh hilang.
     const a = await hitungLabaPreset([baris({ "No. Pesanan": "BARU" })], opsi({
-      dataLama: new Map([["LAMA", { status_pesanan: "Selesai", tanggal_snapshot: "2026-05-01" }]]),
+      tanggal: "2026-10-11",
+      dataLama: new Map([["LAMA", { status_pesanan: "Telah Dikirim", tanggal_snapshot: "2026-10-10" }]]),
+      statusBerkas: new Map([["LAMA", "Sedang Dikirim"], ["BARU", "Sedang Dikirim"]]),
+      rentangBerkas: { dari: "2026-10-10", sampai: "2026-10-12" },
     }));
-    assert.ok(a.peringatan.some((p) => p.includes("No LAMA dulu dihitung")), JSON.stringify(a.peringatan));
-    const sama = await hitungLabaPreset([baris({ "No. Pesanan": "LAMA" })], opsi({
-      dataLama: new Map([["LAMA", { status_pesanan: "Selesai", tanggal_snapshot: "2026-05-01" }]]),
+    assert.equal(a.peringatan.some((p) => p.includes("dulu dihitung")), false, JSON.stringify(a.peringatan));
+  });
+
+  it("D-5: order yang benar-benar jadi Batal di berkas tetap dilaporkan", async () => {
+    const a = await hitungLabaPreset([baris({ "No. Pesanan": "BATAL1", "Status Pesanan": "Batal" })], opsi({
+      tanggal: "2026-10-10",
+      dataLama: new Map([["BATAL1", { status_pesanan: "Sedang Dikirim", tanggal_snapshot: "2026-10-10" }]]),
+      statusBerkas: new Map([["BATAL1", "Batal"]]),
+      rentangBerkas: { dari: "2026-10-10", sampai: "2026-10-12" },
     }));
-    assert.equal(sama.peringatan.some((p) => p.includes("hilang dari file")), false);
+    assert.equal(a.jml_order, 0);
+    assert.ok(
+      a.peringatan.some((p) => p.includes("No BATAL1 dulu dihitung") && p.includes("kini berstatus Batal")),
+      JSON.stringify(a.peringatan)
+    );
+  });
+
+  it("D-5: registry di luar rentang berkas diabaikan", async () => {
+    const a = await hitungLabaPreset([baris({ "No. Pesanan": "BARU" })], opsi({
+      dataLama: new Map([["LAIN", { status_pesanan: "Selesai", tanggal_snapshot: "2026-09-01" }]]),
+      statusBerkas: new Map([["BARU", "Selesai"]]),
+      rentangBerkas: { dari: "2026-10-10", sampai: "2026-10-12" },
+    }));
+    assert.equal(a.peringatan.some((p) => p.includes("dulu dihitung")), false, JSON.stringify(a.peringatan));
   });
 });

@@ -152,4 +152,19 @@ describe("labaRegistry (Lapis 1)", () => {
     await hitungDanSimpan(db as unknown as D1Database, SIAP, [barisNo("O-2")], "f2.xlsx", "2026-10-11", "t1", true, "timpa_semua");
     assert.equal(registry.find((x) => x["no_pesanan"] === "O-2")?.["tanggal_snapshot"], "2026-10-11");
   });
+
+  it("D-5: order tanggal lain pada berkas yang sama tidak dilaporkan hilang", async () => {
+    const registry: Row[] = [
+      { preset_id: 1, no_pesanan: "O-1", tanggal_snapshot: "2026-10-11", status_pesanan: "Sedang Dikirim", hash_baris: "A1x1@18000", omzet: 18000, hpp: 10000, biaya: 1000, pajak: 90, laba: 6910 },
+    ];
+    const db = buatDb(registry);
+    const berkas = { status: new Map([["O-1", "Sedang Dikirim"], ["O-2", "Sedang Dikirim"]]), dari: "2026-10-10", sampai: "2026-10-11" };
+    // Menghitung tanggal 10-11: O-1 tercatat di 10-11 tapi barisnya tidak ikut slice ini.
+    const r = await hitungDanSimpan(db as unknown as D1Database, SIAP, [barisNo("O-2")], "f.xlsx", "2026-10-11", "t1", false, "tambah_baru", berkas);
+    assert.equal(r.agregat.peringatan.some((p) => p.includes("dulu dihitung")), false, JSON.stringify(r.agregat.peringatan));
+
+    // Tanpa konteks berkas (pemanggil lama), peringatan lama tetap muncul — bukan regresi diam.
+    const tanpa = await hitungDanSimpan(db as unknown as D1Database, SIAP, [barisNo("O-2")], "f.xlsx", "2026-10-11", "t1", false);
+    assert.ok(tanpa.agregat.peringatan.some((p) => p.includes("No O-1 dulu dihitung")), JSON.stringify(tanpa.agregat.peringatan));
+  });
 });

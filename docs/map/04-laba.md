@@ -57,14 +57,15 @@
 - Tabel: `fee_rules` (penulis `preset.ts`, pembaca `labaPreset.ts`/`hargaJualPreset.ts`; migrasi `0013`, kolom `0014`) · `seller_presets` (`0013` + `status_berlaku_sejak` `0014`) · `laba_snapshot` (`0013`, `pajak` `0016`, `no_json` `0018`) · `laba_order` (`0017`) · `tier_admin`/`kategori_tarif`/`program_katalog`/`preset_program`/`ads_harian`/`preset_penghitung` (`0014`) · `products.kategori_shopee` (`0013`), `kategori`/`tier_override`/`pre_order`/`ukuran_khusus` (`0014`), `go_override` (`0015`) · `laba_harian` (`0008`, `rincian_json` `0010`) legacy · `sinkron_log` (`0043`, jenis `laba` dicatat klien setelah simpan).
 
 ## Test terkait
-- Unit murni: `lib/laba/laba.test.ts` (26), `lib/laba/hitungHargaJual.test.ts` (20).
-- Unit D1 (mock `prepare/bind/first/all/run/batch`): `lib/d1/labaRegistry.test.ts` (5: klasifikasi, anti-dobel `tambah_baru`, blokir TIER_UNKNOWN, `timpa_semua`), `lib/d1/labaLaporan.test.ts` (8: CSV, overlap dari `no_json`), `lib/d1/labaShopee.test.ts` (4, mesin lama), `lib/d1/seedLaba.test.ts` (4: idempoten, rule owner utuh, migrasi).
+- Unit murni: `lib/laba/laba.test.ts` (29), `lib/laba/hitungHargaJual.test.ts` (20).
+- Unit D1 (mock `prepare/bind/first/all/run/batch`): `lib/d1/labaRegistry.test.ts` (6: klasifikasi, anti-dobel `tambah_baru`, blokir TIER_UNKNOWN, `timpa_semua`, D-5 per-berkas), `lib/d1/labaLaporan.test.ts` (8: CSV, overlap dari `no_json`), `lib/d1/labaShopee.test.ts` (4, mesin lama), `lib/d1/seedLaba.test.ts` (4: idempoten, rule owner utuh, migrasi).
 - E2E (mock API, tanpa server): `e2e/laba-preset.spec.ts` (kartu PPh, rincian, tombol export, kolom GO stok), `e2e/order-laba.spec.ts` (snapshot + tolak + empty state). Tidak ada e2e `/harga-jual`.
 - Satu unit test: `npx esbuild lib/laba/laba.test.ts --bundle --platform=node --format=esm --outfile=.tmp-t.mjs --define:__dirname="'.'" && node --test .tmp-t.mjs`. Semua unit TS: `npm run test:worker`. Satu e2e: `npx playwright test e2e/laba-preset.spec.ts --project=desktop`.
 
 ## Gotcha / konvensi
 - **Dua allowlist status berbeda**: `hitungLabaPreset` menghitung `perlu dikirim`; `labaShopee.ts` (legacy) TIDAK. Jangan pakai `hitungLabaShopee` untuk angka produksi.
 - **Registry anti-dobel**: `laba_order` PK `(preset_id, no_pesanan)` (migrasi `0017`) — satu No hanya satu baris. `tambah_baru` = `INSERT OR IGNORE` (No lama dilewati, bukan diperbarui); `timpa_semua` = upsert. Keduanya **tidak menghapus** No yang absen dari berkas, meski teks konfirmasi UI menyebut "TIMPA".
+- **Peringatan D-5** (`hitungLabaPreset`, loop `dataLama`) harus memakai konteks SATU berkas: `statusBerkas` (No → status seluruh tanggal berkas) + `rentangBerkas` + `o.tanggal`. Tanpa itu registry global dibandingkan dengan slice satu tanggal → setiap order hari lain dituduh "hilang dari file" (data nyata: 2.542/2.545 peringatan palsu). Order yang batal **tetap ada** di berkas dengan status `Batal`, jadi keberadaan di `grup` saja bukan bukti masih dihitung — yang menentukan `statusBerkas`.
 - **Overlap** hanya terdeteksi dari `laba_snapshot.no_json` (`0018`), bukan registry (registry sudah 1 baris/No). Snapshot pra-0018 bernilai `'[]'` → tak terdeteksi (`jml_snapshot_tanpa_daftar`).
 - `biaya` sudah termasuk pajak; kolom `pajak` hanya rincian. Label UI "Estimasi PPh terbayarkan" sebenarnya `pajak_pph + pajak_ppn`.
 - `rincian[].omzet` = Σ `dasar` apa adanya, bukan `hargaJual × unit` (harga per unit dibulatkan). Jangan kalikan ulang.
@@ -91,6 +92,7 @@
 | syarat program tidak jalan, "aturan dilewati", iklan | `lib/laba/syarat.ts` + `ads_harian`/`preset_penghitung` | data null = `tak_dihitung`; kunci tak dikenal = gagal |
 | PPh/PPN salah, "pajak dobel" | `hitungLabaPreset.ts` (blok pajak) + `fee_rules.jenis` | `pajak_pph`/`pajak_ppn` masuk `biaya` DAN kolom `pajak`; jangan jumlahkan lagi |
 | status order tidak dihitung, "Batal ikut", "Perlu Dikirim hilang" | `hitungLabaPreset.ts` `statusDihitung` vs `labaShopee.ts` | allowlist berbeda; data lama di registry diberi peringatan D-5 |
+| "hilang dari file", order dituduh Batal padahal masih Sedang/Telah Dikirim | `hitungLabaPreset.ts` (loop D-5) + `app/api/laba/route.ts` (`berkas`) | peringatan wajib per-berkas (semua tanggal), bukan per slice tanggal |
 | omzet beda dengan Shopee, diskon dobel, "subtotal" | `hitungLabaPreset.ts` `dasarBaris` + `docs/refactor-laba/kolom-order-shopee.md` | dasar resmi = Harga Awal − diskon − voucher penjual |
 | snapshot masuk tanggal salah, satu file jadi satu tanggal | `lib/analisa/potongHarian.ts` + `POST /api/laba` | tanggal dari `Waktu Pesanan Dibuat`; nama berkas hanya pagar |
 | PDF laba rusak/kosong, kolom tumpang tindih | `lib/d1/labaPdf.ts` (`bangunPdfLaba`) | butuh `laba_snapshot` lengkap; `rincian`/`tolak` dari JSON |

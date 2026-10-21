@@ -55,6 +55,13 @@ export type OpsiHitung = {
   hppBasiHari?: number;
   /** Lapis 2 D-5: data lama registry (No → {status, tanggal_snapshot}) untuk deteksi batal. */
   dataLama?: Map<string, { status_pesanan: string; tanggal_snapshot: string }>;
+  /**
+   * Lapis 2 D-5: No → Status Pesanan untuk SELURUH berkas (semua tanggal), bukan hanya
+   * tanggal yang sedang dihitung. Tanpa ini, order hari lain selalu tampak "hilang".
+   */
+  statusBerkas?: Map<string, string>;
+  /** Lapis 2 D-5: rentang tanggal berkas; registry di luar rentang diabaikan. */
+  rentangBerkas?: { dari: string; sampai: string };
 };
 
 /**
@@ -314,11 +321,32 @@ export async function hitungLabaPreset(
     }
   }
 
-  // Lapis 2 D-5: No yang dulu dihitung tapi kini hilang dari file (Batal/Belum Bayar) — jangan double-hitung.
+  // Lapis 2 D-5: No yang dulu dihitung tapi kini tidak lagi dihitung — dibedakan menjadi:
+  //   (a) Batal/Belum Bayar NYATA: No masih ada di berkas tapi statusnya tidak dihitung.
+  //   (b) Tidak ada di berkas ini sama sekali.
+  //
+  // KENAPA dulu salah: `grup` hanya berisi baris SATU tanggal (potongan `potongPerTanggal`),
+  // sedangkan `dataLama` adalah SELURUH registry preset. Setiap impor jadi menuduh semua
+  // order hari lain sebagai "hilang dari file = Batal/Belum Bayar" — pada data nyata 2.542
+  // dari 2.545 peringatan adalah tuduhan palsu, dan order yang benar-benar batal justru
+  // TIDAK dilaporkan karena barisnya tetap ada di berkas.
+  const { dari: rentangDari, sampai: rentangSampai } = o.rentangBerkas ?? {};
   for (const [no, lama] of o.dataLama ?? []) {
-    if (!lama?.status_pesanan || !statusDihitung(lama.status_pesanan) || grup.has(no)) continue;
+    if (!lama?.status_pesanan || !statusDihitung(lama.status_pesanan)) continue;
+    // Registry di luar rentang berkas ini bukan urusan impor ini.
+    if (rentangDari && rentangSampai && (lama.tanggal_snapshot < rentangDari || lama.tanggal_snapshot > rentangSampai)) continue;
+    // Satu order dilaporkan sekali, pada tanggal snapshot-nya sendiri (tempat angkanya dicatat).
+    if (lama.tanggal_snapshot !== o.tanggal) continue;
+    // Masih dihitung di salah satu tanggal berkas → bukan pembatalan.
+    // `grup` memuat SEMUA baris tanggal ini, termasuk yang berstatus Batal, jadi
+    // keberadaan di `grup` saja tidak cukup: status berkas yang menentukan.
+    const statusBerkas = o.statusBerkas?.get(no);
+    const masihDihitung = statusBerkas !== undefined ? statusDihitung(statusBerkas) : grup.has(no);
+    if (masihDihitung) continue;
     peringatanSet.add(
-      `No ${no} dulu dihitung (${lama.status_pesanan}, ${lama.tanggal_snapshot}) tapi hilang dari file = Batal/Belum Bayar; masih tersimpan di registry (pakai timpa_semua bila perlu)`
+      statusBerkas
+        ? `No ${no} dulu dihitung (${lama.status_pesanan}, ${lama.tanggal_snapshot}) tapi kini berstatus ${statusBerkas}; masih tersimpan di registry (timpa_semua tidak menghapusnya; belum ada hapus otomatis)`
+        : `No ${no} dulu dihitung (${lama.status_pesanan}, ${lama.tanggal_snapshot}) tapi tidak ada di berkas ini; masih tersimpan di registry (timpa_semua tidak menghapusnya; belum ada hapus otomatis)`
     );
   }
 
