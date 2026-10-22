@@ -3,7 +3,7 @@
 ## [Unreleased] — analisa: rentang bebas, delta harian, cakupan data, biaya per jenis
 
 **Tanggal:** 2026-10-22
-**Commit:** (diisi saat commit)
+**Commit:** 9f37acf
 **Klasifikasi:** fitur analisa + perbaikan bug data-kosong (bukan keamanan)
 
 ### Gejala
