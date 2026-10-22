@@ -8,12 +8,13 @@
 // klik header tidak memicu fetch ulang dan pembaca tidak kehilangan posisi scroll.
 //
 // Recharts hanya boleh di berkas klien seperti ini (route server tidak pernah merendernya).
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowUp, ChevronsUpDown, Filter, Users } from "lucide-react";
 import {
   Bar, BarChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from "recharts";
 
+import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -48,6 +49,12 @@ type BarisRanking = {
   hariPersediaan: number | null;
   deltaKunjungan: Delta;
   status: "fast" | "slow" | "dead" | "normal";
+  /**
+   * Seri kunjungan harian SKU ini untuk sparkline. Belum dikirim `aksi=detail-produk`, jadi
+   * opsional: kolomnya tampil "—" sampai server mengirimnya. Menebaknya di klien berarti
+   * menggambar tren dari data yang tidak ada.
+   */
+  trenSku?: number[] | null;
 };
 
 type ResponsDetail = {
@@ -111,6 +118,25 @@ function BarisDelta({ d, poin = false }: { d: Delta; poin?: boolean }) {
   );
 }
 
+/**
+ * Sparkline kunjungan satu SKU. Sumbu, tooltip, dan titik sengaja dibuang: di dalam sel tabel
+ * label sumbu tidak terbaca dan tooltip merebut klik baris. `connectNulls={false}` supaya hari
+ * tanpa data tetap terlihat sebagai celah, bukan ditarik lurus seolah terukur.
+ */
+function Sparkline({ nilai }: { nilai: number[] | null | undefined }) {
+  if (!nilai || nilai.length < 2) return <span className="text-muted-foreground">—</span>;
+  const titik = nilai.map((v, i) => ({ i, v }));
+  return (
+    <div className="h-8 w-24" aria-hidden>
+      <ResponsiveContainer width="100%" height="100%">
+        <LineChart data={titik} margin={{ top: 2, right: 2, left: 2, bottom: 2 }}>
+          <Line type="monotone" dataKey="v" stroke="var(--chart-1, #3b82f6)" strokeWidth={1.5} dot={false} connectNulls={false} isAnimationActive={false} />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
 /** Warna & label status klasifikasi SKU; warnanya selaras dengan artinya. */
 const GAYA_STATUS: Record<BarisRanking["status"], { label: string; variasi: "default" | "secondary" | "destructive" | "outline" }> = {
   fast: { label: "Fast", variasi: "default" },
@@ -119,7 +145,9 @@ const GAYA_STATUS: Record<BarisRanking["status"], { label: string; variasi: "def
   dead: { label: "Dead", variasi: "destructive" },
 };
 
-type Kolom = Exclude<keyof BarisRanking, "nama"> | "nama";
+// `trenSku` sengaja di luar `Kolom`: mengurutkan tabel berdasarkan larik angka tidak punya
+// arti, jadi kolom Tren tampil sebagai header biasa (tanpa tombol urut).
+type Kolom = Exclude<keyof BarisRanking, "nama" | "trenSku"> | "nama";
 const KOLOM: { kunci: Kolom; label: string; angka?: boolean }[] = [
   { kunci: "sku", label: "SKU" },
   { kunci: "nama", label: "Produk" },
@@ -214,29 +242,43 @@ export function AnalisaDetailProduk({ presetId, tanggal }: { presetId: number; t
     return i >= 0 ? (periode[i + 1] ?? null) : null;
   }, [periode, dipilih]);
 
-  useEffect(() => {
+  // Nomor permintaan terakhir: respons periode lama yang datang belakangan tidak boleh menimpa
+  // hasil periode yang sekarang dipilih. Pengganti flag `batal` karena fetch ini kini juga bisa
+  // dipicu ulang tombol "Coba lagi", di luar siklus effect.
+  const nomorPermintaan = useRef(0);
+  const [galat, setGalat] = useState<string | null>(null);
+
+  const muat = useCallback(async () => {
     if (!dipilih) return;
-    let batal = false;
+    const nomor = ++nomorPermintaan.current;
     setMemuat(true);
-    void (async () => {
-      try {
-        const q = new URLSearchParams({ aksi: "detail-produk", presetId: String(presetId), periode: dipilih });
-        if (pembanding) q.set("pembanding", pembanding);
-        const res = await fetch(`/api/analisa?${q}`, { credentials: "include" });
-        const d = (await res.json().catch(() => null)) as ResponsDetail | null;
-        if (batal) return;
-        if (!res.ok || !d?.ok) throw new Error(d?.error ?? `Gagal memuat detail produk (${res.status}).`);
-        setData(d);
-      } catch (e) {
-        if (batal) return;
-        tampilkanGagalTulis(e instanceof Error ? e.message : "Gagal memuat detail produk.");
-        setData(null);
-      } finally {
-        if (!batal) setMemuat(false);
-      }
-    })();
-    return () => { batal = true; };
+    setGalat(null);
+    try {
+      const q = new URLSearchParams({ aksi: "detail-produk", presetId: String(presetId), periode: dipilih });
+      if (pembanding) q.set("pembanding", pembanding);
+      const res = await fetch(`/api/analisa?${q}`, { credentials: "include" });
+      const d = (await res.json().catch(() => null)) as ResponsDetail | null;
+      if (nomor !== nomorPermintaan.current) return;
+      if (!res.ok || !d?.ok) throw new Error(d?.error ?? `Gagal memuat detail produk (${res.status}).`);
+      setData(d);
+    } catch (e) {
+      if (nomor !== nomorPermintaan.current) return;
+      // Pesan disimpan di state, bukan hanya di-toast: kartu penuh "—" tanpa sebab terbaca
+      // sebagai "tidak ada data", padahal permintaannya gagal dan bisa diulang.
+      const pesan = e instanceof Error ? e.message : "Gagal memuat detail produk.";
+      setGalat(pesan);
+      setData(null);
+      tampilkanGagalTulis(pesan);
+    } finally {
+      if (nomor === nomorPermintaan.current) setMemuat(false);
+    }
   }, [presetId, dipilih, pembanding]);
+
+  // Cleanup menaikkan nomor = membatalkan respons yang masih jalan saat periode berganti/unmount.
+  useEffect(() => {
+    void muat();
+    return () => { nomorPermintaan.current += 1; };
+  }, [muat]);
 
   // Riwayat iklan diambil saat baris diklik — tidak ikut membebani muat awal, dan hanya
   // satu SKU yang dibuka pada satu waktu.
@@ -323,6 +365,16 @@ export function AnalisaDetailProduk({ presetId, tanggal }: { presetId: number; t
         <Badge variant="outline" data-testid="label-pembanding">
           {pembanding ? `pembanding: ${pembanding}` : "belum ada pembanding"}
         </Badge>
+        {/* Ditulis lengkap, bukan hanya badge: pembaca harus bisa memastikan periode mana yang
+            sedang dijumlahkan tanpa menebak dari daftar dropdown. */}
+        <span className="w-full text-xs text-muted-foreground" data-testid="label-periode-dipakai">
+          Periode: {data?.dipakai ?? (dipilih || "—")} · Pembanding: {pembanding ?? "tidak ada"}
+        </span>
+        {pembanding === null ? (
+          <span className="w-full text-xs text-muted-foreground" data-testid="catatan-tanpa-pembanding">
+            Delta tidak bisa dihitung tanpa periode pembanding.
+          </span>
+        ) : null}
         {/* Disebut, bukan disembunyikan: qty dibatasi ke SKU yang lolos snapshot laba, jadi
             SKU terjual yang ditolak tidak muncul di ranking dan pembaca berhak tahu. */}
         {(data?.skuDikecualikan ?? 0) > 0 ? (
@@ -332,6 +384,20 @@ export function AnalisaDetailProduk({ presetId, tanggal }: { presetId: number; t
         ) : null}
         {memuat ? <span className="text-xs text-muted-foreground">memuat…</span> : null}
       </div>
+
+      {/* Kegagalan disebut, bukan dibiarkan jadi kartu penuh "—": "—" berarti tidak terukur,
+          sedangkan gagal muat berarti datanya belum diketahui dan bisa diulang. */}
+      {galat ? (
+        <Alert variant="destructive" data-testid="galat-detail-produk">
+          <AlertTitle>Gagal memuat detail produk</AlertTitle>
+          <AlertDescription>{galat}</AlertDescription>
+          <AlertAction>
+            <Button type="button" size="sm" variant="outline" onClick={() => void muat()} disabled={memuat}>
+              Coba lagi
+            </Button>
+          </AlertAction>
+        </Alert>
+      ) : null}
 
       {/* ══ 5 KARTU RINGKAS + DELTA ══ */}
       <div className="grid grid-cols-2 gap-3 md:grid-cols-5" data-testid="detail-kartu">
@@ -553,6 +619,9 @@ export function AnalisaDetailProduk({ presetId, tanggal }: { presetId: number; t
                         </Button>
                       </TableHead>
                     ))}
+                    {/* Header Tren tanpa tombol urut: mengurutkan larik sparkline tidak punya
+                        arti, dan kolomnya belum berisi data (server belum mengirim trenSku). */}
+                    <TableHead className="text-right">Tren</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -575,6 +644,9 @@ export function AnalisaDetailProduk({ presetId, tanggal }: { presetId: number; t
                       <TableCell className="text-right tabular-nums">{angka(r.hariPersediaan)}</TableCell>
                       <TableCell>
                         <Badge variant={GAYA_STATUS[r.status].variasi}>{GAYA_STATUS[r.status].label}</Badge>
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Sparkline nilai={r.trenSku ?? null} />
                       </TableCell>
                     </TableRow>
                   ))}

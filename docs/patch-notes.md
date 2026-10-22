@@ -1,5 +1,80 @@
 # Patch Notes
 
+## [Unreleased] — analisa: rentang bebas, delta harian, cakupan data, biaya per jenis
+
+**Tanggal:** 2026-10-22
+**Commit:** (diisi saat commit)
+**Klasifikasi:** fitur analisa + perbaikan bug data-kosong (bukan keamanan)
+
+### Gejala
+
+1. Halaman Analisa sering tampak "tidak ada data" walau D1 berisi. Pada preset baru
+   (mis. `hanif_grosir`) halaman menampilkan **skeleton selamanya** — empty state
+   "Belum ada data" tak pernah muncul.
+2. Memilih periode Detail Produk yang lama tetap menampilkan angka impor terbaru,
+   sehingga delta antar periode selalu nol.
+3. Grafik per jam kosong pada rentang yang baru berjalan, dan selalu berupa profil
+   gabungan — satu hari yang jatuh tak terlihat.
+4. Rentang terkunci 7/14/30; "hari ini saja" dan rentang bebas tidak bisa dipilih.
+5. Tidak ada delta hari-ke-hari; hanya delta antar-jendela.
+6. Komposisi biaya hanya 3 kelompok karena `laba_snapshot.biaya` satu angka.
+7. Angka ROAS memakai penyebut hari iklan yang berbeda dari hari laba tanpa
+   pemberitahuan.
+
+### Akar masalah
+
+- `app/analisa/page.tsx` memulai `memuat = true`; `muatAnalisa` `return` lebih awal
+  saat `tanggal` kosong tanpa mematikan `memuat` → skeleton permanen.
+- `performaPerSku` men-`void periode` sehingga `periode = ?` tidak pernah dipakai.
+- `orderPerJam` menjumlahkan seluruh hari menjadi satu profil 24 jam.
+- `aksi=tren` memaksa `rentang ∈ {14,30}`, sisanya 7.
+- Engine laba tidak menyimpan pecahan biaya per jenis.
+
+### Perbaikan
+
+**Data / mesin**
+- `migrations/0046_snapshot_biaya_jenis.sql`: kolom `biaya_jenis_json`.
+- `hitungLabaPreset`: mengisi pecahan biaya di tempat biaya dihasilkan
+  (`admin`, `program:<kode>`, `proses`, `pajak_*`, jenis lain) dan menyimpannya per
+  order supaya mode gabung tidak menghitung ulang order lama.
+- `performaPerSku`: memakai periode; tanpa periode sah → periode terbaru; preset
+  `legacy` tetap terbaca lewat jalur cadangan.
+- `orderPerJamPerTanggal`: seri 24 jam per tanggal.
+- `cakupanData`: hari snapshot/iklan/performa yang benar-benar ada.
+- `trenSkuRentang`: unit per tanggal dari `rincian_json` untuk sparkline.
+
+**Rumus murni (`lib/analisa/tren.ts`)**
+- `deltaHarian`, `jumlahBiayaJenis`, `komposisiBiayaJenis` (label kode → teks).
+- `delta()` membulatkan selisih 2 desimal — artefak float `1.4499999999999993` tidak
+  lagi tampil di UI.
+
+**API**
+- `aksi=tren`: `rentang=1|3|7|14|30` atau `dari=` bebas; respons + `deltaHarian`,
+  `perJamPerTanggal`, `komposisiJenis`, `cakupan`.
+- `aksi=detail-produk`: `tanggalTren` + `ranking[].trenSku`.
+
+**UI**
+- Ringkasan: tombol 1/3/7/14/30, dua input tanggal bebas, kartu cakupan data,
+  pemilih tanggal untuk grafik per jam, grafik delta harian, komposisi per jenis
+  dengan keterangan saat snapshot lama.
+- Detail Produk: label periode+pembanding eksplisit, alert kegagalan dengan tombol
+  "Coba lagi", kolom sparkline Tren.
+- Halaman: skeleton tidak lagi abadi; empty state menyebut nama preset.
+
+### Verifikasi
+
+- D1 remote diekspor ke D1 lokal (13 snapshot, 3.479 order, 239 baris iklan) dan
+  seluruh alur diuji di preview lokal: kelima rentang, rentang bebas 13–15,
+  pemilih jam per tanggal, sparkline (81/265 SKU), preset kosong.
+- `npx tsc --noEmit` bersih; 58/58 berkas uji lulus.
+
+### Catatan
+
+- `ads_harian` masih kosong → `iklanPersen` null dan syarat `min_iklan_bersih_persen`
+  dilewati. Blok cakupan data sekarang menyatakan ini, tidak lagi diam.
+- Snapshot lama ber-`biaya_jenis_json = '{}'`; perlu impor ulang laba agar pecahan
+  per jenis terisi.
+
 ## [Unreleased] — fix boot: splash + hilangkan flash "Gagal memuat"
 
 **Tanggal:** 2026-09-15

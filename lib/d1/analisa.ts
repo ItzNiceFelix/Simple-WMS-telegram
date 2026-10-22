@@ -174,24 +174,41 @@ export async function metrikIklanPerSku(
 
 /**
  * Metrik performa ORGANIK per SKU (kunjungan/keranjang/pesanan dari halaman produk,
- * TANPA iklan) — inilah datanya yang selama ini hanya dihitung jumlah barisnya.
+ * TANPA iklan).
  *
- * KENAPA TIDAK MEMFILTER `periode = ?`: importer memanggil `simpanPerforma(db, presetId, "",
- * baris)` (lib/d1/shopeePetaImpor.ts) sehingga kolom `periode` di produksi berisi string
- * KOSONG. Filter ketat `periode = ?` akan menghasilkan nol baris dan mengembalikan bug lama
- * ("data belum ada" padahal 264 baris tersimpan). Jadi: ambil semua baris preset itu, lalu
- * bila ada beberapa periode berbeda pilih kelompok TERBARU lewat `at DESC` — satu periode
- * saja yang dipakai supaya angka dari rentang waktu berbeda tidak dijumlahkan diam-diam.
+ * KENAPA DULU TIDAK MEMFILTER `periode`: importer lama memanggil `simpanPerforma` dengan
+ * periode string KOSONG, sehingga filter ketat `periode = ?` menghasilkan nol baris dan
+ * memunculkan bug "data belum ada" padahal ratusan baris tersimpan. Karena itu berkas ini
+ * dulu mengambil SEMUA baris preset lalu `ORDER BY at DESC` — dan itu punya akibat yang
+ * lebih buruk: memilih tanggal/periode lama tetap menampilkan angka impor TERBARU, sehingga
+ * delta antar periode selalu nol dan pembaca mengira tidak ada perubahan.
  *
- * Kosong (Map tanpa isi) bila tabel belum ada / belum diimpor — sengaja TIDAK melempar,
- * sama seperti `metrikIklanPerSku`: halaman analisa harus tetap tampil.
+ * Sekarang: periode DIPAKAI bila bentuknya sah. Importer sudah menulis periode dari nama
+ * berkas (`YYYY-MM-DD_YYYY-MM-DD`), dan baris `legacy`/kosong memang tidak punya rentang
+ * sehingga tidak bisa dipakai membandingkan apa pun. Bila pemanggil tidak memberi periode,
+ * dipakai periode TERBARU saja — bukan gabungan semua periode.
  */
 export async function performaPerSku(
   db: D1Database,
   presetId: number,
   periode: string
 ): Promise<Map<string, { dilihat: number; klik: number; kunjungan: number; keranjang: number; pesanan: number; omzet: number; tanpaBeli: number }>> {
-  void periode; // disengaja tidak dipakai menyaring — lihat catatan di atas.
+  if (periode !== "" && periode !== "legacy") return performaSemuaSku(db, presetId, periode);
+  const [terbaru] = await daftarPeriodePerforma(db, presetId);
+  // Tidak ada periode sah = preset hanya punya baris `legacy`/kosong (impor sebelum periode
+  // disimpan). Daripada mengembalikan kosong dan memunculkan "data belum ada" padahal
+  // ratusan baris tersimpan, pakai baris terbaru apa adanya.
+  return terbaru ? performaSemuaSku(db, presetId, terbaru) : performaSemuaTanpaFilter(db, presetId);
+}
+
+/**
+ * Versi lama tanpa filter — DIPERTAHANKAN hanya untuk membaca preset yang seluruh barisnya
+ * berperiode `legacy`/kosong (impor sebelum periode disimpan).
+ */
+async function performaSemuaTanpaFilter(
+  db: D1Database,
+  presetId: number
+): Promise<Map<string, { dilihat: number; klik: number; kunjungan: number; keranjang: number; pesanan: number; omzet: number; tanpaBeli: number }>> {
   const peta = new Map<string, { dilihat: number; klik: number; kunjungan: number; keranjang: number; pesanan: number; omzet: number; tanpaBeli: number }>();
   const r = await db
     .prepare(
@@ -436,7 +453,8 @@ export async function snapshotRentang(
 ): Promise<SnapshotRinci[]> {
   const hasil = await db
     .prepare(
-      "SELECT tanggal, omzet, hpp, biaya, COALESCE(pajak, 0) AS pajak, laba, jml_order " +
+      "SELECT tanggal, omzet, hpp, biaya, COALESCE(pajak, 0) AS pajak, laba, jml_order, " +
+        "COALESCE(biaya_jenis_json, '{}') AS biaya_jenis_json " +
         "FROM laba_snapshot WHERE preset_id = ? AND tanggal >= ? AND tanggal <= ? ORDER BY tanggal"
     )
     .bind(presetId, dari, sampai)
@@ -457,9 +475,30 @@ export async function snapshotRentang(
       tanggal,
       omzet: angka[0], hpp: angka[1], biaya: angka[2],
       pajak: angka[3], laba: angka[4], jml_order: angka[5],
+      biayaJenis: bacaBiayaJenis(r["biaya_jenis_json"]),
     });
   }
   return out;
+}
+
+/**
+ * Parse `biaya_jenis_json` jadi objek angka. Nilai rusak dibuang, bukan diganti nol:
+ * label yang hilang lebih jujur daripada label yang berpura-pura tidak ada biaya.
+ */
+function bacaBiayaJenis(mentah: unknown): Record<string, number> {
+  const teks = typeof mentah === "string" ? mentah : "";
+  if (teks === "" || teks === "{}") return {};
+  try {
+    const v: unknown = JSON.parse(teks);
+    if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+    const out: Record<string, number> = {};
+    for (const [k, n] of Object.entries(v)) {
+      if (typeof n === "number" && Number.isFinite(n) && n !== 0) out[k] = n;
+    }
+    return out;
+  } catch {
+    return {};
+  }
 }
 
 /**
@@ -502,6 +541,147 @@ export async function orderPerJam(
     }
   }
   return out;
+}
+
+/**
+ * Omzet & laba per jam, DIPISAH per tanggal snapshot.
+ *
+ * Beda dengan `orderPerJam`: yang itu menjumlahkan seluruh hari dalam rentang menjadi satu
+ * profil 24 jam. Profil gabungan menyembunyikan hari yang benar-benar jatuh — kalau satu hari
+ * sepi dan enam hari ramai, kurvanya terlihat rata. Di sini setiap tanggal punya 24 titiknya
+ * sendiri sehingga penurunan satu hari terbaca.
+ *
+ * Urutan tanggal = urutan masukan (pemanggil sudah mengurutkan). Tanggal tanpa order tetap
+ * dikembalikan dengan 24 titik nol: "tidak ada pesanan" adalah fakta, bukan data hilang.
+ */
+export async function orderPerJamPerTanggal(
+  db: D1Database,
+  presetId: number,
+  tanggal: string[]
+): Promise<{ tanggal: string; jam: number; omzet: number; laba: number }[]> {
+  const unik = [...new Set(tanggal)].filter((t) => /^\d{4}-\d{2}-\d{2}$/.test(t)).sort();
+  if (unik.length === 0) return [];
+  // Satu baris per (tanggal, jam) yang benar-benar punya pesanan.
+  const terisi = new Map<string, { omzet: number; laba: number }>();
+  const UKURAN = 90;
+  for (let i = 0; i < unik.length; i += UKURAN) {
+    const bagian = unik.slice(i, i + UKURAN);
+    const tanda = bagian.map(() => "?").join(",");
+    const hasil = await db
+      .prepare(
+        "SELECT tanggal_snapshot AS tgl, substr(tanggal_pesanan, 12, 2) AS jam, " +
+          "COALESCE(SUM(omzet), 0) AS omzet, COALESCE(SUM(laba), 0) AS laba FROM laba_order " +
+          `WHERE preset_id = ? AND tanggal_snapshot IN (${tanda}) GROUP BY tgl, jam`
+      )
+      .bind(presetId, ...bagian)
+      .all<{ tgl: string; jam: string | null; omzet: number; laba: number }>()
+      .catch(() => null);
+    for (const r of hasil?.results ?? []) {
+      const jam = Number(r.jam);
+      if (!Number.isInteger(jam) || jam < 0 || jam > 23) continue;
+      const kunci = `${r.tgl}#${jam}`;
+      const ada = terisi.get(kunci);
+      terisi.set(kunci, {
+        omzet: (ada?.omzet ?? 0) + (Number(r.omzet ?? 0) || 0),
+        laba: (ada?.laba ?? 0) + (Number(r.laba ?? 0) || 0),
+      });
+    }
+  }
+  const out: { tanggal: string; jam: number; omzet: number; laba: number }[] = [];
+  for (const t of unik) {
+    for (let jam = 0; jam < 24; jam += 1) {
+      const isi = terisi.get(`${t}#${jam}`);
+      out.push({ tanggal: t, jam, omzet: isi?.omzet ?? 0, laba: isi?.laba ?? 0 });
+    }
+  }
+  return out;
+}
+
+/**
+ * Cakupan data per preset untuk rentang tertentu: berapa hari punya snapshot laba, punya
+ * baris iklan, dan punya impor performa.
+ *
+ * KENAPA dipisah jadi blok sendiri: halaman Analisa selama ini menampilkan angka yang
+ * penyebutnya berbeda-beda (ROAS memakai iklan 1 hari dibanding omzet 7 hari) tanpa
+ * memberi tahu. Tanpa blok ini, pembaca tidak punya cara mengetahui bahwa sebagian
+ * kesimpulan berdiri di atas data yang belum lengkap.
+ */
+export async function cakupanData(
+  db: D1Database,
+  presetId: number,
+  dari: string,
+  sampai: string
+): Promise<{
+  hariRentang: number;
+  hariSnapshot: string[];
+  hariIklan: string[];
+  periodePerforma: string[];
+  adaStok: boolean;
+}> {
+  const [snap, iklan, perf, stok] = await Promise.all([
+    db.prepare("SELECT tanggal FROM laba_snapshot WHERE preset_id = ? AND tanggal >= ? AND tanggal <= ? ORDER BY tanggal")
+      .bind(presetId, dari, sampai).all<{ tanggal: string }>().catch(() => null),
+    db.prepare("SELECT DISTINCT tanggal FROM ads_produk WHERE preset_id = ? AND tanggal >= ? AND tanggal <= ? ORDER BY tanggal")
+      .bind(presetId, dari, sampai).all<{ tanggal: string }>().catch(() => null),
+    daftarPeriodePerforma(db, presetId),
+    petaStok(db).then((s) => s !== null).catch(() => false),
+  ]);
+  // Hari kalender inklusif dua ujung — dipakai sebagai penyebut "x dari y hari".
+  const hariRentang = Math.max(0, Math.round(
+    (Date.parse(`${sampai}T00:00:00Z`) - Date.parse(`${dari}T00:00:00Z`)) / 86400000
+  ) + 1);
+  return {
+    hariRentang,
+    hariSnapshot: (snap?.results ?? []).map((r) => r.tanggal),
+    hariIklan: (iklan?.results ?? []).map((r) => r.tanggal),
+    periodePerforma: perf,
+    adaStok: stok,
+  };
+}
+
+/**
+ * Tren harian per SKU untuk satu rentang: `unit` terjual tiap tanggal.
+ *
+ * Sumbernya `laba_snapshot.rincian_json` — satu-satunya tempat yang menyimpan pecahan per SKU
+ * per tanggal. Rentang yang tidak punya snapshot untuk SKU itu diisi `null`, BUKAN 0: nol
+ * berarti "tidak terjual", null berarti "harinya tidak diimpor". Membedakan keduanya penting
+ * karena sparkline yang menurunkan garis ke nol akan terbaca sebagai penjualan hilang.
+ *
+ * Tanggal dikembalikan urut menaik supaya semua SKU memakai sumbu X yang sama.
+ */
+export async function trenSkuRentang(
+  db: D1Database,
+  presetId: number,
+  dari: string,
+  sampai: string
+): Promise<{ tanggal: string[]; perSku: Map<string, (number | null)[]> }> {
+  const r = await db
+    .prepare("SELECT tanggal, rincian_json FROM laba_snapshot WHERE preset_id = ? AND tanggal >= ? AND tanggal <= ? ORDER BY tanggal")
+    .bind(presetId, dari, sampai)
+    .all<{ tanggal: string; rincian_json: string | null }>()
+    .catch(() => null);
+  const tanggal = (r?.results ?? []).map((x) => x.tanggal).filter((t) => /^\d{4}-\d{2}-\d{2}$/.test(t));
+  const isi = new Map<string, (number | null)[]>();
+  (r?.results ?? []).forEach((baris, i) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(baris.tanggal)) return;
+    let arr: unknown = [];
+    try {
+      arr = JSON.parse(baris.rincian_json ?? "[]");
+    } catch {
+      return; // rincian rusak = tanggal itu tidak menyumbang, bukan membuat semua nol
+    }
+    if (!Array.isArray(arr)) return;
+    for (const item of arr) {
+      if (!item || typeof item !== "object") continue;
+      const sku = "sku" in item && typeof item.sku === "string" ? item.sku : "";
+      const unit = "unit" in item && typeof item.unit === "number" ? item.unit : null;
+      if (sku === "" || unit === null || !Number.isFinite(unit)) continue;
+      const deret = isi.get(sku) ?? new Array<number | null>(tanggal.length).fill(null);
+      deret[i] = unit;
+      isi.set(sku, deret);
+    }
+  });
+  return { tanggal, perSku: isi };
 }
 
 /**

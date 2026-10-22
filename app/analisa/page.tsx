@@ -229,7 +229,17 @@ function Analisa() {
   }, [bukaSetting]);
 
   const muatAnalisa = useCallback(async (pid: number, tgl: string) => {
-    if (!pid || !tgl) return;
+    if (!pid || !tgl) {
+      // KENAPA memuat dimatikan di sini: `memuat` mulai `true`, sedangkan preset yang belum
+      // punya snapshot menghasilkan `tgl === ""`. Dulu fungsi ini `return` tanpa mematikan
+      // `memuat`, sehingga halaman menampilkan skeleton SELAMANYA dan empty state "Belum ada
+      // data" tak pernah tercapai — persis pada preset baru yang datanya memang belum ada.
+      setMemuat(false);
+      setHasil(null);
+      setIklan(null);
+      setMendalam(null);
+      return;
+    }
     setMemuat(true);
     setIklan(null);
     setGalatIklan(null);
@@ -396,8 +406,12 @@ function Analisa() {
               <EmptyMedia variant="icon"><ChartNoAxesCombined /></EmptyMedia>
               <EmptyTitle>Belum ada data untuk dianalisa</EmptyTitle>
               <EmptyDescription>
-                Analisa memakai data laba yang sudah diimpor. Buka halaman Laba, unggah file pesanan
-                Shopee, lalu kembali ke sini.
+                {/* Nama preset disebut karena penyebab paling sering bukan "impor gagal",
+                    melainkan preset yang dipilih memang belum pernah diimpor. Tanpa nama,
+                    user mengira seluruh sistem kosong padahal preset lain punya data. */}
+                Preset <span className="font-medium">{preset.find((p) => p.id === presetId)?.nama ?? "ini"}</span>{" "}
+                belum punya snapshot laba. Buka halaman Laba, unggah file pesanan Shopee untuk
+                preset itu, lalu kembali ke sini.
               </EmptyDescription>
             </EmptyHeader>
           </Empty>

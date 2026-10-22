@@ -24,6 +24,12 @@ export type RincianSkuPreset = {
 export type OrderPreset = {
   no_pesanan: string; status_pesanan: string; tanggal_pesanan: string | null;
   omzet: number; hpp: number; biaya: number; pajak: number; laba: number; hash_baris: string;
+  /**
+   * Pecahan biaya per label UNTUK ORDER INI. Wajib per order (bukan hanya total berkas)
+   * karena mode simpan `tambah_baru` menggabungkan order baru ke snapshot lama: memakai
+   * total berkas akan menghitung ulang biaya order yang sudah tercatat.
+   */
+  biayaJenis: Record<string, number>;
 };
 export type AgregatPreset = {
   jml_order: number; jml_baris: number; omzet: number; hpp: number;
@@ -33,6 +39,11 @@ export type AgregatPreset = {
   sku_belum_terpetakan: string[];
   /** Lapis 2: ada aturan admin terpakai yang belum terverifikasi → laba kasar. */
   estimasi_kasar: boolean;
+  /**
+   * Pecahan `biaya` per label stabil (lihat migrasi 0046). Jumlahnya SAMA dengan `biaya`;
+   * pajak ikut di sini sekaligus tetap dicatat di `pajak`. Objek kosong = tidak ada biaya.
+   */
+  biayaJenis: Record<string, number>;
 };
 
 export type InfoSku = {
@@ -132,6 +143,16 @@ export async function hitungLabaPreset(
   const skuBelum = new Set<string>();
   const tolak: TolakPreset[] = [];
   const peringatanSet = new Set<string>();
+  /**
+   * Pecahan biaya per label. Diisi di tempat biaya DIHASILKAN (bukan dihitung ulang dari
+   * selisih), supaya jumlah semua label selalu sama dengan `biaya` — label yang hilang akan
+   * terlihat sebagai selisih, bukan tersembunyi di "biaya operasional".
+   */
+  const biayaJenis: Record<string, number> = {};
+  const tambahBiaya = (label: string, nilai: number): void => {
+    if (!nilai) return;
+    biayaJenis[label] = (biayaJenis[label] ?? 0) + nilai;
+  };
   const orders: OrderPreset[] = [];
   const perSku = new Map<string, {
     sku: string; nama: string | null; unit: number; hppSatuan: number; harga: number;
@@ -211,6 +232,15 @@ export async function hitungLabaPreset(
 
     const omzetOrder = skuBaris.reduce((a, b) => a + b.dasar, 0);
     let biayaOrder = 0;
+    // Pecahan biaya ORDER INI. Dipisah dari `biayaJenis` (total berkas) karena mode simpan
+    // `tambah_baru` menggabungkan order baru ke snapshot lama: memakai total berkas akan
+    // menghitung ulang biaya order yang sudah tercatat pada impor sebelumnya.
+    const jenisOrder: Record<string, number> = {};
+    const tambahJenisOrder = (label: string, nilai: number): void => {
+      if (!nilai) return;
+      jenisOrder[label] = (jenisOrder[label] ?? 0) + nilai;
+      tambahBiaya(label, nilai);
+    };
     const biayaPerBaris: number[] = skuBaris.map(() => 0);
     const pajakPerBaris: number[] = skuBaris.map(() => 0);
 
@@ -234,7 +264,11 @@ export async function hitungLabaPreset(
             if (!h.ok) { peringatanSet.add(h.alasan); adminOk = false; }
           }
         }
-        if (adminOk) biayaPerBaris[i] += feePersen(b.dasar, persenFinal, null);
+        if (adminOk) {
+          const feeAdmin = feePersen(b.dasar, persenFinal, null);
+          biayaPerBaris[i] += feeAdmin;
+          tambahJenisOrder("admin", feeAdmin);
+        }
       }
       // Program aktif per preset (toggle di lapisan API; di sini rules sudah difilter aktif).
       // Rule program menyimpan grup huruf di kolom kategori; '*' cocok semua baris.
@@ -251,7 +285,9 @@ export async function hitungLabaPreset(
         }
         if (pr.ukuran === "khusus" && !info.ukuranKhusus) continue;
         if (pr.ukuran === "biasa" && info.ukuranKhusus) continue;
-        biayaPerBaris[i] += feePlafonQty(b.dasar, pr.nilai, pr.plafon_per_qty, b.qty);
+        const feeProgram = feePlafonQty(b.dasar, pr.nilai, pr.plafon_per_qty, b.qty);
+        biayaPerBaris[i] += feeProgram;
+        tambahJenisOrder(`program:${pr.kode_program}`, feeProgram);
       }
       // Pajak per baris (pph/ppn dari fee_rules) — dicatat terpisah + masuk biaya.
       for (const pj of o.rules.filter((x) => (x.jenis === "pajak_pph" || x.jenis === "pajak_ppn") && x.unit === "per_baris")) {
@@ -259,6 +295,7 @@ export async function hitungLabaPreset(
         const fee = feePersen(b.dasar, pj.nilai, pj.plafon);
         biayaPerBaris[i] += fee;
         pajakPerBaris[i] += fee;
+        tambahJenisOrder(pj.jenis, fee);
       }
     }
     // Aturan per_order (proses dsb): sekali per order. Pajak per_order ikut dicatat terpisah.
@@ -275,6 +312,7 @@ export async function hitungLabaPreset(
       }
       const fee = pr.basis === "flat" ? pr.nilai : feePersen(omzetOrder, pr.nilai, pr.plafon);
       biayaPerOrder += fee;
+      tambahJenisOrder(pr.jenis, fee);
       if (pr.jenis === "pajak_pph" || pr.jenis === "pajak_ppn") pajakPerOrder += fee;
     }
 
@@ -293,6 +331,7 @@ export async function hitungLabaPreset(
       omzet: omzetOrder, hpp: hppOrder, biaya: biayaOrderTotal, pajak: pajakOrderTotal,
       laba: omzetOrder - hppOrder - biayaOrderTotal,
       hash_baris: skuBaris.map((b) => `${b.sku}x${b.qty}@${b.dasar}`).join("|"),
+      biayaJenis: jenisOrder,
     });
 
     for (let i = 0; i < skuBaris.length; i++) {
@@ -366,6 +405,6 @@ export async function hitungLabaPreset(
   return {
     jml_order, jml_baris, omzet, hpp, biaya, pajak, laba: omzet - hpp - biaya,
     tolak, rincian, peringatan: [...peringatanSet], jml_baris_belum_terpetakan, orders,
-    sku_belum_terpetakan: [...skuBelum], estimasi_kasar,
+    sku_belum_terpetakan: [...skuBelum], estimasi_kasar, biayaJenis,
   };
 }

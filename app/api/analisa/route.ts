@@ -20,12 +20,14 @@
 import { getDb, getEnvAi, getKunciEnkripsi } from "@/lib/d1/db";
 import type { RincianSnapshot } from "@/lib/d1/analisa";
 import {
-  adaPerforma, ambilSnapshot, daftarPeriodePerforma, daftarPresetAnalisa, daftarTanggalSnapshot,
-  historiPerSku, iklanHarianPerSku, metrikIklanPerSku, orderPerJam, performaPerSku, performaSemuaSku, petaHppMaster,
-  petaStok, snapshotRentang, totalIklanPeriode, volumeSkuRentang,
+  adaPerforma, ambilSnapshot, cakupanData, daftarPeriodePerforma, daftarPresetAnalisa,
+  daftarTanggalSnapshot, historiPerSku, iklanHarianPerSku, metrikIklanPerSku, orderPerJam,
+  orderPerJamPerTanggal, performaPerSku, performaSemuaSku, petaHppMaster,
+  petaStok, snapshotRentang, totalIklanPeriode, trenSkuRentang, volumeSkuRentang,
 } from "@/lib/d1/analisa";
 import {
-  bandingkan, geserHari, jendelaSebelum, komposisiBiaya, ringkasRentang, seriHarian,
+  bandingkan, deltaHarian, geserHari, jendelaSebelum, jumlahBiayaJenis, komposisiBiaya,
+  komposisiBiayaJenis, ringkasRentang, seriHarian,
   type BarisProdukTren,
 } from "@/lib/analisa/tren";
 import type { MasukanEstimasi } from "@/lib/analisa/iklanEstimasi";
@@ -300,22 +302,39 @@ function bacaKedalaman(v: unknown): Kedalaman {
  * sistem" di prompt benar-benar bisa dipertanggungjawabkan. Satu fungsi = satu rumus untuk
  * layar dan untuk prompt.
  */
-async function hitungTren(db: D1Database, idPreset: number, ujung: string, rentang: number) {
+async function hitungTren(
+  db: D1Database,
+  idPreset: number,
+  ujung: string,
+  rentang: number,
+  /**
+   * Batas awal eksplisit. Bila diisi, `rentang` diabaikan untuk penentuan jendela dan
+   * dihitung ulang dari selisih tanggal — supaya dua parameter tidak bisa saling
+   * bertentangan (jendela 30 hari dengan `dari` 3 hari lalu menghasilkan pembanding 30 hari).
+   */
+  dariMinta?: string | null
+) {
   // `dari` inklusif: 7 hari berarti ujung + 6 hari sebelumnya (7 titik, bukan 8).
-  const dari = geserHari(ujung, -(rentang - 1));
+  const dari = dariMinta ?? geserHari(ujung, -(rentang - 1));
+  // Panjang jendela SEBENARNYA, dipakai sebagai lebar jendela pembanding. Menghitung dari
+  // tanggal (bukan dari parameter) membuat pembanding selalu sepanjang jendela yang tampil.
+  const panjang = Math.max(1, Math.round(
+    (Date.parse(`${ujung}T00:00:00Z`) - Date.parse(`${dari}T00:00:00Z`)) / 86400000
+  ) + 1);
 
-  const sebelum = jendelaSebelum(dari, rentang);
-  const [snapSekarang, snapSebelum, semuaTanggal, stok] = await Promise.all([
+  const sebelum = jendelaSebelum(dari, panjang);
+  const [snapSekarang, snapSebelum, semuaTanggal, stok, cakupan] = await Promise.all([
     snapshotRentang(db, idPreset, dari, ujung),
     snapshotRentang(db, idPreset, sebelum.dari, sebelum.sampai),
     daftarTanggalSnapshot(db, idPreset, 200),
     petaStok(db),
+    cakupanData(db, idPreset, dari, ujung),
   ]);
 
   const seri = seriHarian(snapSekarang, dari, ujung);
   const ringkas = ringkasRentang(seri);
   const bandingPeriode = bandingkan(seri, seriHarian(snapSebelum, sebelum.dari, sebelum.sampai), {
-    tanggalAcuan: sebelum.dari, hari: rentang,
+    tanggalAcuan: sebelum.dari, hari: panjang,
   });
 
   // Per jam hanya dari hari yang snapshot-nya ADA dan sudah lewat 2 hari: hari berjalan
@@ -325,6 +344,8 @@ async function hitungTren(db: D1Database, idPreset: number, ujung: string, renta
     .map((s) => s.tanggal)
     .filter((t) => t < geserHari(hariIniWIB(), -1));
   const perJam = await orderPerJam(db, idPreset, tanggalPerJam);
+  // Seri per jam TERPISAH per tanggal: profil gabungan menyembunyikan hari yang jatuh.
+  const perJamPerTanggal = await orderPerJamPerTanggal(db, idPreset, tanggalPerJam);
 
   const hariBerdata = Math.max(1, semuaTanggal.filter((t) => t >= dari && t <= ujung).length);
   // Nama produk diambil dari rincian snapshot TERAKHIR di rentang (bukan semua snapshot):
@@ -403,13 +424,25 @@ async function hitungTren(db: D1Database, idPreset: number, ujung: string, renta
   return {
     dari,
     sampai: ujung,
-    rentang,
+    rentang: panjang,
     seri,
     ringkas,
     bandingPeriode,
     perJam,
+    perJamPerTanggal,
+    deltaHarian: deltaHarian(seri),
     tanggalDipakai: tanggalPerJam,
     komposisiBiaya: komposisiBiaya(ringkas),
+    // Pecahan per jenis: kosong untuk snapshot lama → UI jatuh ke `komposisiBiaya` dan
+    // menyatakan rinciannya belum tersedia, bukan menampilkan tiga kelompok sebagai pecahan.
+    komposisiJenis: komposisiBiayaJenis(jumlahBiayaJenis(seri), ringkas),
+    cakupan: {
+      hariRentang: cakupan.hariRentang,
+      hariSnapshot: cakupan.hariSnapshot,
+      hariIklan: cakupan.hariIklan,
+      periodePerforma: cakupan.periodePerforma,
+      adaStok: cakupan.adaStok,
+    },
     // Bahan teks untuk analisa mendalam: dihitung di sini (sumber angka SAMA) dan
     // ditampilkan di UI supaya pengguna bisa memeriksa angka yang dibaca AI.
     bahanAi: bahanTren({ seri, ringkas, bandingPeriode, perJam, produk }),
@@ -540,14 +573,24 @@ export async function GET(request: Request) {
     // Metrik iklan PERIODE PEMBANDING sengaja tidak diambil: hanya iklan periode ini yang
     // dipakai (organik vs iklan), dan tidak ada blok yang membandingkan biaya antar periode.
     const iklanSekarang = await metrikIklanPerSku(db, idPreset, rentangSekarang.dari, rentangSekarang.sampai);
+    // Sparkline per SKU: unit terjual tiap tanggal dalam periode ini. Diambil terpisah karena
+    // hanya dipakai tabel ranking — memasukkan ke `hitungDetailProduk` akan membuat fungsi
+    // murni itu bergantung pada bentuk JSON snapshot.
+    const tren = await trenSkuRentang(db, idPreset, rentangSekarang.dari, rentangSekarang.sampai);
 
+    const hasil = hitungDetailProduk({ performaSekarang, performaBanding, iklanSekarang, rincian, stok, volSekarang });
     return json({
       ok: true,
       periode: periodeTersedia,
       dipakai: dimintaPeriode,
       pembanding,
       skuDikecualikan,
-      ...hitungDetailProduk({ performaSekarang, performaBanding, iklanSekarang, rincian, stok, volSekarang }),
+      tanggalTren: tren.tanggal,
+      ...hasil,
+      // Deret ditempelkan SETELAH perhitungan supaya `hitungDetailProduk` tetap murni dan
+      // tidak perlu tahu bentuk JSON snapshot. SKU tanpa deret tetap mendapat null, bukan
+      // deret nol — bedanya "tidak diimpor" dan "tidak terjual".
+      ranking: hasil.ranking.map((r) => ({ ...r, trenSku: tren.perSku.get(r.sku) ?? null })),
     });
   }
 
@@ -623,13 +666,18 @@ export async function GET(request: Request) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(ujung)) {
       return json({ ok: false, error: "Tanggal harus YYYY-MM-DD." }, 400);
     }
-    // Hanya 7/14/30 yang ditawarkan UI; nilai lain jatuh ke 7 supaya respons tidak
-    // diam-diam memanjangkan rentang (grafik 90 titik sulit dibaca dan query lebih berat).
+    // Rentang: `dari`+`sampai` bebas, atau `rentang` 1/3/7/14/30. `dari` eksplisit menang
+    // karena user yang mengetik tanggal tidak boleh diam-diam diabaikan.
+    const dariMinta = (url.searchParams.get("dari") ?? "").trim();
+    const dariSah = /^\d{4}-\d{2}-\d{2}$/.test(dariMinta) && dariMinta <= ujung ? dariMinta : null;
     const minta = Number(url.searchParams.get("rentang"));
-    const rentang = minta === 14 || minta === 30 ? minta : 7;
+    // 1 dan 3 ditambahkan: "hari ini saja" dan "3 hari" adalah pertanyaan yang sah dan
+    // sebelumnya tidak bisa dijawab halaman ini sama sekali. Nilai lain jatuh ke 7 supaya
+    // parameter rusak tidak diam-diam memanjangkan rentang.
+    const rentang = minta === 1 || minta === 3 || minta === 14 || minta === 30 ? minta : 7;
     // Seluruh perhitungan ada di `hitungTren` — dipakai bersama jalur AI supaya angka di
     // layar dan angka di prompt tidak pernah berasal dari dua rumus berbeda.
-    return json({ ok: true, ...(await hitungTren(db, idPreset, ujung, rentang)) });
+    return json({ ok: true, ...(await hitungTren(db, idPreset, ujung, rentang, dariSah)) });
   }
 
   if (aksi === "preset") {

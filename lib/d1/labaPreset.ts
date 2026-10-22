@@ -183,10 +183,10 @@ export async function hitungDanSimpan(
     // dihitung dua kali, dan berkas dengan cakupan lebih luas tidak bisa "kalah".
     const lama = await db
       .prepare(
-        "SELECT jml_order, jml_baris, omzet, hpp, biaya, pajak, laba, no_json, rincian_json FROM laba_snapshot WHERE preset_id = ? AND tanggal = ?"
+        "SELECT jml_order, jml_baris, omzet, hpp, biaya, pajak, laba, no_json, rincian_json, biaya_jenis_json FROM laba_snapshot WHERE preset_id = ? AND tanggal = ?"
       )
       .bind(siap.presetId, tanggal)
-      .first<{ jml_order: number; jml_baris: number; omzet: number; hpp: number; biaya: number; pajak: number; laba: number; no_json: string; rincian_json: string }>();
+      .first<{ jml_order: number; jml_baris: number; omzet: number; hpp: number; biaya: number; pajak: number; laba: number; no_json: string; rincian_json: string; biaya_jenis_json: string | null }>();
 
     // Himpunan nomor order yang sudah tercatat untuk tanggal ini.
     const nomorLama = new Set<string>();
@@ -250,10 +250,39 @@ export async function hitungDanSimpan(
       }
     })();
 
+    // Pecahan biaya per jenis: pada mode gabung, snapshot lama sudah memuat biaya order yang
+    // tercatat sebelumnya. Karena itu yang ditambahkan HANYA pecahan order BARU — memakai
+    // total berkas akan menghitung ulang biaya order lama setiap kali file yang tumpang
+    // tindih diimpor, dan komposisi biaya membengkak melebihi `biaya` totalnya.
+    const biayaJenisLama: Record<string, number> = (() => {
+      if (!lama || !abaikanLama) return {};
+      const mentah = lama.biaya_jenis_json ?? "{}";
+      try {
+        const v = JSON.parse(mentah) as unknown;
+        if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+        const out: Record<string, number> = {};
+        for (const [k, n] of Object.entries(v)) {
+          if (typeof n === "number" && Number.isFinite(n) && n !== 0) out[k] = n;
+        }
+        return out;
+      } catch {
+        return {};
+      }
+    })();
+    const biayaJenisGabung: Record<string, number> = { ...biayaJenisLama };
+    const sumberJenis = lama && abaikanLama ? baru : agregat.orders;
+    for (const x of sumberJenis) {
+      for (const [k, n] of Object.entries(x.biayaJenis)) {
+        if (!Number.isFinite(n) || n === 0) continue;
+        biayaJenisGabung[k] = (biayaJenisGabung[k] ?? 0) + n;
+      }
+    }
+
     const stmts: D1PreparedStatement[] = [
       db.prepare(
         "INSERT OR REPLACE INTO laba_snapshot (preset_id, tanggal, jml_order, jml_baris, omzet, hpp, biaya, pajak, laba, " +
-        "tolak_json, rincian_json, peringatan_json, no_json, file, at, by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "tolak_json, rincian_json, peringatan_json, no_json, file, at, by, biaya_jenis_json) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
       ).bind(
         siap.presetId, tanggal, gabung.jml_order, gabung.jml_baris, gabung.omzet, gabung.hpp,
         gabung.biaya, gabung.pajak, gabung.laba, JSON.stringify(agregat.tolak),
@@ -264,7 +293,7 @@ export async function hitungDanSimpan(
         JSON.stringify(rincianLama.length > 0 ? rincianLama : agregat.rincian),
         JSON.stringify(agregat.peringatan),
         JSON.stringify([...new Set([...nomorLama, ...agregat.orders.map((x) => x.no_pesanan)])]),
-        file.slice(0, 120), at, oleh
+        file.slice(0, 120), at, oleh, JSON.stringify(biayaJenisGabung)
       ),
     ];
     for (const x of agregat.orders) {

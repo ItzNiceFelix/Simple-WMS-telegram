@@ -24,7 +24,7 @@
 |`lib/dashboard/useCariProduk.ts`|hook cari produk|`useCariProduk`|
 |`lib/analisa/hitung.ts`|analisa murni dan keputusan iklan per SKU|`bangunBaris`, `analisaCepat`, `keputusanIklan`, `organikCr`, `urutSaranIklan`|
 |`lib/analisa/iklanEstimasi.ts`|estimasi skenario biaya iklan berdasar histori|`estimasiIklan`, `ringkasEstimasi`|
-|`lib/analisa/tren.ts`|seri harian, delta, ringkasan dan bahan tren|`seriHarian`, `ringkasRentang`, `bandingkan`, `bahanTren`|
+|`lib/analisa/tren.ts`|seri harian, delta harian, komposisi biaya per jenis, ringkasan dan bahan tren|`seriHarian`, `ringkasRentang`, `bandingkan`, `deltaHarian`, `jumlahBiayaJenis`, `komposisiBiayaJenis`, `bahanTren`|
 |`lib/analisa/ai.ts`|prompt/bahan narasi AI, konteks metrik organik|`susunBahan`, `analisaMendalam`, `susunPesanMendalam`|
 |`lib/analisa/peta.ts`|parse peta Shopee dan pertanyaan pemetaan SKU|`deteksiKolom`, `bangunPeta`, tipe peta|
 |`lib/analisa/skenarioIklan.ts`, `ringkas-gagal.ts`|skenario bertahap dan ringkasan percobaan AI gagal|`bangunPaketSkenario`, `ringkasGagal`, `saranGagal`|
@@ -67,6 +67,9 @@
 - Tabel D1 `peta_putusan` → penulis keputusan manusia dari route peta; pembaca daftar pertanyaan/putusan. `0027_analisa.sql`; UNIQUE `(jenis,acuan)`, `kandidat_json`, `diputuskan_sku`, `diputuskan_at`, `diputuskan_oleh`.
 - `0041_performa_periode.sql` memperbarui periode kosong menjadi `legacy` dan menambah indeks unik `idx_performa_preset_periode_sku` serta indeks `idx_performa_preset`; jaga `preset_id` dalam lookup lintas toko.
 - Data snapshot yang mendasari hitung adalah `laba_snapshot` (skema awal di migrasi laba; detail di `02-database.md`), bukan tabel `performa_produk`.
+- `laba_snapshot.biaya_jenis_json` (`0046_snapshot_biaya_jenis.sql`) menyimpan pecahan biaya per label stabil (`admin`, `program:<kode>`, `proses`, `pajak_pph`, …). Kosong `{}` untuk snapshot lama: pembaca WAJIB jatuh ke pengelompokan tiga bagian, bukan menampilkannya sebagai pecahan.
+- `GET /api/analisa?aksi=tren` menerima `rentang=1|3|7|14|30` ATAU `dari=YYYY-MM-DD` (+ `tanggal` sebagai ujung akhir). `dari` eksplisit menang; panjang jendela dihitung ulang dari selisih tanggal. Respons memuat `deltaHarian`, `perJamPerTanggal` (24 titik per tanggal), `komposisiJenis`, dan `cakupan` (hari snapshot/iklan/performa yang benar-benar ada).
+- `aksi=detail-produk` menyertakan `tanggalTren` + `ranking[].trenSku` (unit per tanggal dari `rincian_json`) untuk sparkline; SKU tanpa deret = `null`, bukan deret nol.
 
 ## Test terkait
 - Unit analisa murni colocated: `lib/analisa/hitung.test.ts`, `iklanEstimasi.test.ts`, `ai.test.ts`, `peta.test.ts`, `skenarioIklan.test.ts`, `potongHarian.test.ts`, `ringkas-gagal.test.ts`.
@@ -100,7 +103,12 @@
 |peta/putusan tidak tersimpan|`app/api/analisa/peta/route.ts`|cek guard sesi/role dan tabel D1|
 |AI analisa tidak merangkum / salah konteks|`lib/analisa/ai.ts`|`susunBahan`, prompt dan konteks organik|
 |estimasi iklan tiga asumsi|`lib/analisa/iklanEstimasi.ts`|histori harian dan status aman/tipis/rugi|
-|grafik tren, rentang atau delta|`lib/analisa/tren.ts`|seri tanggal, pembanding dan null hari kosong|
+|grafik tren, rentang atau delta|`lib/analisa/tren.ts`|seri tanggal, pembanding, delta harian dan null hari kosong|
+|rentang 1/3/7/14/30 atau tanggal bebas tidak berefek|`app/api/analisa/route.ts`|`aksi=tren` membaca `rentang`/`dari`; UI di `analisa-ringkasan.tsx`|
+|grafik per jam kosong padahal ada penjualan|`lib/d1/analisa.ts`|`orderPerJamPerTanggal`; hari berjalan (2 hari terakhir) sengaja dikecualikan|
+|komposisi biaya hanya 3 kelompok|`migrations/0046_snapshot_biaya_jenis.sql`|snapshot lama belum punya `biaya_jenis_json`; impor ulang laba untuk mengisinya|
+|ROAS/iklan "0 hari" atau angka tak muncul|`lib/d1/analisa.ts`|`cakupanData` + `ads_produk`; `ads_harian` masih manual|
+|sparkline SKU kosong|`lib/d1/analisa.ts`|`trenSkuRentang` membaca `rincian_json` per tanggal|
 |format angka/tanggal di dashboard|`lib/dashboard/format.ts`|helper presentasi bersama|
 |UI tab/detail analisa|`components/dashboard/analisa-detail-produk.tsx`|komponen analisa khusus; halaman parent `/analisa`|
 |dialog impor atau preset toko|`components/dashboard/input-iklan.tsx`|UI impor; backend ada di API dan `lib/d1`|

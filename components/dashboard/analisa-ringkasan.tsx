@@ -22,6 +22,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import {
   Empty, EmptyDescription, EmptyHeader, EmptyMedia, EmptyTitle,
 } from "@/components/ui/empty";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
@@ -34,6 +35,27 @@ import type {
 
 type BarisJam = { jam: number; omzet: number; laba: number };
 
+/** Satu titik jam untuk SATU tanggal — bentuk `perJamPerTanggal` dari server. */
+type TitikJam = BarisJam & { tanggal: string };
+
+/** Satu baris delta hari-ke-hari. `omzet` null = tidak ada hari sebelumnya (entri pertama). */
+type DeltaHarianBaris = {
+  tanggal: string;
+  omzet: Pembanding["omzet"];
+  laba: Pembanding["laba"];
+  order: Pembanding["order"];
+  marginPoin: number | null;
+};
+
+/** Cakupan data nyata: berapa hari dalam rentang yang benar-benar punya isi. */
+type CakupanTren = {
+  hariRentang: number;
+  hariSnapshot: string[];
+  hariIklan: string[];
+  periodePerforma: string[];
+  adaStok: boolean;
+};
+
 type ResponsTren = {
   ok: boolean;
   error?: string;
@@ -44,14 +66,24 @@ type ResponsTren = {
   bandingPeriode?: Pembanding;
   bandingBulan?: Pembanding;
   perJam?: BarisJam[];
+  perJamPerTanggal?: TitikJam[];
+  deltaHarian?: DeltaHarianBaris[];
   tanggalDipakai?: string[];
   komposisiBiaya?: { label: string; nilai: number; persen: number | null }[];
+  komposisiJenis?: { label: string; nilai: number; persen: number | null; kunci: string }[];
+  cakupan?: CakupanTren;
   produk?: BarisProdukTren[];
   hariBerdata?: number;
 };
 
-/** Opsi rentang yang bisa dipilih. Sama dengan yang diterima server (7/14/30). */
-const PILIHAN_RENTANG = [7, 14, 30] as const;
+/** Opsi rentang yang bisa dipilih. Sama dengan yang diterima server (1/3/7/14/30). */
+const PILIHAN_RENTANG = [1, 3, 7, 14, 30] as const;
+
+/** Rentang bebas dianggap sah hanya bila dua ujung terisi dan urutannya tidak terbalik. */
+function rentangBebasSah(dari: string, sampai: string): boolean {
+  const iso = /^\d{4}-\d{2}-\d{2}$/;
+  return iso.test(dari) && iso.test(sampai) && dari <= sampai;
+}
 
 /** Warna per klasifikasi produk. Kelas Tailwind supaya ikut tema gelap. */
 const GAYA_KELAS: Record<BarisProdukTren["kelas"], { label: string; kelas: string; warna: string }> = {
@@ -99,6 +131,17 @@ function BarisDelta({ d, membalik = false }: { d: Pembanding["omzet"] | null; me
 
 export function AnalisaRingkasan({ presetId, tanggal }: { presetId: number; tanggal: string }) {
   const [rentang, setRentang] = useState<number>(7);
+  // Dua ujung rentang bebas. Kosong = tombol rentang yang dipakai, jadi keduanya harus
+  // dikosongkan bersama saat tombol ditekan — kalau tidak, input lama menang diam-diam.
+  const [dariBebas, setDariBebas] = useState("");
+  const [sampaiBebas, setSampaiBebas] = useState("");
+  // null = "Gabungan" (profil 24 jam dari seluruh hari yang dipakai).
+  const [tanggalJam, setTanggalJam] = useState<string | null>(null);
+
+  const bebasSah = rentangBebasSah(dariBebas, sampaiBebas);
+  // Kunci permintaan: hanya berubah saat dua ujung bebas SAH, supaya mengetik satu ujung
+  // (belum lengkap) tidak memicu fetch yang hasilnya sama dengan tombol rentang.
+  const kunciBebas = bebasSah ? `${dariBebas}|${sampaiBebas}` : "";
   const [data, setData] = useState<ResponsTren | null>(null);
   const [memuat, setMemuat] = useState(false);
 
@@ -108,26 +151,41 @@ export function AnalisaRingkasan({ presetId, tanggal }: { presetId: number; tang
     return {
       adaHarian: seri.some((t) => t !== null),
       dataHarian: seri.map((t) => ({
-        // Tanggal penuh untuk tooltip; label sumbu X cukup dua digit hari supaya 30 titik
-        // tidak bertumpuk. Titik null tetap punya label tanggal agar celahnya terbaca.
+        // Tanggal penuh: sumbu X memotongnya jadi dua digit hari lewat `tickFormatter` supaya
+        // 30 titik tidak bertumpuk, sementara tooltip tetap menyebut tanggal lengkap.
+        // Titik null tetap punya tanggal kosong agar celahnya terbaca.
         tanggal: t?.tanggal ?? "",
-        label: t ? t.tanggal.slice(8, 10) : "",
         omzet: t ? t.omzet : null,
         laba: t ? t.laba : null,
       })),
     };
   }, [data]);
 
+  // Parameter permintaan dirakit di luar effect supaya identitasnya (bukan tiap ketikan di
+  // input) yang jadi pemicu fetch: mengetik ujung pertama belum mengubah `kunciBebas`.
+  const permintaan = useMemo(() => {
+    if (!presetId || !tanggal) return null;
+    const q = new URLSearchParams({ aksi: "tren", presetId: String(presetId) });
+    if (kunciBebas) {
+      // Rentang bebas: `tanggal` = ujung akhir, `dari` = awal. `rentang` sengaja tidak
+      // dikirim karena server menghitung ulang panjang jendela dari selisih tanggal —
+      // mengirim keduanya hanya membuka peluang dua parameter saling bertentangan.
+      q.set("tanggal", sampaiBebas);
+      q.set("dari", dariBebas);
+    } else {
+      q.set("tanggal", tanggal);
+      q.set("rentang", String(rentang));
+    }
+    return q.toString();
+  }, [presetId, tanggal, rentang, kunciBebas, dariBebas, sampaiBebas]);
+
   useEffect(() => {
-    if (!presetId || !tanggal) return;
+    if (!permintaan) return;
     let batal = false;
     setMemuat(true);
     (async () => {
       try {
-        const q = new URLSearchParams({
-          aksi: "tren", presetId: String(presetId), tanggal, rentang: String(rentang),
-        });
-        const res = await fetch(`/api/analisa?${q.toString()}`, { credentials: "include" });
+        const res = await fetch(`/api/analisa?${permintaan}`, { credentials: "include" });
         const d = (await res.json().catch(() => null)) as ResponsTren | null;
         if (batal) return;
         if (!res.ok || !d?.ok) throw new Error(d?.error ?? `Gagal memuat ringkasan (${res.status}).`);
@@ -142,7 +200,7 @@ export function AnalisaRingkasan({ presetId, tanggal }: { presetId: number; tang
     })();
     // `batal` mencegah balasan permintaan lama menimpa hasil preset/tanggal yang baru.
     return () => { batal = true; };
-  }, [presetId, tanggal, rentang]);
+  }, [permintaan]);
 
   if (memuat && !data) return <Skeleton className="h-64 w-full rounded-xl" data-testid="memuat-ringkasan" />;
 
@@ -166,6 +224,37 @@ export function AnalisaRingkasan({ presetId, tanggal }: { presetId: number; tang
     kelas: k, nama: GAYA_KELAS[k].label, jumlah: jumlahKelas(produk, k), warna: GAYA_KELAS[k].warna,
   }));
 
+  // Pemilih tanggal profil per jam: maksimal 7 hari TERAKHIR, terbaru dulu — tombolnya harus
+  // tetap satu baris, dan hari paling baru yang paling ingin dibandingkan.
+  const opsiTanggalJam = [...tanggalDipakai].sort((a, b) => b.localeCompare(a)).slice(0, 7);
+  // Pilihan yang tidak ada lagi di daftar (rentang berganti) jatuh kembali ke "Gabungan"
+  // alih-alih menampilkan grafik kosong tanpa penjelasan.
+  const tanggalJamAktif = tanggalJam !== null && opsiTanggalJam.includes(tanggalJam) ? tanggalJam : null;
+  const dataJam: BarisJam[] = tanggalJamAktif === null
+    ? (data.perJam ?? [])
+    // Server selalu mengirim 24 titik per tanggal; filter tanggal cukup, urutannya sudah jam.
+    : (data.perJamPerTanggal ?? [])
+      .filter((t) => t.tanggal === tanggalJamAktif)
+      .map((t) => ({ jam: t.jam, omzet: t.omzet, laba: t.laba }));
+
+  // Baris tanpa tanggal = hari tanpa snapshot (server mengisi objek kosong). Batangnya tidak
+  // akan digambar, jadi dibuang: menyisakannya hanya menambah tick kosong dan kunci ganda.
+  const dataDelta = (data.deltaHarian ?? [])
+    .filter((d) => d.tanggal !== "")
+    .map((d) => ({
+      tanggal: d.tanggal,
+      selisih: d.omzet?.selisih ?? null,
+      persen: d.omzet?.persen ?? null,
+    }));
+
+  // Pecahan per jenis lebih informatif; snapshot lama belum menyimpannya sehingga server
+  // mengirim `[]` dan kita jatuh ke tiga kelompok kasar — dengan keterangan, bukan diam-diam.
+  const jenis = data.komposisiJenis ?? [];
+  const pakaiJenis = jenis.length > 0;
+  // Kedua bentuk punya tiga field yang dipakai UI; `kunci` hanya milik `komposisiJenis`.
+  const komposisi: { label: string; nilai: number; persen: number | null }[] =
+    pakaiJenis ? jenis : (data.komposisiBiaya ?? []);
+
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-wrap items-center gap-2">
@@ -175,17 +264,92 @@ export function AnalisaRingkasan({ presetId, tanggal }: { presetId: number; tang
             key={r}
             type="button"
             size="sm"
-            variant={rentang === r ? "default" : "outline"}
-            onClick={() => setRentang(r)}
+            // Tombol hanya tampak aktif bila rentang bebas tidak sedang dipakai — dua kontrol
+            // yang sama-sama menyala membuat pembaca menebak mana yang berlaku.
+            variant={!bebasSah && rentang === r ? "default" : "outline"}
+            onClick={() => {
+              setRentang(r);
+              // Tombol dan input berbagi satu jendela; menyisakan isi input akan membuat
+              // klik tombol tidak berefek apa pun.
+              setDariBebas("");
+              setSampaiBebas("");
+            }}
             data-testid={`rentang-${r}`}
           >
             {r} hari
           </Button>
         ))}
+        <div className="flex items-center gap-1.5">
+          <Input
+            type="date"
+            aria-label="Dari tanggal"
+            value={dariBebas}
+            max={sampaiBebas || undefined}
+            onChange={(e) => setDariBebas(e.target.value)}
+            className="h-7 w-36 text-xs"
+            data-testid="rentang-dari"
+          />
+          <span className="text-xs text-muted-foreground">s/d</span>
+          <Input
+            type="date"
+            aria-label="Sampai tanggal"
+            value={sampaiBebas}
+            min={dariBebas || undefined}
+            onChange={(e) => setSampaiBebas(e.target.value)}
+            className="h-7 w-36 text-xs"
+            data-testid="rentang-sampai"
+          />
+        </div>
+        {dariBebas && sampaiBebas && !bebasSah ? (
+          <span className="text-xs text-red-700 dark:text-red-400">
+            Tanggal mulai harus sebelum tanggal akhir.
+          </span>
+        ) : null}
         {data.dari && data.sampai ? (
           <span className="text-xs text-muted-foreground">{data.dari} s/d {data.sampai}</span>
         ) : null}
       </div>
+
+      {/* ══ CAKUPAN DATA ══ */}
+      {data.cakupan ? (
+        <Card data-testid="cakupan-data">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Cakupan data</CardTitle>
+            <CardDescription>
+              Berapa bagian rentang ini yang benar-benar punya data. Angka di bawah dihitung
+              dari bagian yang ada saja, bukan dari seluruh rentang.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-col gap-2">
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="outline">
+                Laba {data.cakupan.hariSnapshot.length}/{data.cakupan.hariRentang} hari
+              </Badge>
+              <Badge variant="outline">
+                Iklan {data.cakupan.hariIklan.length}/{data.cakupan.hariRentang} hari
+              </Badge>
+              <Badge variant="outline">Performa {data.cakupan.periodePerforma.length} periode</Badge>
+              <Badge variant="outline">
+                Stok {data.cakupan.adaStok ? "tersedia" : "tidak tersedia"}
+              </Badge>
+            </div>
+            {/* ROAS memakai penyebut hari iklan; menyamakannya dengan hari laba membuat
+                pembacaan ROAS terlihat lebih baik daripada kenyataannya. Nol hari iklan
+                bukan "ROAS 0" — ROAS-nya tidak terhitung sama sekali. */}
+            {data.cakupan.hariIklan.length === 0 ? (
+              <p className="text-xs text-amber-700 dark:text-amber-400">
+                Belum ada data iklan pada rentang ini, jadi ROAS dan keputusan iklan tidak
+                dihitung. Impor data iklan di tab Saran Iklan.
+              </p>
+            ) : data.cakupan.hariIklan.length < data.cakupan.hariSnapshot.length ? (
+              <p className="text-xs text-amber-700 dark:text-amber-400">
+                ROAS dihitung dari {data.cakupan.hariIklan.length} hari iklan, bukan{" "}
+                {data.cakupan.hariSnapshot.length} hari laba.
+              </p>
+            ) : null}
+          </CardContent>
+        </Card>
+      ) : null}
 
       {adaHarian ? null : (
         <Empty data-testid="ringkasan-tanpa-harian">
@@ -271,16 +435,55 @@ export function AnalisaRingkasan({ presetId, tanggal }: { presetId: number; tang
                 Omzet vs Laba per jam
               </CardTitle>
               <CardDescription>
-                Berdasarkan jam pesanan dibuat. Dua hari terakhir dikecualikan (harinya belum
-                selesai), jadi yang dipakai: {tanggalDipakai.length > 0
-                  ? tanggalDipakai.join(", ")
-                  : "belum ada hari yang memenuhi syarat"}.
+                {/* Tanpa hari yang memenuhi syarat, daftar kosong tidak memberi tahu apa pun:
+                    keadaannya dinyatakan sebagai kalimat utama. */}
+                {tanggalDipakai.length === 0 ? (
+                  "Belum ada hari yang cukup tua untuk profil per jam."
+                ) : (
+                  <>
+                    Berdasarkan jam pesanan dibuat. Dua hari terakhir dikecualikan (harinya
+                    belum selesai), jadi yang dipakai: {tanggalDipakai.join(", ")}.
+                  </>
+                )}
               </CardDescription>
             </CardHeader>
-            <CardContent>
+            <CardContent className="flex flex-col gap-3">
+              {opsiTanggalJam.length > 0 ? (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <Button
+                    type="button"
+                    size="xs"
+                    variant={tanggalJamAktif === null ? "default" : "outline"}
+                    onClick={() => setTanggalJam(null)}
+                    data-testid="jam-gabungan"
+                  >
+                    Gabungan
+                  </Button>
+                  {opsiTanggalJam.map((t) => (
+                    <Button
+                      key={t}
+                      type="button"
+                      size="xs"
+                      variant={tanggalJamAktif === t ? "default" : "outline"}
+                      onClick={() => setTanggalJam(t)}
+                      data-testid={`jam-${t}`}
+                    >
+                      {/* dd/mm: dua digit hari saja ambigu saat rentang 30 hari melewati bulan. */}
+                      {t.slice(8, 10)}/{t.slice(5, 7)}
+                    </Button>
+                  ))}
+                </div>
+              ) : null}
+              {tanggalDipakai.length > 0 ? (
+                <p className="text-xs text-muted-foreground" data-testid="jam-aktif">
+                  {tanggalJamAktif === null
+                    ? `Menampilkan gabungan ${tanggalDipakai.length} hari.`
+                    : `Menampilkan ${tanggalJamAktif} saja.`}
+                </p>
+              ) : null}
               <div className="h-64 w-full">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={data.perJam ?? []} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                  <LineChart data={dataJam} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="currentColor" className="text-border" opacity={0.4} />
                     <XAxis dataKey="jam" tickLine={false} axisLine={false} stroke="currentColor" className="text-muted-foreground text-xs" />
                     <YAxis tickFormatter={rupiahPendek} width={56} tickLine={false} axisLine={false} stroke="currentColor" className="text-muted-foreground text-xs" />
@@ -314,18 +517,14 @@ export function AnalisaRingkasan({ presetId, tanggal }: { presetId: number; tang
                 <ResponsiveContainer width="100%" height="100%">
                   <LineChart data={dataHarian} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="currentColor" className="text-border" opacity={0.4} />
-                    <XAxis dataKey="label" tickLine={false} axisLine={false} stroke="currentColor" className="text-muted-foreground text-xs" />
+                    <XAxis dataKey="tanggal" tickFormatter={(v: string) => v.slice(8, 10)} tickLine={false} axisLine={false} stroke="currentColor" className="text-muted-foreground text-xs" />
                     <YAxis tickFormatter={rupiahPendek} width={56} tickLine={false} axisLine={false} stroke="currentColor" className="text-muted-foreground text-xs" />
                     <Tooltip
                       formatter={(v) => formatRupiah(Number(v))}
-                      // Tanggal penuh ada di payload, bukan di label sumbu (label = dua digit hari).
-                      labelFormatter={(_l, isi) => {
-                        // Payload recharts bertipe readonly; cast lewat unknown supaya hanya
-                        // bentuk yang kita baca yang dinyatakan, bukan memaksa tipe library.
-                        const t = (isi as unknown as { payload?: { tanggal?: string } }[] | undefined)?.[0]?.payload?.tanggal;
-                        // Kosong = titik null (hari tanpa snapshot): dikatakan apa adanya.
-                        return t ? t.slice(0, 10) : "tanpa data";
-                      }}
+                      // Label sumbu dipotong jadi dua digit hari, tetapi nilai label tooltip
+                      // tetap tanggal penuh dari `dataKey` — tanpa perlu membaca payload recharts
+                      // (yang bertipe `any` dan memaksa cast).
+                      labelFormatter={(l) => (l ? String(l) : "tanpa data")}
                       contentStyle={{ background: "var(--popover)", color: "var(--popover-foreground)", border: "1px solid var(--border)" }}
                     />
                     <Line type="monotone" dataKey="omzet" name="Omzet" stroke="var(--color-chart-1)" strokeWidth={2} dot={false} connectNulls={false} />
@@ -333,6 +532,69 @@ export function AnalisaRingkasan({ presetId, tanggal }: { presetId: number; tang
                   </LineChart>
                 </ResponsiveContainer>
               </div>
+            </CardContent>
+          </Card>
+
+          {/* ══ GRAFIK DELTA HARIAN ══ */}
+          <Card data-testid="grafik-delta-harian">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-base">
+                <ChartNoAxesCombined className="size-4" aria-hidden />
+                Perubahan omzet hari-ke-hari
+              </CardTitle>
+              <CardDescription>
+                Selisih terhadap hari sebelumnya, bukan terhadap awal rentang. Hari pertama
+                tidak punya pembanding sehingga tidak digambar — bukan nol.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="h-56 w-full">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={dataDelta} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="currentColor" className="text-border" opacity={0.4} />
+                    <XAxis dataKey="tanggal" tickFormatter={(v: string) => v.slice(8, 10)} tickLine={false} axisLine={false} stroke="currentColor" className="text-muted-foreground text-xs" />
+                    <YAxis tickFormatter={rupiahPendek} width={56} tickLine={false} axisLine={false} stroke="currentColor" className="text-muted-foreground text-xs" />
+                    <Tooltip
+                      cursor={{ fill: "var(--muted)", opacity: 0.4 }}
+                      // Isi tooltip dirakit dari baris kita sendiri (dicari lewat tanggal), bukan
+                      // dari `payload` recharts yang bertipe `any`: persen dibutuhkan, dan label
+                      // sumbu hanya dua digit hari.
+                      content={(p) => {
+                        if (!p.active) return null;
+                        const baris = dataDelta.find((d) => d.tanggal === String(p.label));
+                        if (!baris || baris.selisih === null) return null;
+                        return (
+                          <div
+                            className="rounded-lg border bg-popover px-2.5 py-2 text-xs text-popover-foreground"
+                            style={{ borderColor: "var(--border)" }}
+                          >
+                            <div className="font-medium">{baris.tanggal}</div>
+                            <div className="tabular-nums">
+                              {baris.selisih > 0 ? "+" : ""}{formatRupiah(baris.selisih)}
+                              {baris.persen === null ? "" : ` (${baris.selisih > 0 ? "+" : ""}${baris.persen}%)`}
+                            </div>
+                          </div>
+                        );
+                      }}
+                    />
+                    <Bar dataKey="selisih" name="Selisih omzet" radius={[2, 2, 0, 0]}>
+                      {dataDelta.map((d) => (
+                        <Cell
+                          key={d.tanggal}
+                          // Hijau = naik, merah = turun. Nilai null tidak digambar recharts,
+                          // warnanya tetap diberikan agar indeks Cell sejajar dengan data.
+                          fill={(d.selisih ?? 0) >= 0 ? "#10b981" : "#ef4444"}
+                        />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+              {dataDelta.every((d) => d.selisih === null) ? (
+                <p className="mt-2 text-xs text-muted-foreground">
+                  Belum ada dua hari berurutan yang bisa dibandingkan pada rentang ini.
+                </p>
+              ) : null}
             </CardContent>
           </Card>
         </>
@@ -345,13 +607,17 @@ export function AnalisaRingkasan({ presetId, tanggal }: { presetId: number; tang
             <PieChart className="size-4" aria-hidden />
             Komposisi biaya
           </CardTitle>
-          <CardDescription>Hanya tiga kelompok yang benar-benar bisa dipisah dari data yang ada.</CardDescription>
+          <CardDescription>
+            {pakaiJenis
+              ? "Pecahan biaya per jenis, terbesar dulu."
+              : "Hanya tiga kelompok yang benar-benar bisa dipisah dari data yang ada."}
+          </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
-          {(data.komposisiBiaya ?? []).length === 0 ? (
+          {komposisi.length === 0 ? (
             <p className="text-sm text-muted-foreground">Belum ada biaya tercatat pada rentang ini.</p>
           ) : (
-            (data.komposisiBiaya ?? []).map((b) => {
+            komposisi.map((b) => {
               // Lebar bar memakai persen dari server; null (total 0) = bar kosong, bukan 0% palsu.
               const lebar = b.persen === null ? 0 : Math.max(0, Math.min(100, b.persen));
               return (
@@ -369,6 +635,13 @@ export function AnalisaRingkasan({ presetId, tanggal }: { presetId: number; tang
                 </div>
               );
             })
+          )}
+          {/* Snapshot lama tidak menyimpan pecahan; tiga kelompok di atas bukan pecahan
+              sebenarnya, jadi keadaannya disebut alih-alih dibiarkan tampak rinci. */}
+          {pakaiJenis ? null : (
+            <p className="text-xs text-muted-foreground">
+              Rincian per jenis belum tersedia untuk snapshot lama.
+            </p>
           )}
         </CardContent>
       </Card>

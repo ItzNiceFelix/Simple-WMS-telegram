@@ -20,6 +20,8 @@ export type TitikHarian = {
   /** laba ÷ omzet × 100, 2 desimal. null bila omzet 0 — persen dari nol tak bermakna. */
   marginPersen: number | null;
   jmlOrder: number;
+  /** Pecahan biaya per label; kosong bila snapshot belum menyimpannya. */
+  biayaJenis: Record<string, number>;
 };
 
 export type Delta = {
@@ -76,6 +78,11 @@ export type SnapshotRinci = {
   pajak: number;
   laba: number;
   jml_order: number;
+  /**
+   * Pecahan `biaya` per label stabil (migrasi 0046). Kosong untuk snapshot lama —
+   * pembaca WAJIB jatuh ke pengelompokan 3 bagian, bukan menganggap biayanya nol.
+   */
+  biayaJenis?: Record<string, number>;
 };
 
 /** Tanggal ISO mundur n hari. Exported: dipakai server (rentang 7 hari) dan UI (pilihan rentang). */
@@ -110,6 +117,7 @@ export function seriHarian(snapshots: SnapshotRinci[], dari: string, sampai: str
       laba: s.laba,
       marginPersen: s.omzet > 0 ? Math.round((s.laba / s.omzet) * 10000) / 100 : null,
       jmlOrder: s.jml_order,
+      biayaJenis: s.biayaJenis ?? {},
     });
   }
   return out;
@@ -137,7 +145,10 @@ export function ringkasRentang(titik: (TitikHarian | null)[]): RingkasRentang {
 
 /** Delta angka total. `persen` null bila pembanding 0 — BUKAN Infinity. */
 export function delta(sekarang: number, sebelum: number): Delta {
-  const selisih = sekarang - sebelum;
+  // `selisih` dibulatkan 2 desimal: margin adalah persen 2 desimal, dan pengurangan dua
+  // float menghasilkan artefak seperti 1.4499999999999993 yang tampil apa adanya di UI.
+  // Untuk rupiah (bulat) pembulatan ini tidak mengubah apa pun.
+  const selisih = Math.round((sekarang - sebelum) * 100) / 100;
   return {
     sekarang,
     sebelum,
@@ -181,6 +192,124 @@ export function bandingkan(
 /** Jendela pembanding "periode sebelumnya": tepat `hari` hari sebelum `dari`. */
 export function jendelaSebelum(dari: string, hari: number): { dari: string; sampai: string } {
   return { dari: geserHari(dari, -hari), sampai: geserHari(dari, -1) };
+}
+
+/**
+ * Delta HARI-ke-HARI, bukan antar-jendela.
+ *
+ * KENAPA dipisah dari `bandingkan`: menjumlahkan 7 hari lalu membandingkannya dengan 7 hari
+ * sebelumnya menyembunyikan hari yang jatuh. Pertanyaan "kemarin kenapa turun" hanya bisa
+ * dijawab kalau setiap hari punya pembandingnya sendiri. Hari pertama dalam seri tidak punya
+ * hari sebelumnya → semua delta null, bukan 0.
+ */
+export type DeltaHarian = {
+  tanggal: string;
+  omzet: Delta | null;
+  laba: Delta | null;
+  order: Delta | null;
+  /** Selisih margin dalam POIN persen, bukan persen relatif. null bila salah satu null. */
+  marginPoin: number | null;
+};
+
+export function deltaHarian(seri: (TitikHarian | null)[]): DeltaHarian[] {
+  const out: DeltaHarian[] = [];
+  let sebelumnya: TitikHarian | null = null;
+  for (const t of seri) {
+    if (!t) { out.push({ tanggal: "", omzet: null, laba: null, order: null, marginPoin: null }); continue; }
+    out.push({
+      tanggal: t.tanggal,
+      omzet: sebelumnya ? delta(t.omzet, sebelumnya.omzet) : null,
+      laba: sebelumnya ? delta(t.laba, sebelumnya.laba) : null,
+      order: sebelumnya ? delta(t.jmlOrder, sebelumnya.jmlOrder) : null,
+      marginPoin:
+        sebelumnya && t.marginPersen !== null && sebelumnya.marginPersen !== null
+          ? Math.round((t.marginPersen - sebelumnya.marginPersen) * 100) / 100
+          : null,
+    });
+    sebelumnya = t;
+  }
+  return out;
+}
+
+/**
+ * Komposisi biaya dari pecahan per jenis bila tersedia, jika tidak jatuh ke 3 kelompok.
+ *
+ * Label mentah (`program:gratis_ongkir_xtra`, `pajak_pph`) diterjemahkan ke bahasa manusia
+ * supaya tabel tidak menampilkan nama kode. Label yang tidak dikenal ditampilkan apa adanya —
+ * lebih baik terlihat janggal daripada disembunyikan.
+ */
+export function komposisiBiayaJenis(
+  perJenis: Record<string, number>,
+  r: RingkasRentang
+): { label: string; nilai: number; persen: number | null; kunci: string }[] {
+  const ada = Object.entries(perJenis).filter(([, v]) => v > 0);
+  // Snapshot lama tidak punya pecahan. Mengembalikan tiga kelompok kasar di sini akan membuat
+  // UI menampilkannya sebagai "pecahan per jenis" — angka yang benar tetapi berlabel salah.
+  // Kosong = pemanggil wajib jatuh ke `komposisiBiaya` DAN menyatakan rinciannya belum ada.
+  if (ada.length === 0) return [];
+  const total = r.hpp + r.biaya;
+  return ada
+    .map(([kunci, nilai]) => ({
+      kunci,
+      label: labelBiaya(kunci),
+      nilai,
+      persen: total > 0 ? Math.round((nilai / total) * 10000) / 100 : null,
+    }))
+    .sort((a, b) => b.nilai - a.nilai);
+}
+
+/** Label stabil → teks yang bisa dibaca. Kunci tak dikenal dikembalikan apa adanya. */
+function labelBiaya(kunci: string): string {
+  if (kunci.startsWith("program:")) {
+    const kode = kunci.slice("program:".length);
+    return `Program ${NAMA_PROGRAM[kode] ?? kode}`;
+  }
+  return NAMA_BIAYA[kunci] ?? kunci;
+}
+
+const NAMA_BIAYA: Record<string, string> = {
+  admin: "Biaya administrasi",
+  proses: "Biaya proses pesanan",
+  pajak_pph: "Pajak PPh",
+  pajak_ppn: "Pajak PPN",
+  lain: "Biaya lain",
+  layanan: "Biaya layanan",
+  komisi: "Komisi",
+  voucher: "Voucher penjual",
+  iklan: "Iklan",
+  ongkir: "Ongkir",
+};
+
+/** Nama program yang tampil di UI. Kode yang tidak terdaftar ditampilkan apa adanya. */
+const NAMA_PROGRAM: Record<string, string> = {
+  gratis_ongkir_xtra: "Gratis Ongkir XTRA",
+  promo_xtra: "Promo XTRA",
+  promo_xtra_plus: "Promo XTRA+",
+  pre_order: "Pre-Order",
+  spaylater_xtra: "SPayLater Xtra",
+  asuransi_pengiriman: "Asuransi Pengiriman",
+  growth_xtra: "Growth Xtra",
+  cashback_xtra: "Cashback XTRA",
+  live_xtra: "Shopee Live XTRA",
+  video_xtra: "Shopee Video XTRA",
+};
+
+/**
+ * Jumlahkan pecahan biaya per jenis dari titik-titik yang berdata.
+ *
+ * Hari tanpa snapshot dilewati: menambahkan 0 untuk hari yang datanya tidak ada akan
+ * membuat komposisi terlihat lebih kecil dari total yang benar-benar tercatat.
+ */
+export function jumlahBiayaJenis(titik: (TitikHarian | null)[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const t of titik) {
+    if (!t) continue;
+    for (const [k, v] of Object.entries(t.biayaJenis)) {
+      if (!Number.isFinite(v) || v === 0) continue;
+      out[k] = (out[k] ?? 0) + v;
+    }
+  }
+  return out;
 }
 
 /**
