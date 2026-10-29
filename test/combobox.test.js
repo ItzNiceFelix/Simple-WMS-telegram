@@ -1,10 +1,14 @@
 ﻿// test/combobox.test.js
-// Uji logika murni lib/dashboard/comboboxFilter.js (sumber kebenaran pencarian
+// Uji logika murni lib/dashboard/comboboxFilter.mjs (sumber kebenaran pencarian
 // untuk components/ui/combobox.tsx). Cepat, tanpa DOM.
+//
+// Sumbernya ESM karena masuk grafik klien (lihat catatan di berkasnya), sedangkan tes ini
+// CJS — jadi diimpor lewat dynamic `import()`. Pola sama dengan test/stockFilter.test.js.
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { filterItems, labelTerpilih } = require("../lib/dashboard/comboboxFilter");
+void import("../lib/dashboard/comboboxFilter.mjs").then((mod) => {
+  const { filterItems, labelTerpilih } = mod;
 
 const items = [
   { value: "d12", label: "Gudang D12" },
@@ -52,4 +56,5 @@ test("labelTerpilih fallback ke value bila tidak ketemu, null bila kosong", () =
   assert.equal(labelTerpilih(items, "hilang"), "hilang");
   assert.equal(labelTerpilih(items, null), null);
   assert.equal(labelTerpilih(items, ""), null);
+});
 });

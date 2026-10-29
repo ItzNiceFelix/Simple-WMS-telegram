@@ -5,7 +5,7 @@ import { Combobox as ComboboxPrimitive } from "@base-ui/react/combobox"
 import { cn } from "cn"
 import { CheckIcon, ChevronDownIcon, XIcon } from "lucide-react"
 
-import { filterItems } from "@/lib/dashboard/comboboxFilter.js"
+import { filterItems } from "@/lib/dashboard/comboboxFilter.mjs"
 
 type ComboboxItem = { value: string; label: string }
 
