@@ -13,7 +13,7 @@
 //   * Fungsi ini tidak mengakses DB dan tidak memanggil fetch: keputusan uang harus
 //     bisa diuji tanpa jaringan.
 
-import { AMBANG_CTR_SEHAT, AMBANG_DILIHAT_MIN, keputusanIklan } from "./hitung";
+import { AMBANG_CTR_SEHAT, AMBANG_DILIHAT_MIN, ambangCtrToko, keputusanIklan } from "./hitung";
 import type { BarisSku } from "./tipe";
 
 /** Satu skenario siap dibacakan AI: pemicu berangka + langkah berurutan. */
@@ -226,7 +226,8 @@ function susunFakta(
     if (beriklan.length === 0) {
       fakta.push("Belum ada SKU yang menyentuh iklan (tayangan/biaya), jadi ROAS aktual belum bisa dibandingkan dengan titik impas.");
     } else {
-      const dinilai = beriklan.map((b) => ({ b, k: keputusanIklan(b) }));
+      const ambangCtr = ambangCtrToko(beriklan) ?? undefined;
+      const dinilai = beriklan.map((b) => ({ b, k: keputusanIklan(b, ambangCtr) }));
       const hitung = (keputusan: string): number => dinilai.filter((d) => d.k.keputusan === keputusan).length;
       fakta.push(
         `${beriklan.length} SKU yang menyentuh iklan: ${hitung("naikkan")} saran naikkan, ` +

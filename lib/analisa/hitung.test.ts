@@ -5,7 +5,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   analisaCepat, bangunBaris, buatRingkasan, buatTemuan, kelasProduk, keputusanIklan, median, organikCr, roasImpas,
-  urutSaranIklan, janganDiiklankan, AMBANG_CTR_SEHAT, AMBANG_DILIHAT_MIN, AMBANG_MARGIN_TIPIS,
+  urutSaranIklan, janganDiiklankan, ambangCtrToko, AMBANG_CTR_SEHAT, AMBANG_DILIHAT_MIN, AMBANG_MARGIN_TIPIS,
   type MasukanAnalisa,
 } from "./hitung";
 import type { BarisSku } from "./tipe";
@@ -589,3 +589,53 @@ describe("filter periode kosong TIDAK mengosongkan data (regresi bug lama)", () 
   });
 });
 
+
+describe("ambangCtrToko (ambang relatif)", () => {
+  // Baris mandiri: `dasar` milik describe lain dan tidak terlihat di sini.
+  const barisIklan = (sku: string, dilihat: number, klik: number): BarisSku => ({
+    sku, nama: sku, unit: 10, hppSatuan: 1000, hargaJual: 10_000,
+    marginSatuan: 2000, marginPersen: 20, kontribusi: 20_000, roasImpas: 5,
+    hppMaster: null, hppNaik: 0, stok: null,
+    dilihat, klik, ctr: dilihat > 0 ? Math.round((klik / dilihat) * 10000) / 100 : null,
+    cr: null, biayaIklan: 1000, roasAktual: 8,
+    organikDilihat: null, organikKunjungan: null, organikKeranjang: null,
+    organikPesanan: null, organikOmzet: null,
+  });
+  const iklan = barisIklan;
+
+  it("median toko dipakai bila di atas lantai absolut", () => {
+    const ambang = ambangCtrToko([
+      iklan("A", 10_000, 400), // 4%
+      iklan("B", 10_000, 300), // 3%
+      iklan("C", 10_000, 200), // 2%
+    ]);
+    assert.equal(ambang, 3);
+  });
+
+  it("tidak pernah di bawah AMBANG_CTR_SEHAT", () => {
+    const ambang = ambangCtrToko([iklan("A", 10_000, 50), iklan("B", 10_000, 60)]);
+    assert.equal(ambang, AMBANG_CTR_SEHAT);
+  });
+
+  it("iklan di bawah ambang tayangan tidak menarik median", () => {
+    // Dua iklan layak (3% & 4%) + satu iklan 20 tayangan dengan CTR 50% yang harus diabaikan.
+    const ambang = ambangCtrToko([
+      iklan("A", 10_000, 400),
+      iklan("B", 10_000, 300),
+      iklan("KECIL", 20, 10),
+    ]);
+    assert.equal(ambang, 3.5);
+  });
+
+  it("tanpa iklan yang bisa dinilai: null (pemanggil memakai ambang bawaan)", () => {
+    assert.equal(ambangCtrToko([{ ...barisIklan("X", 1, 0), dilihat: null, ctr: null }]), null);
+    assert.equal(ambangCtrToko([]), null);
+  });
+
+  it("keputusanIklan memakai ambang yang diberikan", () => {
+    // CTR 3% lolos ambang bawaan 1,5% tetapi TIDAK lolos ambang toko 3,5%.
+    const b = barisIklan("X", 10_000, 300);
+    assert.equal(keputusanIklan(b).keputusan, "naikkan");
+    assert.equal(keputusanIklan(b, 3.5).keputusan, "tahan");
+  });
+});

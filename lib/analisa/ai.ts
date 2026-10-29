@@ -24,7 +24,7 @@
 // struktur.
 import { panggilTeks, type Konteks } from "@/lib/ai/provider";
 import type { UpayaGagal } from "@/lib/d1/hasil";
-import { keputusanIklan, organikCr } from "./hitung";
+import { ambangCtrToko, keputusanIklan, organikCr } from "./hitung";
 import type { PaketSkenario } from "./skenarioIklan";
 import type { BarisSku, HasilAnalisa } from "./tipe";
 
@@ -208,8 +208,11 @@ const MAKS_KEPUTUSAN_IKLAN = 20;
  */
 export function keputusanPerSku(daftar: BarisSku[]): { sku: string; nama: string | null; keputusan: string; alasan: string }[] {
   const beriklan = daftar.filter((b) => b.dilihat !== null || b.biayaIklan !== null || b.roasAktual !== null);
+  // Ambang CTR toko, sama dengan yang dipakai halaman — AI tidak boleh menerima putusan
+  // yang berbeda dari yang dilihat pemilik di layar.
+  const ambang = ambangCtrToko(daftar) ?? undefined;
   return beriklan.slice(0, MAKS_KEPUTUSAN_IKLAN).map((b) => {
-    const k = keputusanIklan(b);
+    const k = keputusanIklan(b, ambang);
     return {
       sku: b.sku,
       nama: b.nama,

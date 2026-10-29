@@ -78,6 +78,13 @@
     --chart-3: oklch(0.439 0 0);
     --chart-4: oklch(0.371 0 0);
     --chart-5: oklch(0.269 0 0);
+    /* Nilai terang: kontras ≥ 4.5:1 di atas kartu putih (L 0.55 vs 1.0).
+       `--grafik-rugi` sengaja memakai nilai `--destructive` supaya "rugi" dan "tombol
+       hapus" tidak pernah tampil sebagai dua merah berbeda. */
+    --grafik-untung: oklch(0.52 0.13 155);
+    --grafik-rugi: oklch(0.577 0.245 27.325);
+    --grafik-netral: oklch(0.556 0 0);
+    --grafik-tidak-ada: oklch(0.87 0 0);
     --status-aman: oklch(0.72 0.17 150);
     --status-aman-fg: oklch(0.32 0.09 150);
     --status-menipis: oklch(0.80 0.16 80);
@@ -125,6 +132,12 @@
     --chart-3: oklch(0.439 0 0);
     --chart-4: oklch(0.371 0 0);
     --chart-5: oklch(0.269 0 0);
+    /* Nilai gelap: dinaikkan terangnya (L 0.70–0.78) supaya tetap ≥ 3:1 di atas kartu
+       gelap; nilai terang akan tenggelam di latar oklch(0.205). */
+    --grafik-untung: oklch(0.74 0.15 155);
+    --grafik-rugi: oklch(0.704 0.191 22.216);
+    --grafik-netral: oklch(0.708 0 0);
+    --grafik-tidak-ada: oklch(0.35 0 0);
     --sidebar: oklch(0.205 0 0);
     --sidebar-foreground: oklch(0.985 0 0);
     --sidebar-primary: oklch(0.488 0.243 264.376);

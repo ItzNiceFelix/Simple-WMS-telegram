@@ -176,7 +176,9 @@ export async function POST(request: Request) {
   try {
     for (const p of potongan.perTanggal) {
       const hasil = await hitungDanSimpan(
-        db, siap, p.baris, file, p.tanggal, user.tg_id, aksi === "simpan", mode, berkas
+        db, siap, p.baris, file, p.tanggal, user.tg_id, aksi === "simpan", mode, berkas,
+        // Hari tepi berkas: angkanya benar untuk order yang ada, tetapi harinya tidak utuh.
+        potongan.tanggalParsial.includes(p.tanggal)
       );
       // Agregat yang dikembalikan = jumlah seluruh tanggal pada berkas; angka per tanggal
       // tetap tersedia di `ringkasTanggal` supaya UI bisa memeriksa potongannya.

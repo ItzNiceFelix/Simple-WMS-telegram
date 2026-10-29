@@ -28,6 +28,8 @@ const KOL = {
   dilihat: 10,
   klik: 11,
   omzet: 23,
+  /** `Penjualan Langsung (GMV Langsung)` — hanya pembelian yang berasal dari iklan itu. */
+  omzetLangsung: 24,
   biaya: 25,
 } as const;
 
@@ -39,6 +41,8 @@ export type BarisIklan = {
   klik: number | null;
   dilihat: number | null;
   omzetIklan: number;
+  /** Omzet langsung; null bila kolomnya tidak ada/tidak terbaca di ekspor ini. */
+  omzetLangsung: number | null;
   status: string;
   /**
    * Tanggal mulai tayang kampanye (`YYYY-MM-DD`), dari kolom `Tanggal Mulai`.
@@ -52,9 +56,21 @@ export type BarisIklan = {
 
 export type PeriodeIklan = { dari: string; sampai: string };
 
+/**
+ * Satu baris iklan yang TIDAK punya `Kode Produk` (iklan grup/GMV Max).
+ *
+ * KENAPA DISIMPAN, BUKAN DIBUANG: biaya baris ini benar-benar keluar dari rekening toko.
+ * Sebelumnya baris seperti ini dibuang diam-diam, sehingga total biaya iklan di halaman
+ * Analisa lebih kecil daripada kenyataan (pada berkas contoh 22–28 Okt 2026: 7,73%).
+ * Tidak bisa dilekatkan ke SKU, jadi disimpan terpisah dan DITAMPILKAN sebagai peringatan.
+ */
+export type BarisIklanTanpaKode = { namaIklan: string; biaya: number; dilihat: number | null; klik: number | null; omzetIklan: number };
+
 export type HasilParseIklan = {
   baris: BarisIklan[];
-  /** Iklan tingkat grup/toko (Kode Produk "-") — bukan produk, sengaja tidak diimpor. */
+  /** Iklan tingkat grup/toko (Kode Produk "-") — tidak punya SKU, disimpan terpisah. */
+  takTerpetakan: BarisIklanTanpaKode[];
+  /** Jumlah baris yang dilewati karena tidak punya kode produk sama sekali. */
   dilewatiTanpaKode: number;
   periode: PeriodeIklan | null;
   barisHeader: number;
@@ -143,22 +159,35 @@ function angkaOpsional(v: string | undefined): number | null {
 export function parseIklan(teks: string): HasilParseIklan {
   const rows = bacaCsv(teks);
   const barisHeader = cariBarisHeader(rows);
-  if (barisHeader < 0) return { baris: [], dilewatiTanpaKode: 0, periode: null, barisHeader: -1 };
+  if (barisHeader < 0) return { baris: [], takTerpetakan: [], dilewatiTanpaKode: 0, periode: null, barisHeader: -1 };
   // VALIDASI LEBAR KOLOM. Kolom dibaca menurut NOMOR (KOL), jadi ekspor yang menyisipkan
   // satu kolom baru menggeser semuanya — biaya menunjuk kolom lain dan angkanya tetap
   // "masuk akal", sehingga salahnya tak terlihat. Berhenti dengan pesan jelas lebih baik.
   const lebar = rows[barisHeader]?.length ?? 0;
   if (lebar <= KOL.biaya) {
-    return { baris: [], dilewatiTanpaKode: 0, periode: null, barisHeader: -1, galatLebar: `Header iklan hanya ${lebar} kolom; minimal ${KOL.biaya + 1}. Format ekspor Shopee Ads berubah — periksa berkasnya.` };
+    return { baris: [], takTerpetakan: [], dilewatiTanpaKode: 0, periode: null, barisHeader: -1, galatLebar: `Header iklan hanya ${lebar} kolom; minimal ${KOL.biaya + 1}. Format ekspor Shopee Ads berubah — periksa berkasnya.` };
   }
   const periode = bacaPeriode(rows, barisHeader);
   const baris: BarisIklan[] = [];
+  const takTerpetakan: BarisIklanTanpaKode[] = [];
   let dilewatiTanpaKode = 0;
   for (const r of rows.slice(barisHeader + 1)) {
     const kodeProduk = (r[KOL.kodeProduk] ?? "").trim();
-    // Baris kosong di ekor berkas dan iklan tingkat grup ("-") sama-sama dilewati.
     if (kodeProduk === "" || kodeProduk === "-") {
-          if (r.some((c) => c.trim() !== "")) dilewatiTanpaKode++;
+      // Baris kosong di ekor berkas = bukan data.
+      if (!r.some((c) => c.trim() !== "")) continue;
+      // Iklan grup: biayanya NYATA, hanya tidak bisa dilekatkan ke SKU.
+      if (kodeProduk === "-") {
+        takTerpetakan.push({
+          namaIklan: (r[KOL.namaIklan] ?? "").trim() || "(tanpa nama)",
+          biaya: bacaAngka(r[KOL.biaya]),
+          dilihat: angkaOpsional(r[KOL.dilihat]),
+          klik: angkaOpsional(r[KOL.klik]),
+          omzetIklan: bacaAngka(r[KOL.omzet]),
+        });
+      } else {
+        dilewatiTanpaKode++;
+      }
       continue;
     }
     baris.push({
@@ -168,11 +197,12 @@ export function parseIklan(teks: string): HasilParseIklan {
       klik: angkaOpsional(r[KOL.klik]),
       dilihat: angkaOpsional(r[KOL.dilihat]),
       omzetIklan: bacaAngka(r[KOL.omzet]),
+      omzetLangsung: angkaOpsional(r[KOL.omzetLangsung]),
       status: (r[KOL.status] ?? "").trim(),
       tanggalMulaiKampanye: tanggalIso((r[KOL.tanggalMulai] ?? "").trim().slice(0, 10)),
     });
   }
-  return { baris, dilewatiTanpaKode, periode, barisHeader };
+  return { baris, takTerpetakan, dilewatiTanpaKode, periode, barisHeader };
 }
 
 /** Maksimum contoh kode tanpa peta yang dikembalikan — cukup untuk ditindaklanjuti manusia. */
@@ -201,7 +231,7 @@ export async function imporIklan(
    * sehingga total iklan per SKU salah walau total toko benar.
    */
   petaSku: Map<string, string[]>
-): Promise<Hasil<{ tersimpan: number; dilewatiTanpaKode: number; dilewatiTanpaPeta: number; kodeTanpaPeta: string[]; barisDibaca: number; periode: PeriodeIklan | null }>> {
+): Promise<Hasil<{ tersimpan: number; dilewatiTanpaKode: number; dilewatiTanpaPeta: number; kodeTanpaPeta: string[]; barisDibaca: number; periode: PeriodeIklan | null; biayaTakTerpetakan: number; jmlTakTerpetakan: number }>> {
   const hasil = parseIklan(teks);
   if (hasil.galatLebar) return gagal(400, hasil.galatLebar);
   if (hasil.barisHeader < 0) return gagal(400, "Baris header 'Urutan' tidak ditemukan di berkas iklan");
@@ -232,7 +262,7 @@ export async function imporIklan(
   // menyimpan per SKU. Satu kode dengan N SKU: biaya dibagi rata ke semua SKU-nya supaya
   // total toko tetap benar dan tidak ada biaya yang hilang. (Dulu hanya SKU pertama yang
   // menerima seluruh biaya, sehingga ROAS per SKU melenceng jauh.)
-  const perKunci = new Map<string, { tanggal: string; sku: string; biaya: number; klik: number; dilihat: number; omzet: number }>();
+  const perKunci = new Map<string, { tanggal: string; sku: string; biaya: number; klik: number; dilihat: number; omzet: number; omzetLangsung: number | null }>();
   for (const b of hasil.baris) {
     const semua = petaSku.get(b.kodeProduk);
     if (!semua || semua.length === 0) continue;
@@ -242,13 +272,16 @@ export async function imporIklan(
     const klik = Math.round((b.klik ?? 0) / n);
     const dilihat = Math.round((b.dilihat ?? 0) / n);
     const omzet = Math.round(b.omzetIklan / n);
+    // null tetap null: berkas tanpa kolom ini tidak boleh berubah menjadi "nol penjualan".
+    const omzetLangsung = b.omzetLangsung === null ? null : Math.round(b.omzetLangsung / n);
     for (const sku of semua) {
       const kunci = `${tanggal}\u0000${sku}`;
-      const agg = perKunci.get(kunci) ?? { tanggal, sku, biaya: 0, klik: 0, dilihat: 0, omzet: 0 };
+      const agg = perKunci.get(kunci) ?? { tanggal, sku, biaya: 0, klik: 0, dilihat: 0, omzet: 0, omzetLangsung: null };
       agg.biaya += biaya;
       agg.klik += klik;
       agg.dilihat += dilihat;
       agg.omzet += omzet;
+      if (omzetLangsung !== null) agg.omzetLangsung = (agg.omzetLangsung ?? 0) + omzetLangsung;
       perKunci.set(kunci, agg);
     }
   }
@@ -262,14 +295,47 @@ export async function imporIklan(
   const stmts = [...perKunci.values()].map((a) =>
     db
       .prepare(
-        "INSERT INTO ads_produk (preset_id, tanggal, sku, biaya, klik, dilihat, omzet_iklan, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
+        "INSERT INTO ads_produk (preset_id, tanggal, sku, biaya, klik, dilihat, omzet_iklan, omzet_langsung, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) " +
           "ON CONFLICT(preset_id, tanggal, sku) DO UPDATE SET " +
           "biaya = excluded.biaya, klik = excluded.klik, " +
-          "dilihat = excluded.dilihat, omzet_iklan = excluded.omzet_iklan, at = excluded.at"
+          "dilihat = excluded.dilihat, omzet_iklan = excluded.omzet_iklan, " +
+          "omzet_langsung = excluded.omzet_langsung, at = excluded.at"
       )
-      .bind(presetId, a.tanggal, a.sku, a.biaya, a.klik, a.dilihat, a.omzet, at)
+      .bind(presetId, a.tanggal, a.sku, a.biaya, a.klik, a.dilihat, a.omzet, a.omzetLangsung, at)
   );
   for (let i = 0; i < stmts.length; i += PER_BATCH) await db.batch(stmts.slice(i, i + PER_BATCH));
+
+  // Biaya iklan grup/GMV Max: TIDAK bisa dilekatkan ke SKU, tetapi tetap uang yang keluar.
+  // Disimpan terpisah supaya total biaya iklan toko tidak lebih kecil dari kenyataan.
+  // Tabel mungkin belum ada di lingkungan yang belum menjalankan migrasi 0047 — impor
+  // tidak boleh gagal karenanya; biayanya tetap dilaporkan di hasil impor.
+  const stmtsTanpa = hasil.takTerpetakan.map((t) =>
+    db
+      .prepare(
+        "INSERT INTO ads_tak_terpetakan (preset_id, tanggal, nama_iklan, biaya, dilihat, klik, omzet_iklan, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) " +
+          "ON CONFLICT(preset_id, tanggal, nama_iklan) DO UPDATE SET " +
+          "biaya = excluded.biaya, dilihat = excluded.dilihat, klik = excluded.klik, " +
+          "omzet_iklan = excluded.omzet_iklan, at = excluded.at"
+      )
+      .bind(presetId, tanggalPeriode, t.namaIklan, t.biaya, t.dilihat, t.klik, t.omzetIklan, at)
+  );
+  for (let i = 0; i < stmtsTanpa.length; i += PER_BATCH) {
+    await db.batch(stmtsTanpa.slice(i, i + PER_BATCH)).catch(() => null);
+  }
+
+  // Rentang laporan yang SEBENARNYA. Tanpa ini, halaman hanya tahu "satu tanggal" (awal
+  // periode) dan tidak bisa memperingatkan bahwa periode iklan ≠ periode produk.
+  if (hasil.periode) {
+    await db
+      .prepare(
+        "INSERT INTO ads_periode (preset_id, dari, sampai, baris, at) VALUES (?, ?, ?, ?, ?) " +
+          "ON CONFLICT(preset_id, dari, sampai) DO UPDATE SET baris = excluded.baris, at = excluded.at"
+      )
+      .bind(presetId, hasil.periode.dari, hasil.periode.sampai, hasil.baris.length, at)
+      // Tabel belum ada (migrasi 0049 belum jalan) → impor tetap berhasil.
+      .run()
+      .catch(() => null);
+  }
 
   // `oleh` ikut dicatat supaya jelas siapa yang mengimpor saat angka iklan dipertanyakan.
   if (oleh) {
@@ -293,7 +359,36 @@ export async function imporIklan(
     barisDibaca: hasil.baris.length,
     /** Periode laporan yang dipakai sebagai tanggal simpan (satu tanggal untuk semua baris). */
     periode: hasil.periode,
+    biayaTakTerpetakan: hasil.takTerpetakan.reduce((a, t) => a + t.biaya, 0),
+    jmlTakTerpetakan: hasil.takTerpetakan.length,
   };
+}
+
+/**
+ * Biaya iklan yang tidak bisa dilekatkan ke SKU (iklan grup/GMV Max) pada satu rentang.
+ *
+ * null = belum ada baris sama sekali (belum diimpor), BUKAN nol. `baris` diurut biaya
+ * terbesar supaya peringatan di UI menyebut yang paling berpengaruh lebih dulu.
+ */
+export async function iklanTakTerpetakan(
+  db: D1Database,
+  presetId: number,
+  dari: string,
+  sampai: string
+): Promise<{ biaya: number; baris: { nama: string; biaya: number }[] } | null> {
+  const r = await db
+    .prepare(
+      "SELECT nama_iklan, COALESCE(SUM(biaya), 0) AS biaya FROM ads_tak_terpetakan " +
+        "WHERE preset_id = ? AND tanggal BETWEEN ? AND ? GROUP BY nama_iklan ORDER BY biaya DESC"
+    )
+    .bind(presetId, dari, sampai)
+    .all<{ nama_iklan: string; biaya: number }>()
+    .catch(() => null);
+  // Tabel belum ada (migrasi 0047 belum jalan) → null: belum diketahui, bukan nol.
+  if (!r) return null;
+  const baris = (r.results ?? []).map((x) => ({ nama: String(x.nama_iklan), biaya: Number(x.biaya) }));
+  if (baris.length === 0) return null;
+  return { biaya: baris.reduce((a, b) => a + b.biaya, 0), baris };
 }
 
 /** Total baris + biaya iklan pada rentang tanggal. null = belum ada baris (belum diimpor), bukan nol. */
@@ -304,4 +399,24 @@ export async function totalIklan(db: D1Database, presetId: number, dari: string,
     .first<{ n: number; biaya: number }>();
   if (!r || Number(r.n) === 0) return null;
   return { baris: Number(r.n), biaya: Number(r.biaya) };
+}
+
+/**
+ * Periode laporan iklan yang paling baru diimpor untuk satu preset.
+ *
+ * Dipakai halaman untuk memperingatkan bahwa rentang iklan tidak sama dengan rentang produk
+ * yang sedang dilihat. null = belum pernah ada impor iklan berperiode (atau migrasi 0049
+ * belum jalan) — bukan "periodenya sama".
+ */
+export async function periodeIklanTerakhir(
+  db: D1Database,
+  presetId: number
+): Promise<{ dari: string; sampai: string } | null> {
+  const r = await db
+    .prepare("SELECT dari, sampai FROM ads_periode WHERE preset_id = ? ORDER BY at DESC LIMIT 1")
+    .bind(presetId)
+    .first<{ dari: string; sampai: string }>()
+    .catch(() => null);
+  if (!r) return null;
+  return { dari: String(r.dari), sampai: String(r.sampai) };
 }

@@ -138,11 +138,20 @@ describe("parseIklan", () => {
     "",
   ]);
 
-  it("hitung baris tanpa kode produk (iklan grup) sebagai dilewatiTanpaKode", () => {
+  it("iklan grup (Kode Produk '-') DIPISAH, bukan dibuang: biayanya nyata", () => {
+    // Perubahan yang disengaja: baris ini dulu dibuang, sehingga total biaya iklan di
+    // halaman Analisa lebih kecil daripada kenyataan. Sekarang disimpan terpisah karena
+    // tidak bisa dilekatkan ke SKU mana pun.
     const h = parseIklan(teks);
     assert.equal(h.barisHeader, 7);
-    assert.equal(h.dilewatiTanpaKode, 1);
     assert.equal(h.baris.length, 2);
+    assert.equal(h.takTerpetakan.length, 1);
+    assert.equal(h.takTerpetakan[0].namaIklan, "Grup Iklan 08/10/2026 - 1");
+    // Helper `baris(...)`: argumen ke-6 = omzet, ke-7 = biaya. Baris grup ini biayanya "0".
+    assert.equal(h.takTerpetakan[0].biaya, 0);
+    assert.equal(h.takTerpetakan[0].omzetIklan, 441500);
+    // Tidak ada lagi yang masuk keranjang "dilewati" untuk baris bergrup.
+    assert.equal(h.dilewatiTanpaKode, 0);
     assert.deepEqual(h.periode, { dari: "2026-10-14", sampai: "2026-10-14" });
   });
 
@@ -184,7 +193,9 @@ describe("imporIklan", () => {
     const r = await imporIklan(db, teks, 7, null, peta);
     assert.equal(r.ok, true);
     if (!r.ok) return;
-    assert.equal(r.dilewatiTanpaKode, 1);
+    assert.equal(r.dilewatiTanpaKode, 0);
+    assert.equal(r.biayaTakTerpetakan, 0); // baris grup di fixture ini biayanya "0"
+    assert.equal(r.jmlTakTerpetakan, 1);
     assert.equal(r.dilewatiTanpaPeta, 1);
     assert.deepEqual(r.kodeTanpaPeta, [KODE_B]);
     assert.equal(r.tersimpan, 1);
@@ -261,5 +272,37 @@ describe("totalIklan", () => {
     assert.deepEqual(t, { baris: 2, biaya: 3500 });
     // Rentang di luar tanggal laporan -> null.
     assert.equal(await totalIklan(db, 7, "2026-11-01", "2026-11-30"), null);
+  });
+});
+
+describe("omzet langsung + periode laporan (migrasi 0049)", () => {
+  const teks = teksUji([
+    // Helper `baris(...)`: argumen ke-6 = omzet luas, ke-7 = biaya. Kolom langsung diisi manual.
+    baris("Lunch Box", KODE_A, "Berjalan", "345", "2", "56464", "441.500"),
+  ]);
+
+  it("kolom Penjualan Langsung dibaca terpisah dari omzet luas", () => {
+    // Sel ke-24 (indeks 24) = `Penjualan Langsung (GMV Langsung)`.
+    const sel = baris("Lunch Box", KODE_A, "Berjalan", "345", "2", "56464", "441.500").split(",");
+    sel[24] = "50.000";
+    const h = parseIklan(teksUji([sel.join(",")]));
+    assert.equal(h.baris[0].omzetIklan, 56464);
+    assert.equal(h.baris[0].omzetLangsung, 50000);
+  });
+
+  it("kolom langsung '-' jadi null, bukan 0", () => {
+    const h = parseIklan(teks);
+    assert.equal(h.baris[0].omzetLangsung, null);
+  });
+
+  it("periode laporan dicatat di ads_periode saat impor", async () => {
+    const db = buatDb();
+    const r = await imporIklan(db, teks, 7, null, new Map([[KODE_A, ["SKU-A"]]]));
+    assert.equal(r.ok, true);
+    // Mock D1 tidak menyimpan ads_periode (tabel baru); yang diuji di sini adalah bahwa
+    // impor tidak gagal ketika tabelnya belum ada — jalur `.catch(() => null)`.
+    if (!r.ok) return;
+    assert.deepEqual(r.periode, { dari: "2026-10-14", sampai: "2026-10-14" });
+    assert.equal(r.tersimpan, 1);
   });
 });

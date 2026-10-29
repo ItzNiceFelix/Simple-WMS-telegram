@@ -66,6 +66,36 @@ export function formatRupiah(n: number | null | undefined): string {
   }).format(n);
 }
 
+const ANGKA_RINGKAS = new Intl.NumberFormat("id-ID", { notation: "compact", maximumFractionDigits: 1 });
+
+/**
+ * Rupiah ringkas untuk kartu KPI dan sumbu grafik: "Rp 52,6 jt", "Rp 890 rb".
+ *
+ * KENAPA bukan `formatRupiah`: delapan digit tidak muat di sumbu Y maupun kartu sempit, dan
+ * yang perlu ditangkap mata lebih dulu adalah BESARNYA, bukan digit terakhirnya. Rupiah
+ * penuh tetap dipakai di tabel dan tooltip — ringkas hanya untuk pandangan cepat.
+ */
+export function formatRupiahRingkas(n: number | null | undefined): string {
+  if (n == null) return "—";
+  return `Rp ${ANGKA_RINGKAS.format(n)}`;
+}
+
+const CACHE_PERSEN = new Map<number, Intl.NumberFormat>();
+
+/** Persen dengan desimal tetap. `null` = belum ada data → "—", BUKAN "0%". */
+export function formatPersen(n: number | null | undefined, desimal = 2): string {
+  if (n == null) return "—";
+  // Nol terukur ditulis "0%", bukan "0,00%": angka yang benar-benar nol tidak butuh presisi
+  // desimal, dan "0,00%" terbaca seperti hasil pembulatan dari angka lain.
+  if (n === 0) return "0%";
+  let f = CACHE_PERSEN.get(desimal);
+  if (!f) {
+    f = new Intl.NumberFormat("id-ID", { minimumFractionDigits: desimal, maximumFractionDigits: desimal });
+    CACHE_PERSEN.set(desimal, f);
+  }
+  return `${f.format(n)}%`;
+}
+
 /** Tanggal ringkas: 15 Sep 2026, 14:30 */
 export function formatTanggal(iso: string | null | undefined): string {
   if (!iso) return "—";

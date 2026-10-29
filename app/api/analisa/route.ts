@@ -34,7 +34,7 @@ import type { MasukanEstimasi } from "@/lib/analisa/iklanEstimasi";
 import { estimasiIklan, ringkasEstimasi } from "@/lib/analisa/iklanEstimasi";
 import { ambilSettingAnalisa } from "@/lib/d1/aiAnalisaSetting";
 import { bacaBody, json, sesiRoute } from "@/lib/d1/route";
-import { imporIklan, parseIklan } from "@/lib/d1/adsProduk";
+import { iklanTakTerpetakan, imporIklan, parseIklan, periodeIklanTerakhir } from "@/lib/d1/adsProduk";
 import { petaSkuDariKodeProduk } from "@/lib/d1/shopeePeta";
 import { analisaMendalam, susunPesanSkenario, type Kedalaman, type KonteksBahan } from "@/lib/analisa/ai";
 import { bangunPaketSkenario } from "@/lib/analisa/skenarioIklan";
@@ -47,6 +47,9 @@ import {
   analisaCepat, janganDiiklankan, kelasProduk, urutSaranIklan,
   AMBANG_MARGIN_TIPIS, type MasukanAnalisa,
 } from "@/lib/analisa/hitung";
+import { lengkapiTag } from "@/lib/analisa/tag";
+import { susunAksi, alasanTanpaAksi } from "@/lib/analisa/aksi";
+import { angkaDariRingkasan, dataKpi, type AngkaKpi } from "@/lib/analisa/kpi";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -746,7 +749,104 @@ export async function GET(request: Request) {
   const hasil = analisaCepat(masukan);
 
   if (aksi === "cepat") {
-    return json({ ok: true, ...hasil, tanggalTersedia: semuaTanggal, ambangMarginTipis: AMBANG_MARGIN_TIPIS });
+    // Semua tambahan di bawah ini ADITIF: field lama tidak berubah bentuk maupun artinya.
+    const baris = lengkapiTag(hasil.baris);
+    const omzetIklan = iklanPerSku.size > 0
+      ? [...iklanPerSku.values()].reduce((a, x) => a + x.omzet, 0)
+      : null;
+    const tanpaPeta = await iklanTakTerpetakan(db, presetId, dari, sampai);
+    // Periode laporan iklan yang SEBENARNYA, untuk membandingkan dengan jendela 7 hari yang
+    // dipakai angka produk. Beda periode = biaya iklan dan omzet tidak sebanding.
+    const periodeIklan = await periodeIklanTerakhir(db, presetId);
+    const peringatanPeriodeIklan = (() => {
+      if (!periodeIklan) return null;
+      // Tumpang tindih dihitung per hari kalender, inklusif di kedua ujung.
+      const awal = periodeIklan.dari > dari ? periodeIklan.dari : dari;
+      const akhir = periodeIklan.sampai < sampai ? periodeIklan.sampai : sampai;
+      const tumpang = Math.max(0, Math.round(
+        (Date.parse(`${akhir}T00:00:00Z`) - Date.parse(`${awal}T00:00:00Z`)) / 86400000
+      ) + 1);
+      if (tumpang <= 0) {
+        return `Laporan iklan (${periodeIklan.dari} s/d ${periodeIklan.sampai}) tidak beririsan dengan jendela produk (${dari} s/d ${sampai}) — angka iklan di halaman ini tidak sebanding dengan omzet.`;
+      }
+      if (periodeIklan.dari !== dari || periodeIklan.sampai !== sampai) {
+        return `Periode iklan ${periodeIklan.dari} s/d ${periodeIklan.sampai} berbeda dari jendela produk ${dari} s/d ${sampai}; hanya ${tumpang} hari yang beririsan, jadi TACOS/ROAS belum sebanding.`;
+      }
+      return null;
+    })();
+
+    // Periode pembanding = snapshot TERDEKAT sebelum tanggal ini. Bukan "kemarin": kalau
+    // toko libur impor dua hari, kemarin tidak punya data dan delta akan selalu kosong.
+    const tanggalSebelum = semuaTanggal.find((t) => t < tanggal) ?? null;
+    let pembanding: {
+      tanggal: string;
+      /** Rincian SKU periode pembanding, untuk grafik penggerak delta. */
+      baris: { sku: string; nama: string | null; unit: number; hppSatuan: number; hargaJual: number; marginSatuan: number; marginPersen: number; kontribusi: number }[];
+      angka: AngkaKpi;
+    } | null = null;
+    if (tanggalSebelum) {
+      const snapSebelum = await ambilSnapshot(db, presetId, tanggalSebelum);
+      if (snapSebelum) {
+        const jendela = rentangMundur(tanggalSebelum, 6);
+        const [biayaSebelum, iklanSebelum] = await Promise.all([
+          totalIklanPeriode(db, presetId, jendela.dari, jendela.sampai),
+          metrikIklanPerSku(db, presetId, jendela.dari, jendela.sampai),
+        ]);
+        pembanding = {
+          tanggal: tanggalSebelum,
+          // Rincian SKU pembanding ikut dikirim: grafik penggerak delta butuh selisih PER
+          // SKU, dan menghitungnya di klien dari angka total tidak mungkin.
+          baris: snapSebelum.rincian.map((r) => ({
+            sku: r.sku, nama: r.nama, unit: r.unit, hppSatuan: r.hppSatuan,
+            hargaJual: r.hargaJual, marginSatuan: r.marginSatuan,
+            marginPersen: r.marginPersen, kontribusi: r.kontribusi,
+          })),
+          angka: {
+            omzet: snapSebelum.omzet,
+            laba: snapSebelum.laba,
+            // Rumus sama dengan `buatRingkasan`: satu definisi margin, bukan dua.
+            marginPersen: snapSebelum.omzet > 0 ? Math.round((snapSebelum.laba / snapSebelum.omzet) * 1000) / 10 : 0,
+            jmlOrder: snapSebelum.jml_order,
+            biayaIklan: biayaSebelum,
+            omzetIklan: iklanSebelum.size > 0
+              ? [...iklanSebelum.values()].reduce((a, x) => a + x.omzet, 0)
+              : null,
+          },
+        };
+      }
+    }
+
+    const aksiHariIni = susunAksi({
+      baris, temuan: hasil.temuan, ringkasan: hasil.ringkasan, biayaIklan,
+    });
+    const kpi = dataKpi({
+      sekarang: angkaDariRingkasan(hasil.ringkasan, biayaIklan, omzetIklan),
+      pembanding: pembanding?.angka ?? null,
+      parsial: snap.parsial === true,
+      jmlIklanTakTerpetakan: tanpaPeta?.baris.length ?? 0,
+    });
+
+    return json({
+      ok: true,
+      ...hasil,
+      baris,
+      biayaIklan,
+      omzetIklan,
+      // Biaya iklan yang tidak bisa dilekatkan ke SKU (iklan grup/GMV Max). null = tidak ada.
+      biayaIklanTakTerpetakan: tanpaPeta?.biaya ?? null,
+      iklanTakTerpetakan: tanpaPeta?.baris ?? [],
+      pembanding,
+      periodeIklan,
+      peringatanPeriodeIklan,
+      parsial: snap.parsial,
+      aksi: aksiHariIni,
+      alasanTanpaAksi: aksiHariIni.length === 0
+        ? alasanTanpaAksi({ baris, biayaIklan, ringkasan: hasil.ringkasan })
+        : null,
+      kpi,
+      tanggalTersedia: semuaTanggal,
+      ambangMarginTipis: AMBANG_MARGIN_TIPIS,
+    });
   }
 
   if (aksi === "saran-iklan") {

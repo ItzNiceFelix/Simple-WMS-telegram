@@ -12,7 +12,7 @@
 //     hasil ini, bukan menghitung dari data mentah.
 
 import type {
-  BarisSku, HasilAnalisa, RingkasanAnalisa, Temuan,
+  BarisSku, HasilAnalisa, KeputusanIklan, RingkasanAnalisa, Temuan,
 } from "./tipe";
 
 /** Ambang margin tipis (%). Keputusan user 2026-10-14. */
@@ -29,7 +29,16 @@ export const AMBANG_OUTLIER = 10;
 // Shopee yang menetapkan angka-angka ini; dipakai hanya sebagai pemicu "layak ditinjau",
 // bukan vonis. Kalau toko punya angka sendiri dari pengalaman, ganti di sini.
 
-/** CTR (%) PRAKTIK UMUM, bukan aturan resmi Shopee. Di bawah ini iklan dianggap tidak menarik klik. */
+/**
+ * Batas bawah MUTLAK CTR (%). Di bawah ini iklan dianggap tidak menarik klik, berapa pun
+ * median toko — toko yang seluruh iklannya buruk tidak boleh menurunkan standarnya sendiri
+ * sampai semua iklannya dianggap "sehat".
+ *
+ * KENAPA ada ambang kedua yang relatif: dengan 1,5% tetap, toko ini (CTR keseluruhan ±3,6%)
+ * membuat hampir SEMUA iklan lolos gerbang CTR, sehingga keputusan "naikkan" praktis hanya
+ * bergantung pada ROAS — padahal CTR adalah satu-satunya tanda apakah tayangannya menarik.
+ * `ambangCtrToko()` menaikkan ambang ke median toko sendiri, dengan angka ini sebagai lantai.
+ */
 export const AMBANG_CTR_SEHAT = 1.5;
 
 /**
@@ -68,7 +77,12 @@ export type MasukanAnalisa = {
    */
   // `pesanan` opsional: bila ekspor iklan memuat jumlah pesanan, CR dihitung dari pesanan
   // iklan itu sendiri — bukan dari unit snapshot (populasi order berbeda, CR jadi overstate).
-  iklanPerSku?: Map<string, { dilihat: number; klik: number; biaya: number; omzet: number; pesanan?: number }>;
+  iklanPerSku?: Map<string, {
+    dilihat: number; klik: number; biaya: number; omzet: number;
+    /** Omzet LANGSUNG (hanya pembelian dari iklan itu). null = kolom belum terbaca. */
+    omzetLangsung?: number | null;
+    pesanan?: number;
+  }>;
   /**
    * Metrik ORGANIK per SKU (kunjungan halaman produk TANPA iklan) dari `performa_produk`.
    * Kunci = SKU. Opsional supaya pemanggil lama tetap jalan; kosong = data belum ada.
@@ -150,6 +164,12 @@ export function bangunBaris(m: MasukanAnalisa): BarisSku[] {
       crSumber,
       biayaIklan: iklan ? iklan.biaya : null,
       roasAktual,
+      // ROAS dari omzet LANGSUNG. Berbeda arti dari `roasAktual` (omzet luas): yang ini
+      // hanya menghitung pembelian yang berasal dari iklan itu sendiri, sehingga angkanya
+      // selalu ≤ roasAktual. null = kolom langsung tidak ada di ekspor/DB.
+      roasLangsung: iklan && iklan.biaya > 0 && typeof iklan.omzetLangsung === "number"
+        ? bulat2(iklan.omzetLangsung / iklan.biaya)
+        : null,
       // Organik: null bila SKU tidak ada di impor Performa Produk — bukan nol.
       organikDilihat: organik ? organik.dilihat : null,
       organikKunjungan: organik ? organik.kunjungan : null,
@@ -175,8 +195,21 @@ function bulat2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-/** Keputusan yang disarankan untuk satu SKU yang diiklankan. */
-export type KeputusanIklan = "naikkan" | "hentikan" | "tahan" | "belum_cukup_data";
+/**
+ * Ambang CTR yang berlaku untuk satu toko pada satu periode: median CTR iklan toko,
+ * tidak pernah di bawah `AMBANG_CTR_SEHAT`.
+ *
+ * Hanya SKU yang tayangannya sudah lewat `AMBANG_DILIHAT_MIN` yang masuk median: iklan
+ * dengan 20 tayangan punya CTR liar (0% atau 50%) yang akan menarik median ke mana saja.
+ * null = tidak ada iklan yang bisa dinilai; pemanggil memakai `AMBANG_CTR_SEHAT`.
+ */
+export function ambangCtrToko(baris: BarisSku[]): number | null {
+  const ctr = baris
+    .filter((b) => b.ctr !== null && b.dilihat !== null && b.dilihat >= AMBANG_DILIHAT_MIN)
+    .map((b) => b.ctr as number);
+  if (ctr.length === 0) return null;
+  return Math.max(AMBANG_CTR_SEHAT, median(ctr));
+}
 
 /**
  * Putuskan tindakan iklan untuk satu SKU. FUNGSI MURNI — tanpa I/O, supaya bisa diuji.
@@ -184,7 +217,14 @@ export type KeputusanIklan = "naikkan" | "hentikan" | "tahan" | "belum_cukup_dat
  * Dipisah dari AI dengan sengaja: keputusan "naikkan/hentikan" menyangkut uang nyata,
  * jadi harus berasal dari aturan terbaca, bukan dari kalimat model bahasa.
  */
-export function keputusanIklan(b: BarisSku): { keputusan: KeputusanIklan; alasan: string } {
+export function keputusanIklan(
+  b: BarisSku,
+  /**
+   * Ambang CTR yang dipakai (lihat `ambangCtrToko`). Bawaannya `AMBANG_CTR_SEHAT` supaya
+   * pemanggil yang hanya punya SATU baris (uji, skenario) tidak perlu konteks toko.
+   */
+  ambangCtr: number = AMBANG_CTR_SEHAT
+): { keputusan: KeputusanIklan; alasan: string } {
   // 1. Sampel terlalu kecil → jangan menilai. Menyimpulkan dari 50 tayangan sama saja menebak.
   if (b.dilihat === null || b.dilihat < AMBANG_DILIHAT_MIN) {
     const angka = b.dilihat === null ? "belum ada data tayangan" : `baru ${b.dilihat} tayangan`;
@@ -204,12 +244,12 @@ export function keputusanIklan(b: BarisSku): { keputusan: KeputusanIklan; alasan
 
   // 3. CTR sehat DAN sudah melewati titik impas → layak didorong lebih besar.
   if (
-    b.ctr !== null && b.ctr >= AMBANG_CTR_SEHAT &&
+    b.ctr !== null && b.ctr >= ambangCtr &&
     b.roasAktual !== null && b.roasImpas !== null && b.roasAktual >= b.roasImpas
   ) {
     return {
       keputusan: "naikkan",
-      alasan: `Naikkan: CTR ${b.ctr}% sudah di atas ambang ${AMBANG_CTR_SEHAT}% dan ROAS aktual ${b.roasAktual} sudah melewati titik impas ${b.roasImpas}.`,
+      alasan: `Naikkan: CTR ${b.ctr}% sudah di atas ambang ${ambangCtr}% (median iklan toko, minimal ${AMBANG_CTR_SEHAT}%) dan ROAS aktual ${b.roasAktual} sudah melewati titik impas ${b.roasImpas}.`,
     };
   }
 

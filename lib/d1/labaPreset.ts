@@ -120,7 +120,13 @@ export async function siapkanHitung(
 export async function hitungDanSimpan(
   db: D1Database, siap: SiapHitung, rows: BarisPreset[], file: string,
   tanggal: string, oleh: string | null, simpan: boolean, mode: ModeSimpan = "tambah_baru",
-  berkas?: { status: Map<string, string>; dari: string; sampai: string }
+  berkas?: { status: Map<string, string>; dari: string; sampai: string },
+  /**
+   * Hari ini hanya tercakup sebagian oleh berkas (`potongPerTanggal`). Disimpan karena
+   * pengetahuan ini hanya ada SAAT impor; setelahnya grafik tren tidak bisa membedakan
+   * hari setengah jadi dari hari yang penjualannya benar-benar anjlok.
+   */
+  parsial = false
 ): Promise<{ tanggal: string; agregat: AgregatPreset; klasifikasi: Klasifikasi }> {
   // Lapis 2 D-5: status lama untuk deteksi No yang jadi Batal/hilang dari file.
   const { results: lamaRows } = await db.prepare(
@@ -183,10 +189,10 @@ export async function hitungDanSimpan(
     // dihitung dua kali, dan berkas dengan cakupan lebih luas tidak bisa "kalah".
     const lama = await db
       .prepare(
-        "SELECT jml_order, jml_baris, omzet, hpp, biaya, pajak, laba, no_json, rincian_json, biaya_jenis_json FROM laba_snapshot WHERE preset_id = ? AND tanggal = ?"
+        "SELECT jml_order, jml_baris, omzet, hpp, biaya, pajak, laba, no_json, rincian_json, biaya_jenis_json, parsial FROM laba_snapshot WHERE preset_id = ? AND tanggal = ?"
       )
       .bind(siap.presetId, tanggal)
-      .first<{ jml_order: number; jml_baris: number; omzet: number; hpp: number; biaya: number; pajak: number; laba: number; no_json: string; rincian_json: string; biaya_jenis_json: string | null }>();
+      .first<{ jml_order: number; jml_baris: number; omzet: number; hpp: number; biaya: number; pajak: number; laba: number; no_json: string; rincian_json: string; biaya_jenis_json: string | null; parsial: number | null }>();
 
     // Himpunan nomor order yang sudah tercatat untuk tanggal ini.
     const nomorLama = new Set<string>();
@@ -278,11 +284,15 @@ export async function hitungDanSimpan(
       }
     }
 
+    // Hari dianggap PENUH bila salah satu berkas yang menyumbangnya mencakup hari itu utuh.
+    // Berkas pertama yang parsial tidak boleh menurunkan status berkas berikutnya yang penuh.
+    const parsialGabung = lama && abaikanLama ? (lama.parsial === 0 ? 0 : (parsial ? 1 : 0)) : (parsial ? 1 : 0);
+
     const stmts: D1PreparedStatement[] = [
       db.prepare(
         "INSERT OR REPLACE INTO laba_snapshot (preset_id, tanggal, jml_order, jml_baris, omzet, hpp, biaya, pajak, laba, " +
-        "tolak_json, rincian_json, peringatan_json, no_json, file, at, by, biaya_jenis_json) " +
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        "tolak_json, rincian_json, peringatan_json, no_json, file, at, by, biaya_jenis_json, parsial) " +
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
       ).bind(
         siap.presetId, tanggal, gabung.jml_order, gabung.jml_baris, gabung.omzet, gabung.hpp,
         gabung.biaya, gabung.pajak, gabung.laba, JSON.stringify(agregat.tolak),
@@ -293,7 +303,7 @@ export async function hitungDanSimpan(
         JSON.stringify(rincianLama.length > 0 ? rincianLama : agregat.rincian),
         JSON.stringify(agregat.peringatan),
         JSON.stringify([...new Set([...nomorLama, ...agregat.orders.map((x) => x.no_pesanan)])]),
-        file.slice(0, 120), at, oleh, JSON.stringify(biayaJenisGabung)
+        file.slice(0, 120), at, oleh, JSON.stringify(biayaJenisGabung), parsialGabung
       ),
     ];
     for (const x of agregat.orders) {

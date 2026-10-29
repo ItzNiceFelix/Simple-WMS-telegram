@@ -31,6 +31,8 @@ export type SnapshotAnalisa = {
   pajak: number;
   laba: number;
   rincian: RincianSnapshot[];
+  /** true = hari ini tidak tercakup penuh oleh berkas impor. null = belum dinilai. */
+  parsial: boolean | null;
 };
 
 /**
@@ -77,6 +79,9 @@ export async function ambilSnapshot(
     pajak: Number(s["pajak"] ?? 0),
     laba: Number(s["laba"] ?? 0),
     rincian,
+    // Kolom `parsial` baru ada sejak migrasi 0048. Snapshot lama: null (belum dinilai) —
+    // mengisinya `false` berarti mengklaim harinya penuh tanpa pernah memeriksa.
+    parsial: s["parsial"] === null || s["parsial"] === undefined ? null : Number(s["parsial"]) === 1,
   };
 }
 
@@ -153,21 +158,29 @@ export async function metrikIklanPerSku(
   presetId: number,
   dari: string,
   sampai: string
-): Promise<Map<string, { dilihat: number; klik: number; biaya: number; omzet: number }>> {
-  const peta = new Map<string, { dilihat: number; klik: number; biaya: number; omzet: number }>();
+): Promise<Map<string, { dilihat: number; klik: number; biaya: number; omzet: number; omzetLangsung: number | null }>> {
+  const peta = new Map<string, { dilihat: number; klik: number; biaya: number; omzet: number; omzetLangsung: number | null }>();
   const r = await db
     .prepare(
+      // `omzet_langsung` bisa NULL (kolom baru sejak migrasi 0049). SUM mengabaikan NULL,
+      // sehingga hasilnya 0 bila TIDAK SATU PUN baris punya nilainya — 0 itu bukan
+      // "penjualan langsung nol" melainkan "belum terbaca", jadi di bawah diubah ke null.
       "SELECT sku, COALESCE(SUM(dilihat), 0) AS dilihat, COALESCE(SUM(klik), 0) AS klik, " +
-        "COALESCE(SUM(biaya), 0) AS biaya, COALESCE(SUM(omzet_iklan), 0) AS omzet " +
+        "COALESCE(SUM(biaya), 0) AS biaya, COALESCE(SUM(omzet_iklan), 0) AS omzet, " +
+        "SUM(omzet_langsung) AS omzet_langsung " +
         "FROM ads_produk WHERE preset_id = ? AND tanggal BETWEEN ? AND ? GROUP BY sku"
     )
     .bind(presetId, dari, sampai)
-    .all<{ sku: string; dilihat: number; klik: number; biaya: number; omzet: number }>()
+    .all<{ sku: string; dilihat: number; klik: number; biaya: number; omzet: number; omzet_langsung: number | null }>()
     .catch(() => null);
   for (const x of r?.results ?? []) {
     const angka = [Number(x.dilihat ?? 0), Number(x.klik ?? 0), Number(x.biaya ?? 0), Number(x.omzet ?? 0)];
     if (!angka.every(Number.isFinite)) continue; // baris rusak dilewati, bukan meracuni seluruh tabel
-    peta.set(String(x.sku), { dilihat: angka[0], klik: angka[1], biaya: angka[2], omzet: angka[3] });
+    const langsung = x.omzet_langsung === null || x.omzet_langsung === undefined ? null : Number(x.omzet_langsung);
+    peta.set(String(x.sku), {
+      dilihat: angka[0], klik: angka[1], biaya: angka[2], omzet: angka[3],
+      omzetLangsung: langsung !== null && Number.isFinite(langsung) ? langsung : null,
+    });
   }
   return peta;
 }
@@ -454,7 +467,7 @@ export async function snapshotRentang(
   const hasil = await db
     .prepare(
       "SELECT tanggal, omzet, hpp, biaya, COALESCE(pajak, 0) AS pajak, laba, jml_order, " +
-        "COALESCE(biaya_jenis_json, '{}') AS biaya_jenis_json " +
+        "COALESCE(biaya_jenis_json, '{}') AS biaya_jenis_json, parsial " +
         "FROM laba_snapshot WHERE preset_id = ? AND tanggal >= ? AND tanggal <= ? ORDER BY tanggal"
     )
     .bind(presetId, dari, sampai)
@@ -476,6 +489,7 @@ export async function snapshotRentang(
       omzet: angka[0], hpp: angka[1], biaya: angka[2],
       pajak: angka[3], laba: angka[4], jml_order: angka[5],
       biayaJenis: bacaBiayaJenis(r["biaya_jenis_json"]),
+      parsial: r["parsial"] === null || r["parsial"] === undefined ? null : Number(r["parsial"]) === 1,
     });
   }
   return out;

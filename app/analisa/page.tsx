@@ -9,7 +9,7 @@
 // Analisa cepat langsung tampil tanpa tombol dan tanpa AI — angka benar harus selalu
 // bisa didapat tanpa menunggu model dan tanpa biaya token.
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ChartNoAxesCombined, ChevronRight, Info, Lightbulb, Megaphone, SlidersHorizontal, Sparkles, TriangleAlert,
 } from "lucide-react";
@@ -40,12 +40,25 @@ import {
 } from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AnalisaSettingAi } from "@/components/dashboard/analisa-setting-ai";
+import { WaterfallLaba } from "@/components/dashboard/chart/waterfall-laba";
+import { AnalisaKeputusan, BadgeTag } from "@/components/dashboard/analisa-keputusan";
+import { AnalisaKpi } from "@/components/dashboard/analisa-kpi";
+import { ParetoLaba } from "@/components/dashboard/chart/pareto-laba";
 import { formatAngka, formatRupiah } from "@/lib/dashboard/format";
-import { keputusanIklan, organikCr, type KeputusanIklan } from "@/lib/analisa/hitung";
+import { organikCr } from "@/lib/analisa/hitung";
+import { dataFunnel, dataPareto, dataPeluang, dataPenggerak, dataRoas, dataStokKontribusi, dataWaterfall } from "@/lib/analisa/grafik";
+import { PenggerakDelta } from "@/components/dashboard/chart/penggerak-delta";
+import { FunnelOrganik } from "@/components/dashboard/chart/funnel-organik";
+import { PetaPeluang } from "@/components/dashboard/chart/peta-peluang";
+import { RoasVsImpas } from "@/components/dashboard/chart/roas-vs-impas";
+import { StokKontribusi } from "@/components/dashboard/chart/stok-kontribusi";
+import { LABEL_TAG } from "@/lib/analisa/tag";
 import {
   NYATA_TAMPIL, ringkasGagal, saranGagal, type RingkasanGagal,
 } from "@/lib/analisa/ringkas-gagal";
-import type { BarisSku, RingkasanAnalisa, Temuan } from "@/lib/analisa/tipe";
+import type { BarisSku, KeputusanIklan, RingkasanAnalisa, Temuan } from "@/lib/analisa/tipe";
+import type { Aksi, TujuanTab } from "@/lib/analisa/aksi";
+import type { AngkaKpi, HasilKpi } from "@/lib/analisa/kpi";
 
 // ── Bentuk data dari server (app/api/analisa) ──
 // Temuan/BarisSku/Ringkasan WAJIB diimpor, bukan dideklarasikan ulang di sini: tipe lokal
@@ -61,6 +74,29 @@ type Hasil = {
   jmlSnapshot: number;
   tanggalTersedia: string[];
   ambangMarginTipis: number;
+  /** Total biaya iklan per SKU. null = belum diimpor (BUKAN nol). */
+  biayaIklan: number | null;
+  /** Omzet yang diatribusikan ke iklan. null = data iklan tidak ada. */
+  omzetIklan: number | null;
+  /** Biaya iklan grup/GMV Max: tidak bisa dilekatkan ke SKU, tetapi tetap uang keluar. */
+  biayaIklanTakTerpetakan: number | null;
+  iklanTakTerpetakan: { nama: string; biaya: number }[];
+  /** Snapshot terdekat sebelum tanggal ini, untuk delta. null = belum ada pembanding. */
+  pembanding: {
+    tanggal: string;
+    /** Rincian SKU pembanding — dasar grafik penggerak delta. */
+    baris: { sku: string; nama: string | null; unit: number; hppSatuan: number; hargaJual: number; marginSatuan: number; marginPersen: number; kontribusi: number }[];
+    angka: AngkaKpi;
+  } | null;
+  /** Rentang laporan iklan yang terakhir diimpor. null = belum ada impor berperiode. */
+  periodeIklan: { dari: string; sampai: string } | null;
+  /** Peringatan bila periode iklan ≠ jendela produk. null = sebanding. */
+  peringatanPeriodeIklan: string | null;
+  /** true = periode memuat hari yang cakupannya tidak utuh. null = belum dinilai. */
+  parsial: boolean | null;
+  aksi: Aksi[];
+  alasanTanpaAksi: string | null;
+  kpi: HasilKpi;
 };
 
 type SaranIklan = {
@@ -142,6 +178,11 @@ function Analisa() {
   const [tanggalAda, setTanggalAda] = useState<string[]>([]);
   const [tanggalPerPreset, setTanggalPerPreset] = useState<Record<string, string[]>>({});
   const [hasil, setHasil] = useState<Hasil | null>(null);
+  // Tab dikendalikan state supaya panel Keputusan bisa memindahkan pembaca ke tab yang
+  // memuat buktinya. Tanpa ini tombol "Lihat detail" tidak melakukan apa pun.
+  const [tab, setTab] = useState("ringkasan");
+  /** Sub-tab di dalam tab Produk. "Lihat detail" dari panel bisa mendarat tepat di sini. */
+  const [subTab, setSubTab] = useState("temuan");
   const [iklan, setIklan] = useState<SaranIklan | null>(null);
   const [mendalam, setMendalam] = useState<{ narasi: string; model: string; reasoning: string; bahan?: string } | null>(null);
   /** Kegagalan memuat saran iklan. Tanpa state ini kartu tertahan di "Memuat saran iklan…"
@@ -269,10 +310,42 @@ function Analisa() {
     void muatAnalisa(presetId, tanggal);
   }, [presetId, tanggal, muatAnalisa]);
 
+  // Data waterfall disusun fungsi MURNI, bukan di dalam komponen: komponen hanya menggambar.
+  // `hasil` null (memuat/kosong) sengaja tidak digambar — chart kosong tanpa angka lebih
+  // membingungkan daripada tidak ada chart sama sekali.
+  const waterfall = useMemo(
+    () => (hasil ? dataWaterfall(hasil.ringkasan, hasil.biayaIklan ?? null, hasil.biayaIklanTakTerpetakan ?? null) : null),
+    [hasil]
+  );
+  const pareto = useMemo(() => (hasil ? dataPareto(hasil.baris) : null), [hasil]);
+  const penggerak = useMemo(
+    () => (hasil
+      ? dataPenggerak(hasil.baris, hasil.pembanding?.baris.map((r) => ({
+          // Bentuk `BarisSku` penuh tidak diperlukan grafik ini; field lain diisi null
+          // supaya tipenya jujur (tidak ada angka karangan).
+          ...r,
+          roasImpas: null, hppMaster: null, hppNaik: 0, stok: null,
+          dilihat: null, klik: null, ctr: null, cr: null, biayaIklan: null, roasAktual: null,
+          organikDilihat: null, organikKunjungan: null, organikKeranjang: null,
+          organikPesanan: null, organikOmzet: null,
+        })) ?? null)
+      : null),
+    [hasil]
+  );
+  const funnel = useMemo(() => (hasil ? dataFunnel(hasil.baris) : null), [hasil]);
+  const peluang = useMemo(
+    () => (hasil ? dataPeluang(hasil.baris, new Map(hasil.baris.map((b) => [b.sku, b.tag ?? []]))) : null),
+    [hasil]
+  );
+  const roas = useMemo(() => (hasil ? dataRoas(hasil.baris) : null), [hasil]);
+  const stok = useMemo(() => (hasil ? dataStokKontribusi(hasil.baris) : null), [hasil]);
+
+  // Saran iklan dimuat saat tab Iklan DIBUKA. Dulu hanya lewat `onClick` tombol tab,
+  // sehingga tab yang dipindahkan secara program (dari panel Keputusan) tampil kosong.
   // Saran iklan dimuat HANYA saat tab dibuka — tidak membebani tampilan awal.
   // `ulang` memaksa muat ulang: tanpa itu tombol "Coba lagi" tidak melakukan apa pun
   // karena `iklan`/`memuatIklan` sudah dianggap selesai.
-  async function muatIklan(ulang = false) {
+  const muatIklan = useCallback(async (ulang = false) => {
     if (memuatIklan || !presetId || !tanggal) return;
     if (iklan && !ulang) return;
     setMemuatIklan(true);
@@ -291,7 +364,12 @@ function Analisa() {
     } finally {
       setMemuatIklan(false);
     }
-  }
+  }, [memuatIklan, presetId, tanggal, iklan]);
+
+  useEffect(() => {
+    if (tab !== "iklan") return;
+    void muatIklan();
+  }, [tab, muatIklan]);
 
   /**
    * Analisa mendalam (AI). Sengaja di balik TOMBOL: angka benar sudah tersedia tanpa AI,
@@ -416,27 +494,75 @@ function Analisa() {
             </EmptyHeader>
           </Empty>
         ) : (
-          <Tabs defaultValue="ringkasan">
+          <Tabs value={tab} onValueChange={setTab}>
+            {/* Panel keputusan DI ATAS tab: jawaban "apa yang harus kulakukan" tidak boleh
+                menunggu pembaca memilih tab dulu. */}
+            <AnalisaKeputusan
+              aksi={hasil.aksi ?? []}
+              alasanKosong={hasil.alasanTanpaAksi}
+              biayaIklanTakTerpetakan={hasil.biayaIklanTakTerpetakan}
+              iklanTakTerpetakan={hasil.iklanTakTerpetakan ?? []}
+              onBukaTab={(t: TujuanTab) => {
+                // "temuan" bukan tab tersendiri lagi: ia sub-tab pertama di dalam Produk.
+                if (t === "temuan") {
+                  setTab("produk");
+                  setSubTab("temuan");
+                  return;
+                }
+                // Aksi tingkat SKU mendarat di daftar semua produk — di situlah barisnya.
+                if (t === "produk") {
+                  setTab("produk");
+                  setSubTab("semua");
+                  return;
+                }
+                setTab(t);
+              }}
+            />
+
+            {/* LIMA tab, bukan enam: Detail Produk, Semua Produk, dan Temuan menjawab
+                pertanyaan yang sama ("produk mana dan kenapa") dan dulu memaksa pembaca
+                menebak di tab mana jawabannya berada. Ketiganya kini satu tab dengan
+                sub-tab. Panel Keputusan sengaja TETAP di atas tab — ia jawaban untuk
+                "apa yang harus kulakukan", bukan salah satu isi tab. */}
             <TabsList>
               <TabsTrigger value="ringkasan" data-testid="tab-ringkasan">Ringkasan</TabsTrigger>
-              <TabsTrigger value="detail-produk" data-testid="tab-detail-produk">Detail Produk</TabsTrigger>
-              <TabsTrigger value="temuan" data-testid="tab-temuan">Temuan</TabsTrigger>
-              <TabsTrigger value="produk" data-testid="tab-produk">Semua Produk</TabsTrigger>
-              <TabsTrigger value="iklan" onClick={() => void muatIklan()} data-testid="tab-iklan">
-                Saran Iklan
-              </TabsTrigger>
+              <TabsTrigger value="produk" data-testid="tab-produk">Produk</TabsTrigger>
+              <TabsTrigger value="iklan" data-testid="tab-iklan">Iklan</TabsTrigger>
+              <TabsTrigger value="stok" data-testid="tab-stok">Stok</TabsTrigger>
               <TabsTrigger value="peta" data-testid="tab-peta">Peta SKU</TabsTrigger>
             </TabsList>
 
             {/* ══ TAB RINGKASAN (default) ══ */}
             {/* Grafik & klasifikasi produk. Semua angka dari aksi=tren; komponen hanya menggambar. */}
             <TabsContent value="ringkasan" className="flex flex-col gap-4">
+              {/* Kesimpulan dulu, baru bukti: satu grafik menjawab "ke mana omzet pergi"
+                  sebelum pembaca melihat tabel dan tren harian. */}
+              {hasil.kpi ? <AnalisaKpi data={hasil.kpi} /> : null}
+              {waterfall ? <WaterfallLaba data={waterfall} /> : null}
+              {pareto ? <ParetoLaba data={pareto} /> : null}
+              {penggerak ? <PenggerakDelta data={penggerak} /> : null}
+              {funnel ? <FunnelOrganik data={funnel} /> : null}
               <AnalisaRingkasan presetId={presetId} tanggal={tanggal} />
             </TabsContent>
 
-            <TabsContent value="detail-produk" className="flex flex-col gap-4">
-              <AnalisaDetailProduk presetId={presetId} tanggal={tanggal} />
-            </TabsContent>
+            {/* ══ TAB PRODUK (Temuan / Semua Produk / Detail) ══ */}
+            <TabsContent value="produk" className="flex flex-col gap-4">
+              {/* Sub-tab, bukan satu halaman gulir panjang: tabel 200 baris di atas grafik
+                  analitik membuat keduanya sulit ditemukan. Urutan sub-tab mengikuti cara
+                  membaca: kesimpulan (Temuan) → daftar (Semua Produk) → pendalaman (Detail). */}
+              <Tabs value={subTab} onValueChange={setSubTab}>
+                <TabsList>
+                  <TabsTrigger value="temuan" data-testid="subtab-temuan">Temuan</TabsTrigger>
+                  <TabsTrigger value="semua" data-testid="subtab-semua">Semua Produk</TabsTrigger>
+                  <TabsTrigger value="detail" data-testid="subtab-detail">Detail Produk</TabsTrigger>
+                </TabsList>
+
+                <TabsContent value="detail" className="flex flex-col gap-4">
+                  {/* Peta peluang di level toko: pertanyaannya "produk mana yang boros trafik",
+                      dan jawabannya butuh SEMUA SKU sekaligus untuk dibandingkan. */}
+                  {peluang ? <PetaPeluang data={peluang} /> : null}
+                  <AnalisaDetailProduk presetId={presetId} tanggal={tanggal} />
+                </TabsContent>
 
             {/* ══ TAB TEMUAN ══ */}
             <TabsContent value="temuan" className="flex flex-col gap-4">
@@ -611,7 +737,7 @@ function Analisa() {
             </TabsContent>
 
             {/* ══ TAB SEMUA PRODUK ══ */}
-            <TabsContent value="produk">
+                <TabsContent value="semua" className="flex flex-col gap-4">
               <Card>
                 <CardHeader>
                   <CardTitle className="text-base">Margin per produk</CardTitle>
@@ -639,6 +765,13 @@ function Analisa() {
                           <TableHead className="text-right">CTR</TableHead>
                           <TableHead className="text-right">CR</TableHead>
                           <TableHead className="text-right">ROAS aktual</TableHead>
+                    <TableHead className="text-right">ROAS langsung</TableHead>
+                          {/* Dua ROAS: luas (semua penjualan yang tersentuh iklan) dan
+                              langsung (hanya yang dibeli dari iklan itu). Selisih keduanya
+                              menunjukkan berapa penjualan yang "ikut" tanpa berasal dari iklan. */}
+                          <TableHead className="text-right" title="Hanya pembelian yang berasal dari iklan itu sendiri">
+                            ROAS<br />langsung
+                          </TableHead>
                           {/* Kolom ORGANIK (tanpa iklan) — dari Performa Produk. Sengaja
                               dipisah dari Dilihat/Klik iklan di kiri: dua angka ini menjawab
                               pertanyaan berbeda dan mencampurnya menyesatkan pembaca. */}
@@ -655,10 +788,16 @@ function Analisa() {
                           return (
                             <TableRow key={b.sku} className={rugi ? "bg-red-50 dark:bg-red-950/30" : undefined}>
                               <TableCell className="font-mono text-xs">{b.sku}</TableCell>
-                              <TableCell className="max-w-[240px] truncate">
-                                {b.nama ?? "—"}
-                                {b.hppNaik > 0 ? (
-                                  <span className="ml-1 text-[10px] text-amber-700">HPP naik {formatRupiah(b.hppNaik)}</span>
+                              <TableCell className="max-w-[240px]">
+                                <span className="block truncate">{b.nama ?? "—"}</span>
+                                {/* Tag datang dari server (`tagProduk`), bukan dihitung di
+                                    sini: dua tempat yang menyimpulkan sendiri akan berbeda. */}
+                                {b.tag && b.tag.length > 0 ? (
+                                  <span className="mt-0.5 flex flex-wrap gap-1">
+                                    {b.tag.map((t) => (
+                                      <BadgeTag key={t} tag={t} label={LABEL_TAG[t]} />
+                                    ))}
+                                  </span>
                                 ) : null}
                               </TableCell>
                               <TableCell className="text-right tabular-nums">{formatAngka(b.unit)}</TableCell>
@@ -689,6 +828,9 @@ function Analisa() {
                                 ) : null}
                               </TableCell>
                               <TableCell className="text-right tabular-nums">{metrik(b.roasAktual, "×")}</TableCell>
+                              <TableCell className="text-right tabular-nums text-muted-foreground">
+                                {metrik(b.roasLangsung ?? null, "×")}
+                              </TableCell>
                               <TableCell className="text-right tabular-nums">{metrik(b.organikKunjungan)}</TableCell>
                               <TableCell className="text-right tabular-nums">{metrik(b.organikPesanan)}</TableCell>
                               <TableCell className="text-right tabular-nums">
@@ -696,8 +838,13 @@ function Analisa() {
                               </TableCell>
                               {/* Alasan lengkap (berisi angka) ada di title — tabel jadi ringkas
                                   tapi pemeriksaan tetap mungkin tanpa pindah halaman. */}
-                              <TableCell className={`whitespace-nowrap font-medium ${KELAS_KEPUTUSAN[keputusanIklan(b).keputusan]}`}>
-                                <span title={keputusanIklan(b).alasan}>{LABEL_KEPUTUSAN[keputusanIklan(b).keputusan]}</span>
+                              {/* Putusan datang dari server (ambang CTR toko), bukan dihitung
+                                  di sini: menghitung ulang dengan ambang bawaan akan membuat
+                                  kolom ini berbeda dari panel Keputusan untuk SKU yang sama. */}
+                              <TableCell className={`whitespace-nowrap font-medium ${b.keputusanIklan ? KELAS_KEPUTUSAN[b.keputusanIklan.keputusan] : ""}`}>
+                                <span title={b.keputusanIklan?.alasan}>
+                                  {b.keputusanIklan ? LABEL_KEPUTUSAN[b.keputusanIklan.keputusan] : "—"}
+                                </span>
                               </TableCell>
                             </TableRow>
                           );
@@ -714,10 +861,37 @@ function Analisa() {
                   ) : null}
                 </CardContent>
               </Card>
+                </TabsContent>
+              </Tabs>
+            </TabsContent>
+
+            {/* ══ TAB STOK ══ */}
+            <TabsContent value="stok" className="flex flex-col gap-4">
+              {/* Stok dipisah dari Produk: pertanyaannya beda ("apa yang harus direstok"
+                  vs "produk mana yang menguntungkan"), dan datanya datang dari sumber lain
+                  (gudang/Kledo, bukan penjualan). */}
+              {stok ? <StokKontribusi data={stok} /> : null}
+              {stok && stok.titik.length === 0 ? null : (
+                <p className="text-xs text-muted-foreground">
+                  Hari tersisa dihitung dari stok fisik (gudang non-ONLINE) dibagi unit terjual
+                  pada periode ini. Stok marketplace (gudang ONLINE) bergerak lewat input manual
+                  admin dan sinkronisasi Kledo, jadi tidak dipakai di sini.
+                </p>
+              )}
             </TabsContent>
 
             {/* ══ TAB SARAN IKLAN ══ */}
             <TabsContent value="iklan" className="flex flex-col gap-4">
+              {/* Grafik dulu, tabel saran setelahnya: "iklan mana yang rugi" dijawab
+                  sebelum daftar panjang. */}
+              {roas ? <RoasVsImpas data={roas} /> : null}
+              {hasil.peringatanPeriodeIklan ? (
+                <Alert data-testid="peringatan-periode-iklan">
+                  <TriangleAlert aria-hidden />
+                  <AlertTitle>Periode iklan berbeda dari periode produk</AlertTitle>
+                  <AlertDescription>{hasil.peringatanPeriodeIklan}</AlertDescription>
+                </Alert>
+              ) : null}
               {/* Impor iklan DIPINDAH ke /sinkronisasi: satu tempat untuk semua impor.
                   Kartu ini tinggal memberi jalan, bukan menjadi jalur kedua yang bisa
                   menyimpang aturannya. */}
@@ -930,7 +1104,7 @@ function KotakAngka({ label, nilai, catatan }: { label: string; nilai: string; c
 function KelompokKeputusan({ baris }: { baris: BarisSku[] }) {
   const kelompok = URUTAN_KEPUTUSAN.map((k) => ({
     keputusan: k,
-    sku: baris.filter((b) => keputusanIklan(b).keputusan === k),
+    sku: baris.filter((b) => b.keputusanIklan?.keputusan === k),
   })).filter((g) => g.sku.length > 0);
 
   if (kelompok.length === 0) {
@@ -971,6 +1145,7 @@ function KelompokKeputusan({ baris }: { baris: BarisSku[] }) {
                     <TableHead className="text-right">Klik</TableHead>
                     <TableHead className="text-right">CTR</TableHead>
                     <TableHead className="text-right">ROAS aktual</TableHead>
+                    <TableHead className="text-right">ROAS langsung</TableHead>
                     <TableHead className="text-right">ROAS impas</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -983,6 +1158,9 @@ function KelompokKeputusan({ baris }: { baris: BarisSku[] }) {
                       <TableCell className="text-right tabular-nums">{metrik(b.klik)}</TableCell>
                       <TableCell className="text-right tabular-nums">{metrik(b.ctr, "%")}</TableCell>
                       <TableCell className="text-right tabular-nums">{metrik(b.roasAktual, "×")}</TableCell>
+                      <TableCell className="text-right tabular-nums text-muted-foreground">
+                        {metrik(b.roasLangsung ?? null, "×")}
+                      </TableCell>
                       <TableCell className="text-right tabular-nums">
                         {b.roasImpas === null ? "—" : b.roasImpas}
                       </TableCell>

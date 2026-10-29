@@ -98,6 +98,11 @@ export type BarisSku = {
   biayaIklan: number | null;
   /** ROAS aktual = omzet iklan ÷ biaya iklan. null bila biaya 0/tidak ada — BUKAN Infinity. */
   roasAktual: number | null;
+  /**
+   * ROAS dari omzet LANGSUNG (pembelian yang berasal dari iklan itu saja) ÷ biaya iklan.
+   * Selalu ≤ `roasAktual`. null = angka langsung tidak ada di ekspor.
+   */
+  roasLangsung?: number | null;
 
   // ── Metrik ORGANIK (dari Performa Produk: kunjungan halaman, TANPA iklan) ──
   // PERINGATAN: JANGAN TERTUKAR dengan `dilihat`/`klik`/`biayaIklan` di atas.
@@ -116,7 +121,42 @@ export type BarisSku = {
   organikPesanan: number | null;
   /** Omzet dari pesanan organik. */
   organikOmzet: number | null;
+  /**
+   * Label ringkas yang menjelaskan KEADAAN SKU ini (bintang, boros tayangan, merugi, …).
+   * Dihitung SEKALI oleh `tagProduk()` di server — bukan di komponen: tag adalah kesimpulan,
+   * dan dua tempat yang menyimpulkan sendiri akan cepat berbeda (kelas bug yang sama dengan
+   * `cr`/`crSumber`). Kosong = tidak ada label yang berlaku.
+   */
+  tag?: Tag[];
+  /**
+   * Putusan iklan untuk SKU ini, dihitung SERVER dengan ambang CTR toko (`ambangCtrToko`).
+   * Komponen hanya menampilkan: kalau halaman menghitungnya sendiri dengan ambang bawaan,
+   * badge-nya akan berbeda dari kartu Keputusan untuk SKU yang sama.
+   */
+  keputusanIklan?: { keputusan: KeputusanIklan; alasan: string };
 };
+
+/**
+ * Keputusan yang disarankan untuk satu SKU yang diiklankan.
+ *
+ * Ditaruh di berkas ini (bukan di `hitung.ts`) supaya `BarisSku` bisa membawa hasilnya tanpa
+ * membuat impor melingkar. Tipe ini TIDAK mengimpor apa pun, jadi aman dipakai komponen klien.
+ */
+export type KeputusanIklan = "naikkan" | "hentikan" | "tahan" | "belum_cukup_data";
+
+/**
+ * Label keadaan satu SKU. Sengaja berupa kata benda pendek supaya bisa dipakai sebagai
+ * badge di tabel DAN sebagai kunci warna chart tanpa penerjemahan tambahan.
+ */
+export type Tag =
+  | "bintang"
+  | "boros_tayangan"
+  | "bocor_keranjang"
+  | "potensi"
+  | "merugi"
+  | "margin_tipis"
+  | "hpp_naik"
+  | "stok_kritis";
 
 /** Hasil lengkap analisa cepat. */
 export type HasilAnalisa = {

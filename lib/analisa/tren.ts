@@ -22,6 +22,11 @@ export type TitikHarian = {
   jmlOrder: number;
   /** Pecahan biaya per label; kosong bila snapshot belum menyimpannya. */
   biayaJenis: Record<string, number>;
+  /**
+   * Hari ini tidak utuh (hari tepi berkas Order.all). `null`/kosong = belum dinilai
+   * (snapshot lama sebelum migrasi 0048), BUKAN "penuh".
+   */
+  parsial?: boolean | null;
 };
 
 export type Delta = {
@@ -83,6 +88,8 @@ export type SnapshotRinci = {
    * pembaca WAJIB jatuh ke pengelompokan 3 bagian, bukan menganggap biayanya nol.
    */
   biayaJenis?: Record<string, number>;
+  /** Lihat `TitikHarian.parsial`. */
+  parsial?: boolean | null;
 };
 
 /** Tanggal ISO mundur n hari. Exported: dipakai server (rentang 7 hari) dan UI (pilihan rentang). */
@@ -118,6 +125,7 @@ export function seriHarian(snapshots: SnapshotRinci[], dari: string, sampai: str
       marginPersen: s.omzet > 0 ? Math.round((s.laba / s.omzet) * 10000) / 100 : null,
       jmlOrder: s.jml_order,
       biayaJenis: s.biayaJenis ?? {},
+      parsial: s.parsial ?? null,
     });
   }
   return out;

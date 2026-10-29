@@ -28,6 +28,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from "@/components/ui/table";
 import { tampilkanGagalTulis } from "@/components/dashboard/umpan-tulis";
+import { TrenHarian } from "@/components/dashboard/chart/tren-harian";
 import { formatAngka, formatRupiah } from "@/lib/dashboard/format";
 import type {
   BarisProdukTren, Pembanding, RingkasRentang, TitikHarian,
@@ -87,9 +88,9 @@ function rentangBebasSah(dari: string, sampai: string): boolean {
 
 /** Warna per klasifikasi produk. Kelas Tailwind supaya ikut tema gelap. */
 const GAYA_KELAS: Record<BarisProdukTren["kelas"], { label: string; kelas: string; warna: string }> = {
-  fast: { label: "Fast moving", kelas: "bg-emerald-600/15 text-emerald-700 dark:text-emerald-400", warna: "#10b981" },
-  slow: { label: "Slow moving", kelas: "bg-amber-500/15 text-amber-700 dark:text-amber-400", warna: "#f59e0b" },
-  dead: { label: "Dead stock", kelas: "bg-red-600/15 text-red-700 dark:text-red-400", warna: "#ef4444" },
+  fast: { label: "Fast moving", kelas: "bg-emerald-600/15 text-emerald-700 dark:text-emerald-400", warna: "var(--grafik-untung)" },
+  slow: { label: "Slow moving", kelas: "bg-amber-500/15 text-amber-700 dark:text-amber-400", warna: "var(--grafik-netral)" },
+  dead: { label: "Dead stock", kelas: "bg-red-600/15 text-red-700 dark:text-red-400", warna: "var(--grafik-rugi)" },
 };
 
 /** Jumlah SKU per klasifikasi. Bukan satu-liner inline: dipakai badge DAN grafik batang. */
@@ -145,21 +146,7 @@ export function AnalisaRingkasan({ presetId, tanggal }: { presetId: number; tang
   const [data, setData] = useState<ResponsTren | null>(null);
   const [memuat, setMemuat] = useState(false);
 
-  // `data` diganti seluruhnya tiap fetch, jadi identitasnya cukup sebagai dependensi.
-  const { adaHarian, dataHarian } = useMemo(() => {
-    const seri = data?.seri ?? [];
-    return {
-      adaHarian: seri.some((t) => t !== null),
-      dataHarian: seri.map((t) => ({
-        // Tanggal penuh: sumbu X memotongnya jadi dua digit hari lewat `tickFormatter` supaya
-        // 30 titik tidak bertumpuk, sementara tooltip tetap menyebut tanggal lengkap.
-        // Titik null tetap punya tanggal kosong agar celahnya terbaca.
-        tanggal: t?.tanggal ?? "",
-        omzet: t ? t.omzet : null,
-        laba: t ? t.laba : null,
-      })),
-    };
-  }, [data]);
+
 
   // Parameter permintaan dirakit di luar effect supaya identitasnya (bukan tiap ketikan di
   // input) yang jadi pemicu fetch: mengetik ujung pertama belum mengubah `kunciBebas`.
@@ -217,6 +204,8 @@ export function AnalisaRingkasan({ presetId, tanggal }: { presetId: number; tang
   }
 
   const ringkas = data.ringkas;
+  const seri = data.seri ?? [];
+  const adaHarian = seri.some((t) => t !== null);
   const banding = data.bandingPeriode;
   const produk = data.produk ?? [];
   const tanggalDipakai = data.tanggalDipakai ?? [];
@@ -501,39 +490,11 @@ export function AnalisaRingkasan({ presetId, tanggal }: { presetId: number; tang
           </Card>
 
           {/* ══ GRAFIK HARIAN ══ */}
-          <Card data-testid="grafik-harian">
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-base">
-                <TrendingUp className="size-4" aria-hidden />
-                Tren harian
-              </CardTitle>
-              <CardDescription>
-                Hari tanpa snapshot digambar sebagai celah, bukan nol — nol berarti terukur
-                sepi, celah berarti datanya tidak ada.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <div className="h-64 w-full">
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={dataHarian} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="currentColor" className="text-border" opacity={0.4} />
-                    <XAxis dataKey="tanggal" tickFormatter={(v: string) => v.slice(8, 10)} tickLine={false} axisLine={false} stroke="currentColor" className="text-muted-foreground text-xs" />
-                    <YAxis tickFormatter={rupiahPendek} width={56} tickLine={false} axisLine={false} stroke="currentColor" className="text-muted-foreground text-xs" />
-                    <Tooltip
-                      formatter={(v) => formatRupiah(Number(v))}
-                      // Label sumbu dipotong jadi dua digit hari, tetapi nilai label tooltip
-                      // tetap tanggal penuh dari `dataKey` — tanpa perlu membaca payload recharts
-                      // (yang bertipe `any` dan memaksa cast).
-                      labelFormatter={(l) => (l ? String(l) : "tanpa data")}
-                      contentStyle={{ background: "var(--popover)", color: "var(--popover-foreground)", border: "1px solid var(--border)" }}
-                    />
-                    <Line type="monotone" dataKey="omzet" name="Omzet" stroke="var(--color-chart-1)" strokeWidth={2} dot={false} connectNulls={false} />
-                    <Line type="monotone" dataKey="laba" name="Laba" stroke="var(--color-chart-2)" strokeWidth={2} strokeDasharray="4 2" dot={false} connectNulls={false} />
-                  </LineChart>
-                </ResponsiveContainer>
-              </div>
-            </CardContent>
-          </Card>
+          {/* Metrik dipilih satu per satu: omzet (rupiah) dan margin (persen) pada satu
+              sumbu membuat pembaca membandingkan angka yang tidak sebanding. */}
+          {/* Keadaan "tidak ada data harian" sudah dinyatakan blok Empty di atas; di sini
+              cukup grafiknya — dua pesan untuk satu keadaan hanya menambah baris. */}
+          <TrenHarian seri={seri} />
 
           {/* ══ GRAFIK DELTA HARIAN ══ */}
           <Card data-testid="grafik-delta-harian">
@@ -583,7 +544,7 @@ export function AnalisaRingkasan({ presetId, tanggal }: { presetId: number; tang
                           key={d.tanggal}
                           // Hijau = naik, merah = turun. Nilai null tidak digambar recharts,
                           // warnanya tetap diberikan agar indeks Cell sejajar dengan data.
-                          fill={(d.selisih ?? 0) >= 0 ? "#10b981" : "#ef4444"}
+                          fill={(d.selisih ?? 0) >= 0 ? "var(--grafik-untung)" : "var(--grafik-rugi)"}
                         />
                       ))}
                     </Bar>
